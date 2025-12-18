@@ -419,3 +419,11 @@ canvas{ max-width:100%; }
 /* PRINT */
 @media print {
   :root{ --shadow:none; }
+  body{ background:white; }
+  .app-header, .left, .header-actions, #statusBanner{ display:none !important; }
+  .layout{ display:block; padding:0; }
+  .right{ padding:0; }
+  .report-card, .card{ box-shadow:none; }
+  .chart-actions button{ display:none !important; }
+  a[href]::after{ content:""; }
+}
