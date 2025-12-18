@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>YMS Customer Value Assessment</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <meta name="theme-color" content="#262262" />
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div>
+        <div class="brand-title">YMS Customer Value Assessment</div>
+        <div class="brand-subtitle">Static GitHub Pages app · streaming analytics · export-ready</div>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <label class="toggle">
+        <input id="mockModeToggle" type="checkbox" />
+        <span>Mock mode</span>
+      </label>
+
+      <button id="resetAllBtn" class="btn btn-ghost" type="button" title="Clear inputs/results and wipe token from memory">
+        Reset all
+      </button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- LEFT COLUMN -->
+    <aside class="left">
+      <section class="card">
+        <div class="card-title">Inputs</div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Client subdomain (tenant)</span>
+            <input id="tenantInput" type="text" placeholder="e.g., acme" autocomplete="off" spellcheck="false" />
+            <small>Base URL: <code>https://{client}.api.ymshub.com/api/v2</code></small>
+          </label>
+
+          <label class="field">
+            <span>API token (in-memory only)</span>
+            <div class="row gap-sm">
+              <input id="tokenInput" type="password" placeholder="Paste token…" autocomplete="off" spellcheck="false" />
+              <button id="clearTokenBtn" class="btn btn-warn" type="button">Clear token now</button>
+            </div>
+            <small class="warn">
+              Token is never persisted (no storage/cookies/URL). Network tools may still show auth headers during live requests.
+            </small>
+          </label>
+
+          <label class="field">
+            <span>Facility codes (one per line)</span>
+            <textarea id="facilitiesInput" rows="5" placeholder="FAC1&#10;FAC2"></textarea>
+          </label>
+
+          <div class="row gap-md">
+            <label class="field grow">
+              <span>Start date</span>
+              <input id="startDateInput" type="date" />
+            </label>
+            <label class="field grow">
+              <span>End date</span>
+              <input id="endDateInput" type="date" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Timezone</span>
+            <select id="timezoneSelect"></select>
+            <small>Used for grouping/labels. Most API timestamps assumed UTC unless noted.</small>
+          </label>
+
+          <fieldset class="fieldset">
+            <legend>Reports</legend>
+            <div class="checks">
+              <label><input type="checkbox" class="reportCheck" value="current_inventory" checked /> current_inventory</label>
+              <label><input type="checkbox" class="reportCheck" value="detention_history" checked /> detention_history</label>
+              <label><input type="checkbox" class="reportCheck" value="dockdoor_history" checked /> dockdoor_history</label>
+              <label><input type="checkbox" class="reportCheck" value="driver_history" checked /> driver_history</label>
+              <label><input type="checkbox" class="reportCheck" value="trailer_history" checked /> trailer_history</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="fieldset">
+            <legend>ROI assumptions (optional)</legend>
+            <div class="assumptions">
+              <label class="field">
+                <span>Detention cost per hour</span>
+                <input id="assumptionDetention" type="number" min="0" step="0.01" placeholder="e.g., 75" />
+              </label>
+              <label class="field">
+                <span>Labor fully loaded rate per hour</span>
+                <input id="assumptionLabor" type="number" min="0" step="0.01" placeholder="e.g., 42" />
+              </label>
+              <label class="field">
+                <span>Target moves per driver per day</span>
+                <input id="assumptionTargetMoves" type="number" min="0" step="1" placeholder="50" />
+                <small>Default 50. Top performers can hit 80–100.</small>
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="row gap-md">
+          <button id="runBtn" class="btn btn-primary" type="button">Run assessment</button>
+          <button id="cancelBtn" class="btn btn-ghost" type="button" disabled>Cancel run</button>
+        </div>
+
+        <div id="inputErrors" class="callout callout-error hidden" role="alert"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">Progress</div>
+        <div id="progressPanel" class="progress-panel">
+          <div class="muted">No run yet.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">Exports</div>
+        <div class="export-panel">
+          <button id="downloadSummaryBtn" class="btn btn-ghost" type="button" disabled>Download Summary TXT</button>
+          <button id="printBtn" class="btn btn-ghost" type="button" disabled>Print to PDF</button>
+          <div class="muted small">
+            Per-chart PNG / CSV buttons appear inside each chart card after results render.
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-title">Warnings</div>
+        <div id="warningsPanel" class="warnings-panel muted">None.</div>
+      </section>
+    </aside>
+
+    <!-- RIGHT COLUMN -->
+    <section class="right">
+      <section id="statusBanner" class="callout hidden" role="status"></section>
+
+      <section id="resultsRoot" class="results">
+        <div class="empty-state">
+          <div class="empty-title">Ready when you are.</div>
+          <div class="empty-subtitle">
+            Paste a token, pick facilities + reports, then run. This app streams aggregation and discards raw rows by default.
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <!-- CDNs (no build step) -->
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- App -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
