@@ -33,9 +33,22 @@ export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
 const PAGE_QUEUE_LIMIT = 8; // Conservative limit with backpressure
-const MAX_IN_FLIGHT_PAGES = 6; // Hard cap on concurrent page fetches
+const MAX_IN_FLIGHT_PAGES = 6; // Hard cap on concurrent page fetches (adjusted dynamically)
 const YIELD_EVERY_N_PAGES = 5; // Yield to event loop after processing N pages
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
+
+// Dynamic backpressure thresholds based on total page count
+const BACKPRESSURE_TIERS = [
+  { maxPages: 50, maxInFlight: 6, yieldEvery: 5 },     // Small: aggressive parallelism
+  { maxPages: 200, maxInFlight: 4, yieldEvery: 3 },    // Medium: moderate
+  { maxPages: 1000, maxInFlight: 3, yieldEvery: 2 },   // Large: conservative
+  { maxPages: Infinity, maxInFlight: 2, yieldEvery: 1 } // Extreme (2k+): very conservative
+];
+
+function getBackpressureConfig(totalPages) {
+  const tier = BACKPRESSURE_TIERS.find(t => totalPages <= t.maxPages) || BACKPRESSURE_TIERS[BACKPRESSURE_TIERS.length - 1];
+  return tier;
+}
 
 // Yield helper - gives control back to event loop
 async function yieldToEventLoop() {
@@ -399,6 +412,7 @@ export function createApiRunner({
     let declaredLastPage = 1;
     let stopAtPage = null;
     let pagesProcessed = 0;
+    let backpressureConfig = null; // Will be set after first page
 
     const handlePage = async (payload, pageNumber) => {
       // Check cancellation via runId
@@ -410,6 +424,14 @@ export function createApiRunner({
       const rows = Array.isArray(payload.data) ? payload.data : [];
       if (typeof payload.last_page === 'number') {
         declaredLastPage = Math.max(declaredLastPage, payload.last_page || 1);
+
+        // Set backpressure config based on total pages (after first page)
+        if (!backpressureConfig && declaredLastPage > 0) {
+          backpressureConfig = getBackpressureConfig(declaredLastPage);
+          if (declaredLastPage > 200) {
+            onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
+          }
+        }
       }
       if (!payload.next_page_url) {
         stopAtPage = stopAtPage ? Math.min(stopAtPage, pageNumber) : pageNumber;
@@ -431,8 +453,14 @@ export function createApiRunner({
 
       pagesProcessed++;
 
-      // Yield to event loop periodically
-      if (pagesProcessed % YIELD_EVERY_N_PAGES === 0) {
+      // Dynamic yielding based on dataset size
+      const yieldInterval = backpressureConfig?.yieldEvery || YIELD_EVERY_N_PAGES;
+      if (pagesProcessed % yieldInterval === 0) {
+        await yieldToEventLoop();
+      }
+
+      // For extreme datasets (1000+ pages), yield after EVERY page to maximize responsiveness
+      if (declaredLastPage >= 1000 && pagesProcessed % yieldInterval !== 0) {
         await yieldToEventLoop();
       }
     };
@@ -461,9 +489,10 @@ export function createApiRunner({
       let effectiveLastPage = declaredLastPage;
       const inflight = new Set();
 
-      // Strict backpressure: cap in-flight pages
+      // Dynamic backpressure: cap in-flight pages based on dataset size
       const getBufferLimit = () => {
-        return Math.min(MAX_IN_FLIGHT_PAGES, PAGE_QUEUE_LIMIT);
+        const configLimit = backpressureConfig?.maxInFlight || MAX_IN_FLIGHT_PAGES;
+        return Math.min(configLimit, PAGE_QUEUE_LIMIT);
       };
 
       const pump = () => {

@@ -1155,6 +1155,16 @@ UI.workerToggle?.addEventListener('change', () => {
   UI.startDateInput.value = start;
   UI.endDateInput.value = end;
 
+  // Auto-enable mock mode from URL parameter
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('mock') || urlParams.has('largedata')) {
+    state.mockMode = true;
+    UI.mockModeToggle.checked = true;
+    if (urlParams.has('largedata')) {
+      setBanner('info', `Large dataset mode: ${urlParams.get('largedata')} pages. Mock mode auto-enabled.`);
+    }
+  }
+
   // Optional: show a hint that mock has demo timezones if desired
   // (kept for future; MOCK_TIMEZONES imported to avoid dead-code linting in editors)
 
