@@ -31,6 +31,7 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
+const PAGE_QUEUE_LIMIT = 60; // Avoid enqueuing thousands of page fetches at once.
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 function abortableSleep(ms, signal) {
@@ -415,27 +416,56 @@ export function createApiRunner({
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
       handlePage(firstPayload, 1);
 
-      const remainingTasks = [];
-      for (let p = 2; p <= declaredLastPage; p++) {
-        remainingTasks.push(
-          scheduler.enqueue(() => fetchReportPage({
+      let nextPage = 2;
+      let effectiveLastPage = declaredLastPage;
+      const inflight = new Set();
+
+      const getBufferLimit = () => {
+        const dynamic = Math.max(CONCURRENCY_MIN, (scheduler.getConcurrency?.() || CONCURRENCY_START) * 2);
+        return Math.min(PAGE_QUEUE_LIMIT, dynamic);
+      };
+
+      const pump = () => {
+        if (signal?.aborted) return;
+        const stopPage = stopAtPage || effectiveLastPage;
+        const bufferLimit = getBufferLimit();
+
+        while (inflight.size < bufferLimit && nextPage <= stopPage) {
+          const pageNumber = nextPage++;
+          const task = scheduler.enqueue(() => fetchReportPage({
             tenant,
             report,
             facility,
             startDate,
             endDate,
-            page: p,
+            page: pageNumber,
             tokenGetter,
             mockMode,
             outerSignal: signal,
             onWarning,
             scheduler,
           }), { onTransient: (err) => classifyError(err).transient, report })
-            .then((payload) => handlePage(payload, p))
-        );
+            .then((payload) => {
+              if (payload && typeof payload.last_page === 'number') {
+                effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
+              }
+              handlePage(payload, pageNumber);
+            })
+            .finally(() => {
+              inflight.delete(task);
+            });
+
+          inflight.add(task);
+        }
+      };
+
+      pump();
+
+      while (inflight.size > 0) {
+        await Promise.race(inflight);
+        pump();
       }
 
-      await Promise.all(remainingTasks);
       onFacilityStatus?.({ report, facility, status: 'done' });
     } catch (e) {
       if (signal?.aborted) {
