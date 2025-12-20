@@ -122,6 +122,8 @@ A “Mock mode” toggle allows demoing without hitting the live API.
 Update defaults in api.js:
 - `CONCURRENCY_MIN`, `CONCURRENCY_START`, `CONCURRENCY_MAX` (global pool across all report/facility pages)
 - `RETRY_LIMIT`, `BACKOFF_BASE_MS`, `BACKOFF_JITTER`
+- `DEFAULT_TIMEOUT_MS` (base request timeout, defaults to 60s)
+- `SLOW_FIRST_PAGE_TIMEOUT_MS` (extended timeout for slow first-page endpoints like `driver_history`, defaults to 90s)
 - Adaptive ramp-up occurs after sustained successes; transient errors reduce concurrency automatically.
 
 ### Performance behaviors

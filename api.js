@@ -17,7 +17,10 @@ export const CONCURRENCY_MAX = 12;
 export const RETRY_LIMIT = 2;
 export const BACKOFF_BASE_MS = 400;
 export const BACKOFF_JITTER = 180;
+export const DEFAULT_TIMEOUT_MS = 60000;
+export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 6;
+const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -37,7 +40,7 @@ function abortableSleep(ms, signal) {
   });
 }
 
-async function fetchWithTimeout(url, options, { timeoutMs = 30000, outerSignal } = {}) {
+async function fetchWithTimeout(url, options, { timeoutMs = DEFAULT_TIMEOUT_MS, outerSignal } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort('Request timeout'), timeoutMs);
 
@@ -58,7 +61,7 @@ async function fetchWithTimeout(url, options, { timeoutMs = 30000, outerSignal }
   }
 }
 
-async function fetchJson(url, { headers, outerSignal, timeoutMs = 30000 } = {}) {
+async function fetchJson(url, { headers, outerSignal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const res = await fetchWithTimeout(url, { method: 'GET', headers }, { timeoutMs, outerSignal });
 
   const text = await res.text();
@@ -227,8 +230,11 @@ async function fetchReportPage({
       await abortableSleep(80 + Math.random() * 80, outerSignal);
       return getMockPage({ report, facility, page });
     }
+    const timeoutMs = (page === 1 && SLOW_FIRST_PAGE_REPORTS.has(report))
+      ? SLOW_FIRST_PAGE_TIMEOUT_MS
+      : DEFAULT_TIMEOUT_MS;
     const url = buildReportUrl({ tenant, report, facility, startDate, endDate, page });
-    return fetchJson(url, { headers: headers(), outerSignal });
+    return fetchJson(url, { headers: headers(), outerSignal, timeoutMs });
   }, {
     signal: outerSignal,
     onWarning,
