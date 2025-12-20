@@ -1,4 +1,4 @@
-import { downloadText } from './export.js';
+import { downloadText } from './export.js?v=2024.12.20.2';
 
 /**
  * Chart.js rendering + export PNG + provide chart datasets for CSV export.

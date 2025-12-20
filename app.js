@@ -1,8 +1,8 @@
-import { createApiRunner, ApiError } from './api.js';
-import { createAnalyzers, normalizeRowStrict } from './analysis.js';
-import { renderReportResult, destroyAllCharts } from './charts.js';
-import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js';
-import { MOCK_TIMEZONES } from './mock-data.js';
+import { createApiRunner, ApiError } from './api.js?v=2024.12.20.2';
+import { createAnalyzers, normalizeRowStrict } from './analysis.js?v=2024.12.20.2';
+import { renderReportResult, destroyAllCharts } from './charts.js?v=2024.12.20.2';
+import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2024.12.20.2';
+import { MOCK_TIMEZONES } from './mock-data.js?v=2024.12.20.2';
 
 const { DateTime } = window.luxon;
 

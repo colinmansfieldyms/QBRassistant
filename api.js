@@ -1,4 +1,4 @@
-import { getMockPage } from './mock-data.js';
+import { getMockPage } from './mock-data.js?v=2024.12.20.2';
 
 export class ApiError extends Error {
   constructor(message, { status = null, report = null, facility = null, url = null } = {}) {
