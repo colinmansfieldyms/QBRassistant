@@ -453,6 +453,8 @@ export function createApiRunner({
             })
             .finally(() => {
               inflight.delete(task);
+              // Immediately pump more pages as tasks complete
+              pump();
             });
 
           inflight.add(task);
@@ -463,7 +465,7 @@ export function createApiRunner({
 
       while (inflight.size > 0) {
         await Promise.race(inflight);
-        pump();
+        // No need to pump here since it's called in finally()
       }
 
       onFacilityStatus?.({ report, facility, status: 'done' });
