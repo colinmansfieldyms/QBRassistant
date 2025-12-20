@@ -4,7 +4,23 @@
  * Driver cell numbers are NEVER stored, rendered, or exported—only presence/absence is allowed via boolean flags.
  */
 
-const { DateTime } = window.luxon;
+let DateTimeImpl = null;
+
+function getDateTime() {
+  if (DateTimeImpl) return DateTimeImpl;
+  // Browser main thread uses global Luxon; workers may provide self.luxon.
+  const fromWindow = typeof window !== 'undefined' && window.luxon?.DateTime;
+  const fromSelf = typeof self !== 'undefined' && self.luxon?.DateTime;
+  DateTimeImpl = fromWindow || fromSelf || null;
+  if (!DateTimeImpl) {
+    throw new Error('Luxon DateTime is not available in this context.');
+  }
+  return DateTimeImpl;
+}
+
+export function setDateTimeImplementation(dt) {
+  DateTimeImpl = dt;
+}
 
 const PII_KEY_RE = /(cell|phone)/i;
 
@@ -34,6 +50,7 @@ function normalizeBoolish(v) {
  * If "treatAsLocal" is true, we parse as if already in the chosen timezone (no UTC conversion).
  */
 export function parseTimestamp(raw, { timezone, assumeUTC = true, treatAsLocal = false, onFail } = {}) {
+  const DateTime = getDateTime();
   if (isNil(raw)) return null;
   const s = safeStr(raw);
   if (!s) return null;
@@ -322,6 +339,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
   ingest({ row, flags }) {
     this.totalRows++;
     this.totalTrailers++;
+    const DateTime = getDateTime();
 
     // move_type_name distribution
     const mt = safeStr(row.move_type_name);
@@ -1151,6 +1169,7 @@ function counterToSeries(counterMap) {
 }
 
 function roughRangeDays(startDate, endDate) {
+  const DateTime = getDateTime();
   if (!startDate || !endDate) return 999;
   const a = DateTime.fromISO(startDate, { zone: 'utc' });
   const b = DateTime.fromISO(endDate, { zone: 'utc' });

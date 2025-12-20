@@ -6,6 +6,7 @@ A static, web-based app for Customer Experience + Sales to quantify customer ado
 - **Stack:** Plain HTML/CSS/JS (ES Modules), **Chart.js** + **Luxon** via CDN
 - **Security:** API token is **in-memory only** (never persisted)
 - **PII policy:** **Driver phone/cell values are never displayed or exported** (hard-scrubbed by key name)
+- **Performance:** Optional Web Worker keeps the UI responsive during heavy aggregation (auto-fallback).
 
 ---
 
@@ -48,6 +49,14 @@ AGENTS.md # AI navigation + invariants (for Codex/agents)
 - Print-to-PDF (via window.print())
 - Per-chart PNG export
 - Per-chart aggregated CSV export + per-report aggregated summary CSV export
+
+---
+
+## Web Worker mode (optional)
+
+- Toggle “Use Web Worker (recommended)” in the Inputs panel to offload normalization + aggregation off the main thread.
+- The worker never receives the API token—only raw rows for the selected page are sent, and phone/cell fields are still scrubbed immediately.
+- If the browser cannot start a worker, the app automatically falls back to the main-thread analysis path.
 
 ---
 

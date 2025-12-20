@@ -37,6 +37,8 @@ const UI = {
   assumptionDetention: document.querySelector('#assumptionDetention'),
   assumptionLabor: document.querySelector('#assumptionLabor'),
   assumptionTargetMoves: document.querySelector('#assumptionTargetMoves'),
+  workerToggle: document.querySelector('#workerToggle'),
+  workerStatus: document.querySelector('#workerStatus'),
 };
 
 const state = {
@@ -51,6 +53,19 @@ const state = {
   progress: {}, // report -> facility -> {page,lastPage,rowsProcessed,status,error}
   results: {},  // report -> result payload
   chartRegistry: new Map(), // report -> [chartHandles]
+  workerPreference: true,
+};
+
+const workerRuntime = {
+  supported: typeof Worker !== 'undefined' && typeof URL !== 'undefined',
+  preferred: true,
+  ready: false,
+  fallbackReason: null,
+  worker: null,
+  currentRunId: null,
+  finalizePromise: null,
+  finalizeResolve: null,
+  finalizeReject: null,
 };
 
 // ---------- Timezones ----------
@@ -159,6 +174,7 @@ function abortInFlight(reason = 'Cancelled.') {
   if (state.abortController) {
     try { state.abortController.abort(reason); } catch {}
   }
+  cancelWorkerRun(reason);
 }
 
 function resetAll() {
@@ -173,6 +189,7 @@ function resetAll() {
   state.warnings = [];
   state.progress = {};
   state.results = {};
+  resetWorkerState();
 
   clearTokenEverywhere({ abort: false });
   clearBanner();
@@ -223,6 +240,9 @@ function setRunningUI(running) {
   UI.mockModeToggle.disabled = running;
   UI.downloadSummaryBtn.disabled = running || Object.keys(state.results).length === 0;
   UI.printBtn.disabled = running || Object.keys(state.results).length === 0;
+  if (UI.workerToggle) {
+    UI.workerToggle.disabled = running || !workerRuntime.supported || !!workerRuntime.fallbackReason;
+  }
 }
 
 // ---------- Progress rendering ----------
@@ -309,6 +329,142 @@ function addWarning(msg) {
   const stamp = DateTime.now().setZone(state.timezone).toFormat('yyyy-LL-dd HH:mm:ss');
   state.warnings.push(`[${stamp}] ${msg}`);
   UI.warningsPanel.textContent = state.warnings.length ? state.warnings.join('\n') : 'None.';
+}
+
+// ---------- Worker helpers ----------
+function updateWorkerStatus(text) {
+  if (UI.workerStatus) UI.workerStatus.textContent = text;
+  if (UI.workerToggle) {
+    UI.workerToggle.disabled = !workerRuntime.supported || !!workerRuntime.fallbackReason || state.running;
+    UI.workerToggle.checked = workerRuntime.supported && !workerRuntime.fallbackReason && workerRuntime.preferred;
+  }
+}
+
+function handleWorkerMessage(event) {
+  const data = event.data || {};
+  switch (data.type) {
+    case 'WORKER_READY':
+      workerRuntime.ready = true;
+      workerRuntime.fallbackReason = null;
+      updateWorkerStatus('Web Worker ready (keeps UI responsive).');
+      break;
+    case 'PROGRESS':
+      if (data.runId !== workerRuntime.currentRunId) return;
+      if (Array.isArray(data.warningsDelta)) data.warningsDelta.forEach(addWarning);
+      if (state.progress?.[data.report]?.[data.facility]) {
+        state.progress[data.report][data.facility].rowsProcessed = data.totalRowsProcessed;
+        updateProgressUI(data.report);
+      }
+      break;
+    case 'PARTIAL_RESULT':
+      if (data.runId !== workerRuntime.currentRunId) return;
+      if (data.results && state.running) {
+        state.results = data.results;
+        renderAllResults();
+      }
+      break;
+    case 'FINAL_RESULT':
+      if (data.runId !== workerRuntime.currentRunId) return;
+      workerRuntime.currentRunId = null;
+      workerRuntime.finalizeResolve?.(data);
+      workerRuntime.finalizePromise = null;
+      workerRuntime.finalizeResolve = null;
+      workerRuntime.finalizeReject = null;
+      break;
+    case 'CANCELLED':
+      if (data.runId !== workerRuntime.currentRunId) return;
+      workerRuntime.currentRunId = null;
+      workerRuntime.finalizeReject?.(new Error('Worker cancelled'));
+      workerRuntime.finalizePromise = null;
+      workerRuntime.finalizeResolve = null;
+      workerRuntime.finalizeReject = null;
+      break;
+    case 'ERROR':
+      addWarning(`Worker error: ${data.message || data.errorCode || 'unknown'}`);
+      if (data.runId && data.runId === workerRuntime.currentRunId) {
+        workerRuntime.finalizeReject?.(new Error(data.message || 'Worker error'));
+        workerRuntime.currentRunId = null;
+        workerRuntime.finalizePromise = null;
+        workerRuntime.finalizeResolve = null;
+        workerRuntime.finalizeReject = null;
+      }
+      workerRuntime.fallbackReason = data.message || data.errorCode || 'worker error';
+      workerRuntime.ready = false;
+      updateWorkerStatus('Worker unavailable; falling back to main thread.');
+      break;
+    default:
+      break;
+  }
+}
+
+function initWorker() {
+  if (!workerRuntime.supported) {
+    workerRuntime.fallbackReason = 'Web Worker not supported';
+    workerRuntime.preferred = false;
+    updateWorkerStatus('Web Worker unavailable in this browser; using main thread.');
+    return;
+  }
+
+  try {
+    workerRuntime.worker = new Worker(new URL('./analysis.worker.js', import.meta.url), { type: 'module' });
+    workerRuntime.worker.onmessage = handleWorkerMessage;
+    workerRuntime.worker.onerror = (err) => {
+      addWarning(`Worker error: ${err?.message || err}`);
+      workerRuntime.ready = false;
+      workerRuntime.fallbackReason = err?.message || 'Worker error';
+      updateWorkerStatus('Worker unavailable; falling back to main thread.');
+    };
+  } catch (e) {
+    workerRuntime.fallbackReason = e?.message || 'Worker initialization failed';
+    workerRuntime.ready = false;
+    workerRuntime.preferred = false;
+    updateWorkerStatus('Worker initialization failed; using main thread.');
+  }
+}
+
+function shouldUseWorker() {
+  return workerRuntime.supported && workerRuntime.preferred && workerRuntime.ready && !workerRuntime.fallbackReason;
+}
+
+function beginWorkerRun(config) {
+  if (!shouldUseWorker() || !workerRuntime.worker) return null;
+
+  const runId = `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  workerRuntime.currentRunId = runId;
+  workerRuntime.finalizePromise = new Promise((resolve, reject) => {
+    workerRuntime.finalizeResolve = resolve;
+    workerRuntime.finalizeReject = reject;
+  });
+
+  workerRuntime.worker.postMessage({ type: 'INIT_RUN', runId, ...config });
+  return { runId, finalizePromise: workerRuntime.finalizePromise };
+}
+
+function finalizeWorkerRun(runId) {
+  if (!runId || !workerRuntime.worker || !workerRuntime.finalizePromise) return Promise.reject(new Error('Worker not ready'));
+  workerRuntime.worker.postMessage({ type: 'FINALIZE', runId });
+  return workerRuntime.finalizePromise;
+}
+
+function cancelWorkerRun(reason = 'cancelled') {
+  if (workerRuntime.currentRunId && workerRuntime.worker) {
+    workerRuntime.worker.postMessage({ type: 'CANCEL', runId: workerRuntime.currentRunId });
+  }
+  workerRuntime.currentRunId = null;
+  if (workerRuntime.finalizeReject) workerRuntime.finalizeReject(new Error(reason));
+  workerRuntime.finalizePromise = null;
+  workerRuntime.finalizeResolve = null;
+  workerRuntime.finalizeReject = null;
+}
+
+function resetWorkerState() {
+  if (workerRuntime.worker) {
+    workerRuntime.worker.postMessage({ type: 'RESET' });
+  }
+  workerRuntime.currentRunId = null;
+  workerRuntime.finalizePromise = null;
+  workerRuntime.finalizeResolve = null;
+  workerRuntime.finalizeReject = null;
 }
 
 // ---------- Results rendering ----------
@@ -495,7 +651,24 @@ async function runAssessment() {
   state.abortController = new AbortController();
   const signal = state.abortController.signal;
 
-  const analyzers = createAnalyzers({
+  const roiEnabled = canComputeROI(inputs.assumptions);
+  const useWorker = shouldUseWorker();
+  const workerRun = useWorker ? beginWorkerRun({
+    timezone: inputs.timezone,
+    startDate: inputs.startDate,
+    endDate: inputs.endDate,
+    assumptions: inputs.assumptions,
+    selectedReports: inputs.reports,
+    facilities: inputs.facilities,
+    tenant: inputs.tenant,
+    roiEnabled,
+  }) : null;
+
+  if (useWorker && !workerRun) {
+    addWarning('Web Worker preferred but unavailable; using main-thread analysis.');
+  }
+
+  const analyzers = workerRun ? null : createAnalyzers({
     timezone: inputs.timezone,
     startDate: inputs.startDate,
     endDate: inputs.endDate,
@@ -536,9 +709,21 @@ async function runAssessment() {
       startDate: inputs.startDate,
       endDate: inputs.endDate,
       timezone: inputs.timezone,
-      onRows: ({ report, rows }) => {
-        // Normalize + scrub PII immediately.
-        const analyzer = analyzers[report];
+      onRows: ({ report, facility, page, lastPage, rows }) => {
+        if (workerRun) {
+          workerRuntime.worker?.postMessage({
+            type: 'PAGE_ROWS',
+            runId: workerRun.runId,
+            report,
+            facility,
+            page,
+            lastPage,
+            rows,
+          });
+          return;
+        }
+
+        const analyzer = analyzers?.[report];
         if (!analyzer) return;
 
         for (const raw of rows) {
@@ -549,24 +734,31 @@ async function runAssessment() {
     });
 
     // Finalize per report
-    for (const report of inputs.reports) {
-      const analyzer = analyzers[report];
-      if (!analyzer) continue;
-      state.results[report] = analyzer.finalize({
-        tenant: inputs.tenant,
-        facilities: inputs.facilities,
-        startDate: inputs.startDate,
-        endDate: inputs.endDate,
-        timezone: inputs.timezone,
-        assumptions: inputs.assumptions,
-        roiEnabled: canComputeROI(inputs.assumptions),
-      });
+    if (workerRun) {
+      const payload = await finalizeWorkerRun(workerRun.runId);
+      if (Array.isArray(payload?.warnings)) payload.warnings.forEach(addWarning);
+      state.results = payload?.results || {};
+    } else {
+      for (const report of inputs.reports) {
+        const analyzer = analyzers?.[report];
+        if (!analyzer) continue;
+        state.results[report] = analyzer.finalize({
+          tenant: inputs.tenant,
+          facilities: inputs.facilities,
+          startDate: inputs.startDate,
+          endDate: inputs.endDate,
+          timezone: inputs.timezone,
+          assumptions: inputs.assumptions,
+          roiEnabled,
+        });
+      }
     }
 
     renderAllResults();
     setBanner('ok', 'Complete. Token wiped from memory. You can export summaries, print, and download chart CSV/PNG.');
 
   } catch (e) {
+    if (workerRun) cancelWorkerRun('Run failed');
     if (signal.aborted) {
       setBanner('info', 'Run cancelled. Token wiped from memory.');
     } else if (e instanceof ApiError) {
@@ -639,6 +831,15 @@ UI.timezoneSelect.addEventListener('change', () => {
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
 UI.printBtn.addEventListener('click', doPrint);
 
+UI.workerToggle?.addEventListener('change', () => {
+  workerRuntime.preferred = UI.workerToggle.checked;
+  state.workerPreference = workerRuntime.preferred;
+  updateWorkerStatus(workerRuntime.preferred
+    ? 'Web Worker enabled when available.'
+    : 'Web Worker disabled; analysis will run on the main thread.'
+  );
+});
+
 // Safety: do not log tokens even in debug. (No debug console in this draft.)
 
 // ---------- Init ----------
@@ -654,6 +855,12 @@ UI.printBtn.addEventListener('click', doPrint);
 
   // Optional: show a hint that mock has demo timezones if desired
   // (kept for future; MOCK_TIMEZONES imported to avoid dead-code linting in editors)
+
+  workerRuntime.preferred = workerRuntime.supported;
+  state.workerPreference = workerRuntime.preferred;
+  if (UI.workerToggle) UI.workerToggle.checked = workerRuntime.preferred;
+  updateWorkerStatus(workerRuntime.supported ? 'Initializing Web Worker…' : 'Web Worker unavailable; using main thread.');
+  initWorker();
 
   clearBanner();
 })();

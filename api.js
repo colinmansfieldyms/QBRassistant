@@ -214,7 +214,7 @@ async function fetchAllPages({
     const rows = Array.isArray(payload?.data) ? payload.data : [];
     rowsProcessed += rows.length;
     onProgress?.({ report, facility, page: p, lastPage, rowsProcessed });
-    pages.push({ page: p, data: rows });
+    pages.push({ page: p, lastPage, data: rows });
 
     // Stop early if next_page_url is null and API says we're done
     if (!payload?.next_page_url && p >= lastPage) break;
@@ -266,7 +266,7 @@ export function createApiRunner({
 
             for (const pg of pages) {
               if (signal?.aborted) throw new DOMException(signal.reason || 'Aborted', 'AbortError');
-              onRows?.({ report, facility, page: pg.page, rows: pg.data });
+              onRows?.({ report, facility, page: pg.page, lastPage: pg.lastPage, rows: pg.data });
             }
 
             onFacilityStatus?.({ report, facility, status: 'done' });
