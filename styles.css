@@ -409,6 +409,14 @@ canvas{ max-width:100%; }
   line-height:1.4;
   white-space:pre-wrap;
 }
+.perf-panel{
+  white-space:pre-line;
+  background:#f9fafb;
+  border:1px dashed var(--border);
+  border-radius:var(--radius-sm);
+  padding:10px;
+  font-family:var(--mono);
+}
 
 .export-panel{
   display:flex;

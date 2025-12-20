@@ -37,7 +37,7 @@ AGENTS.md # AI navigation + invariants (for Codex/agents)
 
 ### On “Run Assessment” the app fetches every selected report for every facility, using pagination:
 - Request page 1 first to learn `last_page`
-- Fan-out pages 2..last_page into a global adaptive concurrency pool (start 4, ramps up to 12 on sustained success, backs off on transient errors)
+- Fan-out pages 2..last_page into a global adaptive concurrency pool (start 8, ramps toward 20 when healthy) with per-report lane caps so slow endpoints (e.g., driver_history) back off first
 - Progress updates are throttled (~5x/sec) and chart rendering is throttled (~1s cadence) to keep the main thread responsive
 - After each page: stream rows into aggregators and discard raw rows
 
@@ -120,17 +120,28 @@ A “Mock mode” toggle allows demoing without hitting the live API.
 
 ### Adjust concurrency / retries
 Update defaults in api.js:
-- `CONCURRENCY_MIN`, `CONCURRENCY_START`, `CONCURRENCY_MAX` (global pool across all report/facility pages)
+- `CONCURRENCY_MIN`, `CONCURRENCY_START`, `CONCURRENCY_MAX` (global pool across all report/facility pages). Defaults now bias to a higher start (8) and allow a higher ceiling (20) for large runs.
+- `PER_REPORT_LIMITS` caps lanes per report (`driver_history` defaults to max 6, others default max 18) so slower endpoints do not poison the global pool.
+- `LATENCY_TARGETS` drive lane-level backoff/recovery using p90 latency (spike threshold 2.6s, recover threshold 1.7s) with jittered retries.
 - `RETRY_LIMIT`, `BACKOFF_BASE_MS`, `BACKOFF_JITTER`
 - `DEFAULT_TIMEOUT_MS` (base request timeout, defaults to 60s)
 - `SLOW_FIRST_PAGE_TIMEOUT_MS` (extended timeout for slow first-page endpoints like `driver_history`, defaults to 90s)
-- Adaptive ramp-up occurs after sustained successes; transient errors reduce concurrency automatically.
+- Adaptive ramp-up occurs after sustained successes; transient errors reduce concurrency automatically. Lane-level backoff happens before global backoff when a single report slows down.
 
 ### Performance behaviors
-- Fan-out pagination: page 1 first, then enqueue remaining pages into a shared scheduler.
-- Adaptive concurrency: starts at 4, ramps up gradually to 12, backs off when transient failures occur.
+- Fan-out pagination: page 1 first, then enqueue remaining pages into a shared scheduler with lane-aware caps.
+- Adaptive concurrency: starts at 8, ramps up to 20 globally when healthy, and backs off globally on transient errors. Per-report lanes (e.g., `driver_history`) back off first when their p90 latency spikes, recovering independently when latency improves.
 - Retry/backoff: transient failures (timeouts, 408/429/5xx, network errors) retry up to `RETRY_LIMIT` with abort-aware exponential backoff + jitter.
-- UI throttling: progress updates limited to ~5/sec; chart re-renders throttled to ~1.2s to avoid main-thread thrash on large runs.
+- UI throttling: progress updates limited to ~5/sec; chart re-renders throttled to ~1.2s to avoid main-thread thrash on large runs; perf panel throttled to ~0.9s when enabled.
+- Timestamp parsing prefers fast-path parsing for common formats before falling back to Luxon, reducing per-row allocations on very large runs.
+- Streaming quantiles (P² estimator) remain in use for median/p90 without storing raw arrays.
+
+### Perf instrumentation (optional)
+- Append `?perf=1` to enable lightweight instrumentation. A “Performance (debug)” card shows:
+  - request latency p50/p90 per report lane
+  - rows/sec and ms/row processing (main-thread path)
+  - total chart render time
+- No tokens or PII are logged or displayed; instrumentation is in-memory and easy to remove.
 
 ### Developer notes (quick start for maintainers)
 - Key modules changed:
