@@ -417,6 +417,87 @@ canvas{ max-width:100%; }
 }
 
 /* PRINT */
+/* Chart fullscreen modal */
+.chart-modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.85);
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+.chart-modal.active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chart-modal-content {
+  background: white;
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 95%;
+  height: 90%;
+  max-width: 1800px;
+  max-height: 1200px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease-out;
+}
+
+.chart-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.chart-modal-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.chart-modal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chart-modal-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.chart-modal-canvas-wrap {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media print {
   :root{ --shadow:none; }
   body{ background:white; }
@@ -425,5 +506,6 @@ canvas{ max-width:100%; }
   .right{ padding:0; }
   .report-card, .card{ box-shadow:none; }
   .chart-actions button{ display:none !important; }
+  .chart-modal{ display:none !important; }
   a[href]::after{ content:""; }
 }

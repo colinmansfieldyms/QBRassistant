@@ -54,6 +54,112 @@ function downloadPngFromCanvas(canvas, filename) {
   a.remove();
 }
 
+function createChartModal() {
+  const modal = el('div', { class: 'chart-modal' });
+  const content = el('div', { class: 'chart-modal-content' });
+
+  const header = el('div', { class: 'chart-modal-header' });
+  const title = el('div', { class: 'chart-modal-title' });
+  const actions = el('div', { class: 'chart-modal-actions' });
+
+  const downloadBtn = el('button', { class: 'btn btn-primary', type: 'button' }, ['Download PNG']);
+  const closeBtn = el('button', { class: 'btn btn-ghost', type: 'button' }, ['Close']);
+
+  actions.appendChild(downloadBtn);
+  actions.appendChild(closeBtn);
+  header.appendChild(title);
+  header.appendChild(actions);
+
+  const body = el('div', { class: 'chart-modal-body' });
+  const canvasWrap = el('div', { class: 'chart-modal-canvas-wrap' });
+  const canvas = el('canvas');
+
+  canvasWrap.appendChild(canvas);
+  body.appendChild(canvasWrap);
+
+  content.appendChild(header);
+  content.appendChild(body);
+  modal.appendChild(content);
+
+  document.body.appendChild(modal);
+
+  return { modal, title, canvas, downloadBtn, closeBtn, chart: null };
+}
+
+let chartModal = null;
+
+function openChartFullscreen(def, chartData, report, onWarning) {
+  if (!chartModal) {
+    chartModal = createChartModal();
+
+    // Close on background click
+    chartModal.modal.addEventListener('click', (e) => {
+      if (e.target === chartModal.modal) {
+        closeChartFullscreen();
+      }
+    });
+
+    // Close button
+    chartModal.closeBtn.addEventListener('click', closeChartFullscreen);
+
+    // ESC key to close
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && chartModal.modal.classList.contains('active')) {
+        closeChartFullscreen();
+      }
+    });
+  }
+
+  // Set title
+  chartModal.title.textContent = def.title;
+
+  // Destroy previous chart if exists
+  if (chartModal.chart) {
+    try { chartModal.chart.destroy(); } catch {}
+  }
+
+  // Create fullscreen chart with better label visibility
+  const cfg = chartConfigFromKind(def.kind, chartData, def.title);
+
+  // Override config for fullscreen to show all labels
+  if (cfg.options.scales && cfg.options.scales.x) {
+    cfg.options.scales.x.ticks = {
+      maxRotation: 45,
+      minRotation: 0,
+      autoSkip: false, // Show all labels
+      font: { size: 11 }
+    };
+  }
+
+  chartModal.chart = new window.Chart(chartModal.canvas.getContext('2d'), cfg);
+
+  // Download button
+  chartModal.downloadBtn.onclick = () => {
+    try {
+      downloadPngFromCanvas(chartModal.canvas, `${report}_${def.id}_fullscreen.png`);
+    } catch (e) {
+      onWarning?.(`PNG export failed: ${e?.message || String(e)}`);
+    }
+  };
+
+  // Show modal
+  chartModal.modal.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeChartFullscreen() {
+  if (!chartModal) return;
+
+  chartModal.modal.classList.remove('active');
+  document.body.style.overflow = '';
+
+  // Destroy chart to free memory
+  if (chartModal.chart) {
+    try { chartModal.chart.destroy(); } catch {}
+    chartModal.chart = null;
+  }
+}
+
 export function renderReportResult({
   report,
   result,
@@ -116,6 +222,17 @@ export function renderReportResult({
     const wrap = el('div', { class: 'canvas-wrap', style: 'height:360px;' }, [canvas]);
 
     const actions = el('div', { class: 'chart-actions' }, [
+      el('button', {
+        class: 'btn btn-ghost',
+        type: 'button',
+        onClick: () => {
+          try {
+            openChartFullscreen(def, def.data, report, onWarning);
+          } catch (e) {
+            onWarning?.(`Fullscreen failed: ${e?.message || String(e)}`);
+          }
+        }
+      }, ['⛶ Expand']),
       el('button', {
         class: 'btn btn-ghost',
         type: 'button',
