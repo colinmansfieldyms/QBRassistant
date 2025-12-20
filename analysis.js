@@ -899,21 +899,36 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     this.movesTotal++;
 
     const driver = safeStr(firstPresent(row, ['driver_name', 'driver', 'driver_username', 'driver_id']));
-    if (driver) this.movesByDriver.inc(driver);
+    if (driver) {
+      this.movesByDriver.inc(driver);
+    } else if (this.totalRows === 1) {
+      // First row has no driver identifier - warn
+      this.warn(`driver_history: No driver identifier found in first row. Expected fields: driver_name, driver, driver_username, or driver_id`);
+    }
 
     // Determine event time for grouping (complete time preferred)
-    const complete = parseTimestamp(firstPresent(row, ['complete_time', 'move_complete_time', 'completed_at', 'complete_timestamp']), {
+    const completeRaw = firstPresent(row, ['complete_time', 'move_complete_time', 'completed_at', 'complete_timestamp']);
+    const complete = parseTimestamp(completeRaw, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
     });
-    const start = parseTimestamp(firstPresent(row, ['start_time', 'move_start_time', 'started_at']), {
+    const startRaw = firstPresent(row, ['start_time', 'move_start_time', 'started_at']);
+    const start = parseTimestamp(startRaw, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
     });
-    const accept = parseTimestamp(firstPresent(row, ['accept_time', 'move_accept_time', 'accepted_at']), {
+    const acceptRaw = firstPresent(row, ['accept_time', 'move_accept_time', 'accepted_at']);
+    const accept = parseTimestamp(acceptRaw, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
     });
 
     const eventDt = complete || start || accept;
-    if (eventDt) this.parseOk++;
+    if (eventDt) {
+      this.parseOk++;
+    } else if (!eventDt && (completeRaw || startRaw || acceptRaw)) {
+      // We have timestamp data but failed to parse it - warn once per analyzer
+      if (this.totalRows === 1) {
+        this.warn(`driver_history: Timestamp parsing failed for first row. Fields found: complete=${completeRaw ? 'present' : 'missing'}, start=${startRaw ? 'present' : 'missing'}, accept=${acceptRaw ? 'present' : 'missing'}`);
+      }
+    }
 
     if (eventDt) {
       const wk = weekKey(eventDt, this.timezone);
@@ -958,6 +973,14 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     const activeWeek = weekLabels.map(w => this.activeDriversByWeek.get(w)?.estimate() || 0);
 
     const topDrivers = this.movesByDriver.top(10);
+
+    // Diagnostic warnings if no data was captured
+    if (this.totalRows > 0 && this.movesByDriver.map.size === 0) {
+      this.warn(`driver_history: Processed ${this.totalRows} rows but found no driver identifiers. Chart "Top drivers by moves" will be empty.`);
+    }
+    if (this.totalRows > 0 && weekLabels.length === 0) {
+      this.warn(`driver_history: Processed ${this.totalRows} rows but no valid timestamps were parsed. Chart "Active drivers & moves (weekly)" will be empty. Parse stats: ${this.parseOk} OK, ${this.parseFails} failed.`);
+    }
 
     const findings = [];
     const recs = [];
