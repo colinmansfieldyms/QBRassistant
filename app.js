@@ -6,6 +6,9 @@ import { MOCK_TIMEZONES } from './mock-data.js';
 
 const { DateTime } = window.luxon;
 
+const PROGRESS_THROTTLE_MS = 200; // 5x/second
+const CHART_RENDER_THROTTLE_MS = 1200; // avoid re-rendering charts too often during streaming
+
 const REPORTS = [
   'current_inventory',
   'detention_history',
@@ -54,6 +57,16 @@ const state = {
   results: {},  // report -> result payload
   chartRegistry: new Map(), // report -> [chartHandles]
   workerPreference: true,
+};
+
+const progressRenderState = {
+  pendingReports: new Set(),
+  timer: null,
+};
+
+const resultsRenderState = {
+  timer: null,
+  pending: false,
 };
 
 const workerRuntime = {
@@ -190,6 +203,8 @@ function resetAll() {
   state.progress = {};
   state.results = {};
   resetWorkerState();
+  flushProgressRender();
+  flushResultsRender();
 
   clearTokenEverywhere({ abort: false });
   clearBanner();
@@ -283,7 +298,7 @@ function initProgressUI(selectedReports, facilities) {
   });
 }
 
-function updateProgressUI(report) {
+function renderProgressNow(report) {
   const reportEl = UI.progressPanel.querySelector(`.progress-report[data-report="${report}"]`);
   if (!reportEl) return;
 
@@ -325,6 +340,27 @@ function updateProgressUI(report) {
   else metaEl.textContent = `queued`;
 }
 
+function scheduleProgressRender(report) {
+  progressRenderState.pendingReports.add(report);
+  if (progressRenderState.timer) return;
+  progressRenderState.timer = setTimeout(() => {
+    const toRender = Array.from(progressRenderState.pendingReports);
+    progressRenderState.pendingReports.clear();
+    progressRenderState.timer = null;
+    toRender.forEach(renderProgressNow);
+  }, PROGRESS_THROTTLE_MS);
+}
+
+function flushProgressRender() {
+  if (progressRenderState.timer) {
+    clearTimeout(progressRenderState.timer);
+    progressRenderState.timer = null;
+  }
+  const toRender = Array.from(progressRenderState.pendingReports);
+  progressRenderState.pendingReports.clear();
+  toRender.forEach(renderProgressNow);
+}
+
 function addWarning(msg) {
   const stamp = DateTime.now().setZone(state.timezone).toFormat('yyyy-LL-dd HH:mm:ss');
   state.warnings.push(`[${stamp}] ${msg}`);
@@ -353,14 +389,14 @@ function handleWorkerMessage(event) {
       if (Array.isArray(data.warningsDelta)) data.warningsDelta.forEach(addWarning);
       if (state.progress?.[data.report]?.[data.facility]) {
         state.progress[data.report][data.facility].rowsProcessed = data.totalRowsProcessed;
-        updateProgressUI(data.report);
+        scheduleProgressRender(data.report);
       }
       break;
     case 'PARTIAL_RESULT':
       if (data.runId !== workerRuntime.currentRunId) return;
       if (data.results && state.running) {
         state.results = data.results;
-        renderAllResults();
+        scheduleResultsRender();
       }
       break;
     case 'FINAL_RESULT':
@@ -553,6 +589,27 @@ function renderAllResults() {
   UI.printBtn.disabled = false;
 }
 
+function scheduleResultsRender() {
+  if (resultsRenderState.timer) {
+    resultsRenderState.pending = true;
+    return;
+  }
+  resultsRenderState.timer = setTimeout(() => {
+    resultsRenderState.timer = null;
+    resultsRenderState.pending = false;
+    renderAllResults();
+  }, CHART_RENDER_THROTTLE_MS);
+}
+
+function flushResultsRender() {
+  if (resultsRenderState.timer) {
+    clearTimeout(resultsRenderState.timer);
+    resultsRenderState.timer = null;
+  }
+  resultsRenderState.pending = false;
+  renderAllResults();
+}
+
 function escapeHtml(s) {
   return String(s ?? '')
     .replaceAll('&', '&amp;')
@@ -647,6 +704,8 @@ async function runAssessment() {
   initProgressUI(inputs.reports, inputs.facilities);
   setRunningUI(true);
   setBanner('info', 'Running assessment… streaming pages, updating metrics, discarding raw rows.');
+  flushProgressRender();
+  flushResultsRender();
 
   state.abortController = new AbortController();
   const signal = state.abortController.signal;
@@ -680,7 +739,6 @@ async function runAssessment() {
     tenant: inputs.tenant,
     tokenGetter: () => state.token, // token remains in-memory only
     mockMode: state.mockMode,
-    concurrency: 4,
     signal,
     onProgress: ({ report, facility, page, lastPage, rowsProcessed }) => {
       const p = state.progress?.[report]?.[facility];
@@ -689,16 +747,19 @@ async function runAssessment() {
       p.page = page;
       p.lastPage = lastPage;
       p.rowsProcessed = rowsProcessed;
-      updateProgressUI(report);
+      scheduleProgressRender(report);
     },
     onFacilityStatus: ({ report, facility, status, error }) => {
       const p = state.progress?.[report]?.[facility];
       if (!p) return;
       p.status = status;
       p.error = error || null;
-      updateProgressUI(report);
+      scheduleProgressRender(report);
     },
     onWarning: addWarning,
+    onAdaptiveChange: ({ direction, concurrency }) => {
+      addWarning(`Adaptive concurrency ${direction === 'up' ? 'increased' : 'reduced'} to ${concurrency}.`);
+    },
   });
 
   // Run each report/facility streaming -> analyzer
@@ -754,7 +815,8 @@ async function runAssessment() {
       }
     }
 
-    renderAllResults();
+    flushProgressRender();
+    flushResultsRender();
     setBanner('ok', 'Complete. Token wiped from memory. You can export summaries, print, and download chart CSV/PNG.');
 
   } catch (e) {
@@ -764,11 +826,16 @@ async function runAssessment() {
     } else if (e instanceof ApiError) {
       setBanner('error', `API error: ${e.message}`);
       addWarning(`API error: ${e.message}`);
+      if (e.status === 401 || e.status === 403) {
+        abortInFlight('Unauthorized (401/403)');
+      }
     } else {
       setBanner('error', `Unexpected error: ${e?.message || String(e)}`);
       addWarning(`Unexpected error: ${e?.stack || e?.message || String(e)}`);
     }
   } finally {
+    flushProgressRender();
+    flushResultsRender();
     // Critical: null out token variables and abort controller refs
     setTokenInMemory(null);
     state.abortController = null;

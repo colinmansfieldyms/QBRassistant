@@ -6,7 +6,7 @@ A static, web-based app for Customer Experience + Sales to quantify customer ado
 - **Stack:** Plain HTML/CSS/JS (ES Modules), **Chart.js** + **Luxon** via CDN
 - **Security:** API token is **in-memory only** (never persisted)
 - **PII policy:** **Driver phone/cell values are never displayed or exported** (hard-scrubbed by key name)
-- **Performance:** Optional Web Worker keeps the UI responsive during heavy aggregation (auto-fallback).
+- **Performance:** Optional Web Worker keeps the UI responsive during heavy aggregation (auto-fallback), plus adaptive concurrency + UI throttling for long runs.
 
 ---
 
@@ -36,8 +36,9 @@ AGENTS.md # AI navigation + invariants (for Codex/agents)
 - Report selections
 
 ### On “Run Assessment” the app fetches every selected report for every facility, using pagination:
-- Request page 1 first to get last_page
-- Fetch all pages with retry/backoff + concurrency limit
+- Request page 1 first to learn `last_page`
+- Fan-out pages 2..last_page into a global adaptive concurrency pool (start 4, ramps up to 12 on sustained success, backs off on transient errors)
+- Progress updates are throttled (~5x/sec) and chart rendering is throttled (~1s cadence) to keep the main thread responsive
 - After each page: stream rows into aggregators and discard raw rows
 
 ### The UI shows:
@@ -119,9 +120,25 @@ A “Mock mode” toggle allows demoing without hitting the live API.
 
 ### Adjust concurrency / retries
 Update defaults in api.js:
-- concurrency limit (e.g., 3–5)
-- retries (e.g., 2)
-- exponential backoff parameters
+- `CONCURRENCY_MIN`, `CONCURRENCY_START`, `CONCURRENCY_MAX` (global pool across all report/facility pages)
+- `RETRY_LIMIT`, `BACKOFF_BASE_MS`, `BACKOFF_JITTER`
+- Adaptive ramp-up occurs after sustained successes; transient errors reduce concurrency automatically.
+
+### Performance behaviors
+- Fan-out pagination: page 1 first, then enqueue remaining pages into a shared scheduler.
+- Adaptive concurrency: starts at 4, ramps up gradually to 12, backs off when transient failures occur.
+- Retry/backoff: transient failures (timeouts, 408/429/5xx, network errors) retry up to `RETRY_LIMIT` with abort-aware exponential backoff + jitter.
+- UI throttling: progress updates limited to ~5/sec; chart re-renders throttled to ~1.2s to avoid main-thread thrash on large runs.
+
+### Developer notes (quick start for maintainers)
+- Key modules changed:
+  - `api.js`: global adaptive request scheduler, fan-out pagination, abort-aware retry/backoff.
+  - `app.js`: throttled progress/charts, adaptive concurrency notifications, stricter cancellation/token wiping.
+  - `analysis.js`: fast-path timestamp parsing for common formats before falling back to Luxon.
+- Quick tests in Mock mode: enable “Mock mode”, select multiple facilities/reports, run—watch throttled progress and final charts.
+- Cancel test: start a mock run, click “Cancel run”; progress should stop quickly, banner updates, token is cleared.
+- 401/403 test: use an obviously bad token in live mode; run should stop with “Invalid token/not authorized” messaging and queued tasks cancelled.
+- PII guardrails: phone/cell keys are scrubbed at normalization; exports exclude them by design.
 
 ### Add new export formats
 Implement in export.js and wire buttons in app.js.

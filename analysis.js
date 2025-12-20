@@ -40,6 +40,49 @@ function normalizeBoolish(v) {
   return null;
 }
 
+function parseFastParts(str) {
+  // YYYY-MM-DD HH:mm:ss or YYYY-MM-DD HH:mm
+  let m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(str);
+  if (m) {
+    return {
+      year: Number(m[1]),
+      month: Number(m[2]),
+      day: Number(m[3]),
+      hour: Number(m[4]),
+      minute: Number(m[5]),
+      second: Number(m[6] || 0),
+    };
+  }
+
+  // MM-DD-YYYY HH:mm(:ss)?
+  m = /^(\d{2})-(\d{2})-(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(str);
+  if (m) {
+    return {
+      year: Number(m[3]),
+      month: Number(m[1]),
+      day: Number(m[2]),
+      hour: Number(m[4]),
+      minute: Number(m[5]),
+      second: Number(m[6] || 0),
+    };
+  }
+
+  // MM/DD/YYYY HH:mm(:ss)?
+  m = /^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(str);
+  if (m) {
+    return {
+      year: Number(m[3]),
+      month: Number(m[1]),
+      day: Number(m[2]),
+      hour: Number(m[4]),
+      minute: Number(m[5]),
+      second: Number(m[6] || 0),
+    };
+  }
+
+  return null;
+}
+
 /**
  * Robust timestamp parsing (Luxon). Most timestamps assumed UTC.
  * Supports:
@@ -57,6 +100,13 @@ export function parseTimestamp(raw, { timezone, assumeUTC = true, treatAsLocal =
 
   // If field is already local facility time, treat it as local in selected timezone
   const zone = treatAsLocal ? timezone : (assumeUTC ? 'utc' : timezone);
+
+  // Fast path for common timestamp formats without multiple Luxon allocations
+  const fastParts = parseFastParts(s);
+  if (fastParts) {
+    const dtFast = DateTime.fromObject(fastParts, { zone });
+    if (dtFast.isValid) return dtFast;
+  }
 
   // Try ISO
   let dt = DateTime.fromISO(s, { zone });
