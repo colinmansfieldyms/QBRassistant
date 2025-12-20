@@ -479,6 +479,51 @@ function recordRender(ms) {
   schedulePerfRender();
 }
 
+// ---------- Main-thread ingestion helper (yields to keep UI responsive) ----------
+const MAIN_THREAD_INGEST_CHUNK = 400;
+
+async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal }) {
+  const incoming = Array.isArray(rows) ? rows : [];
+  let processed = 0;
+  const t0 = state.perf.enabled ? performance.now() : 0;
+
+  for (let start = 0; start < incoming.length; start += MAIN_THREAD_INGEST_CHUNK) {
+    if (signal?.aborted) break;
+    const end = Math.min(incoming.length, start + MAIN_THREAD_INGEST_CHUNK);
+    for (let i = start; i < end; i++) {
+      const normalized = normalizeRowStrict(incoming[i], { report, timezone, onWarning });
+      if (normalized) {
+        analyzer.ingest(normalized);
+        processed++;
+      }
+    }
+    if (incoming.length > MAIN_THREAD_INGEST_CHUNK) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  const dt = state.perf.enabled ? (performance.now() - t0) : 0;
+  return { processed, durationMs: dt };
+}
+
+function createMainThreadIngestQueue({ analyzers, timezone, onWarning, signal }) {
+  let chain = Promise.resolve();
+  const tasks = [];
+
+  const enqueue = ({ report, rows }) => {
+    const analyzer = analyzers?.[report];
+    if (!analyzer) return null;
+    const task = chain.then(() => ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal }));
+    tasks.push(task);
+    chain = task.catch(() => {});
+    return task;
+  };
+
+  const drain = () => Promise.all(tasks);
+
+  return { enqueue, drain };
+}
+
 // ---------- Worker helpers ----------
 function updateWorkerStatus(text) {
   if (UI.workerStatus) UI.workerStatus.textContent = text;
@@ -851,6 +896,12 @@ async function runAssessment() {
     assumptions: inputs.assumptions,
     onWarning: (w) => addWarning(w),
   });
+  const mainThreadIngest = workerRun ? null : createMainThreadIngestQueue({
+    analyzers,
+    timezone: inputs.timezone,
+    onWarning: addWarning,
+    signal,
+  });
 
   const apiRunner = createApiRunner({
     tenant: inputs.tenant,
@@ -910,15 +961,11 @@ async function runAssessment() {
         const analyzer = analyzers?.[report];
         if (!analyzer) return;
 
-        const incoming = Array.isArray(rows) ? rows : [];
-        const t0 = state.perf.enabled ? performance.now() : 0;
-        for (let i = 0; i < incoming.length; i++) {
-          const normalized = normalizeRowStrict(incoming[i], { report, timezone: inputs.timezone, onWarning: addWarning });
-          if (normalized) analyzer.ingest(normalized);
-        }
-        if (state.perf.enabled) {
-          const dt = performance.now() - t0;
-          recordProcessing({ rows: incoming.length, ms: dt });
+        const task = mainThreadIngest?.enqueue({ report, rows });
+        if (task && state.perf.enabled) {
+          task.then(({ processed, durationMs }) => {
+            if (durationMs != null) recordProcessing({ rows: processed, ms: durationMs });
+          }).catch(() => {});
         }
       }
     });
@@ -929,6 +976,7 @@ async function runAssessment() {
       if (Array.isArray(payload?.warnings)) payload.warnings.forEach(addWarning);
       state.results = payload?.results || {};
     } else {
+      await mainThreadIngest?.drain();
       for (const report of inputs.reports) {
         const analyzer = analyzers?.[report];
         if (!analyzer) continue;
