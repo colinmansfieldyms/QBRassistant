@@ -31,7 +31,7 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 60; // Avoid enqueuing thousands of page fetches at once.
+const PAGE_QUEUE_LIMIT = 10; // Conservative limit to prevent overwhelming browser with too many concurrent pages
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 function abortableSleep(ms, signal) {
@@ -382,7 +382,7 @@ export function createApiRunner({
     let declaredLastPage = 1;
     let stopAtPage = null;
 
-    const handlePage = (payload, pageNumber) => {
+    const handlePage = async (payload, pageNumber) => {
       if (!payload) return;
       if (stopAtPage && pageNumber > stopAtPage) return;
       const rows = Array.isArray(payload.data) ? payload.data : [];
@@ -395,7 +395,12 @@ export function createApiRunner({
       const effectiveLastPage = stopAtPage ? stopAtPage : declaredLastPage;
       rowsProcessed += rows.length;
       onProgress?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rowsProcessed });
-      onRows?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rows });
+
+      // Wait for onRows to process before continuing (backpressure)
+      const result = onRows?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rows });
+      if (result && typeof result.then === 'function') {
+        await result;
+      }
     };
 
     try {
@@ -414,7 +419,7 @@ export function createApiRunner({
       }), { onTransient: (err) => classifyError(err).transient, report });
 
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
-      handlePage(firstPayload, 1);
+      await handlePage(firstPayload, 1);
 
       let nextPage = 2;
       let effectiveLastPage = declaredLastPage;
@@ -445,11 +450,11 @@ export function createApiRunner({
             onWarning,
             scheduler,
           }), { onTransient: (err) => classifyError(err).transient, report })
-            .then((payload) => {
+            .then(async (payload) => {
               if (payload && typeof payload.last_page === 'number') {
                 effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
               }
-              handlePage(payload, pageNumber);
+              await handlePage(payload, pageNumber);
             })
             .finally(() => {
               inflight.delete(task);

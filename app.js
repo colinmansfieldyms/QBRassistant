@@ -944,7 +944,7 @@ async function runAssessment() {
       startDate: inputs.startDate,
       endDate: inputs.endDate,
       timezone: inputs.timezone,
-      onRows: ({ report, facility, page, lastPage, rows }) => {
+      onRows: async ({ report, facility, page, lastPage, rows }) => {
         if (workerRun) {
           workerRuntime.worker?.postMessage({
             type: 'PAGE_ROWS',
@@ -955,6 +955,8 @@ async function runAssessment() {
             lastPage,
             rows,
           });
+          // For worker mode, add a small delay to avoid overwhelming the worker
+          await new Promise(resolve => setTimeout(resolve, 5));
           return;
         }
 
@@ -962,10 +964,17 @@ async function runAssessment() {
         if (!analyzer) return;
 
         const task = mainThreadIngest?.enqueue({ report, rows });
-        if (task && state.perf.enabled) {
-          task.then(({ processed, durationMs }) => {
-            if (durationMs != null) recordProcessing({ rows: processed, ms: durationMs });
-          }).catch(() => {});
+        if (task) {
+          // Wait for this page's rows to be processed before fetching more (backpressure)
+          try {
+            const result = await task;
+            if (state.perf.enabled && result) {
+              const { processed, durationMs } = result;
+              if (durationMs != null) recordProcessing({ rows: processed, ms: durationMs });
+            }
+          } catch (err) {
+            // Ignore ingestion errors; continue with next page
+          }
         }
       }
     });
