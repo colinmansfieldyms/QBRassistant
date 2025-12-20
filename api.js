@@ -32,18 +32,18 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 6; // Keep small to avoid memory issues
-const MAX_IN_FLIGHT_PAGES = 4; // Conservative default
-const YIELD_EVERY_N_PAGES = 3; // Yield frequently
+const PAGE_QUEUE_LIMIT = 15; // Testing higher limit
+const MAX_IN_FLIGHT_PAGES = 15; // Testing 15 concurrent
+const YIELD_EVERY_N_PAGES = 2; // Yield frequently to stay responsive
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 // Dynamic backpressure thresholds based on total page count
-// Conservative settings that prioritize stability over speed
+// Testing higher concurrency while maintaining stability
 const BACKPRESSURE_TIERS = [
-  { maxPages: 50, maxInFlight: 6, yieldEvery: 4 },       // Small: moderate parallelism
-  { maxPages: 200, maxInFlight: 5, yieldEvery: 3 },      // Medium: slightly conservative
-  { maxPages: 1000, maxInFlight: 4, yieldEvery: 2 },     // Large: conservative
-  { maxPages: Infinity, maxInFlight: 3, yieldEvery: 1 }  // Extreme (2k+): very conservative
+  { maxPages: 50, maxInFlight: 15, yieldEvery: 3 },      // Small: aggressive
+  { maxPages: 200, maxInFlight: 12, yieldEvery: 2 },     // Medium: moderate
+  { maxPages: 1000, maxInFlight: 10, yieldEvery: 2 },    // Large: slightly conservative
+  { maxPages: Infinity, maxInFlight: 8, yieldEvery: 1 }  // Extreme (2k+): conservative
 ];
 
 function getBackpressureConfig(totalPages) {
