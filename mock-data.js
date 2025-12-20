@@ -62,16 +62,16 @@ const pages = {
   driver_history: {
     FAC1: [
       [
-        { driver_name: 'Driver A', move_complete_time: '2025-12-10 10:10:00', move_accept_time: '2025-12-10 10:09:00', elapsed_time_minutes: 1.0, time_in_queue_minutes: 12 },
-        { driver_name: 'Driver B', move_complete_time: '2025-12-10 10:30:00', move_accept_time: '2025-12-10 10:20:00', elapsed_time_minutes: 10.0, time_in_queue_minutes: 5 },
+        { yard_driver_name: 'Driver A', complete_time: '2025-12-10 10:10:00', move_accept_time: '2025-12-10 10:09:00', elapsed_time_minutes: 1.0, time_in_queue_minutes: 12, event: 'Move has been finished' },
+        { yard_driver_name: 'Driver B', complete_time: '2025-12-10 10:30:00', move_accept_time: '2025-12-10 10:20:00', elapsed_time_minutes: 10.0, time_in_queue_minutes: 5, event: 'Move has been finished' },
       ],
       [
-        { driver_name: 'Driver A', move_complete_time: '2025-12-11 11:00:00', move_accept_time: '2025-12-11 10:58:30', elapsed_time_minutes: 1.5, time_in_queue_minutes: 8 },
+        { yard_driver_name: 'Driver A', complete_time: '2025-12-11 11:00:00', move_accept_time: '2025-12-11 10:58:30', elapsed_time_minutes: 1.5, time_in_queue_minutes: 8, event: 'Move has been finished' },
       ]
     ],
     FAC2: [
       [
-        { driver_name: 'Driver C', move_complete_time: '2025-12-12 12:10:00', move_accept_time: '2025-12-12 12:09:30', elapsed_time_minutes: 0.7, time_in_queue_minutes: 2 },
+        { yard_driver_name: 'Driver C', complete_time: '2025-12-12 12:10:00', move_accept_time: '2025-12-12 12:09:30', elapsed_time_minutes: 0.7, time_in_queue_minutes: 2, event: 'Move has been finished' },
       ]
     ]
   },

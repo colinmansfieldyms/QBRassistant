@@ -896,21 +896,34 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
 
   ingest({ row }) {
     this.totalRows++;
-    this.movesTotal++;
 
-    const driver = safeStr(firstPresent(row, ['driver_name', 'driver', 'driver_username', 'driver_id']));
-    if (driver) {
-      this.movesByDriver.inc(driver);
-    } else if (this.totalRows === 1) {
-      // First row has no driver identifier - warn
-      this.warn(`driver_history: No driver identifier found in first row. Expected fields: driver_name, driver, driver_username, or driver_id`);
-    }
+    const driver = safeStr(firstPresent(row, ['yard_driver_name', 'driver_name', 'driver', 'driver_username', 'driver_id']));
 
-    // Determine event time for grouping (complete time preferred)
+    // Determine if this is a completed move:
+    // 1. Has a valid complete_time timestamp, OR
+    // 2. Has event field indicating "Move has been finished"
     const completeRaw = firstPresent(row, ['complete_time', 'move_complete_time', 'completed_at', 'complete_timestamp']);
     const complete = parseTimestamp(completeRaw, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
     });
+
+    const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name']));
+    const isMoveFinished = /move\s+has\s+been\s+finished|move\s+finished|finished/i.test(event);
+
+    // Count as a completed move if we have complete_time OR the event indicates completion
+    const isCompletedMove = !!complete || isMoveFinished;
+
+    if (isCompletedMove) {
+      this.movesTotal++;
+      if (driver) {
+        this.movesByDriver.inc(driver);
+      } else if (this.totalRows === 1) {
+        // First row has no driver identifier - warn
+        this.warn(`driver_history: No driver identifier found in first row. Expected fields: yard_driver_name, driver_name, driver, driver_username, or driver_id`);
+      }
+    }
+
+    // Determine event time for grouping (complete time preferred, then start, then accept)
     const startRaw = firstPresent(row, ['start_time', 'move_start_time', 'started_at']);
     const start = parseTimestamp(startRaw, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
@@ -930,7 +943,8 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
-    if (eventDt) {
+    // Only aggregate into weekly/daily charts if this is a completed move with valid timestamp
+    if (isCompletedMove && eventDt) {
       const wk = weekKey(eventDt, this.timezone);
       const dy = dayKey(eventDt, this.timezone);
       this.movesByWeek.inc(wk);
