@@ -15,7 +15,6 @@ A static, GitHub Pages–hostable web app that:
 - Exports Summary TXT, print-to-PDF, chart PNG, and aggregated CSV
 - Keeps API token **in-memory only**
 - Enforces strict PII handling (never show/export phone/cell values)
-- test
 
 ---
 
