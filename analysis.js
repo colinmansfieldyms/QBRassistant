@@ -104,8 +104,15 @@ export function parseTimestamp(raw, { timezone, assumeUTC = true, treatAsLocal =
   // Fast path for common timestamp formats without multiple Luxon allocations
   const fastParts = parseFastParts(s);
   if (fastParts) {
-    const dtFast = DateTime.fromObject(fastParts, { zone });
-    if (dtFast.isValid) return dtFast;
+    // If assuming UTC, build epoch quickly to avoid extra Luxon parsing overhead.
+    if (!treatAsLocal && assumeUTC) {
+      const ms = Date.UTC(fastParts.year, fastParts.month - 1, fastParts.day, fastParts.hour, fastParts.minute, fastParts.second);
+      const dtFastUtc = DateTime.fromMillis(ms, { zone });
+      if (dtFastUtc.isValid) return dtFastUtc;
+    } else {
+      const dtFast = DateTime.fromObject(fastParts, { zone });
+      if (dtFast.isValid) return dtFast;
+    }
   }
 
   // Try ISO
@@ -160,7 +167,9 @@ export function normalizeRowStrict(rawRow, { report, timezone, onWarning } = {})
   };
 
   const clean = {};
-  for (const [k, v] of Object.entries(rawRow)) {
+  for (const k in rawRow) {
+    if (!Object.prototype.hasOwnProperty.call(rawRow, k)) continue;
+    const v = rawRow[k];
     if (PII_KEY_RE.test(k)) {
       // Presence only. Never store value.
       const present = !isNil(v);

@@ -1,4 +1,4 @@
-import { getMockPage } from './mock-data.js?v=2024.12.20.2';
+import { getMockPage } from './mock-data.js?v=2025.01.07.0';
 
 export class ApiError extends Error {
   constructor(message, { status = null, report = null, facility = null, url = null } = {}) {
@@ -12,14 +12,25 @@ export class ApiError extends Error {
 }
 
 export const CONCURRENCY_MIN = 4;
-export const CONCURRENCY_START = 4;
-export const CONCURRENCY_MAX = 12;
+export const CONCURRENCY_START = 8;
+export const CONCURRENCY_MAX = 20;
+export const PER_REPORT_LIMITS = {
+  driver_history: { max: 6, min: 2 },
+  default: { max: 18, min: 3 },
+};
+export const LATENCY_TARGETS = {
+  // If p90 latency for a report lane spikes beyond this, back off that lane first.
+  p90SpikeMs: 2600,
+  // When p90 drops below this and the lane has headroom, gently recover.
+  p90RecoverMs: 1700,
+  sampleSize: 40,
+};
 export const RETRY_LIMIT = 2;
 export const BACKOFF_BASE_MS = 400;
 export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
-const SUCCESS_RAMP_THRESHOLD = 6;
+const SUCCESS_RAMP_THRESHOLD = 5;
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 function abortableSleep(ms, signal) {
@@ -107,15 +118,52 @@ function wrapApiError(err, context = {}) {
   return new ApiError(msg, { status, report: context.report, facility: context.facility });
 }
 
-function createRequestScheduler({ min = CONCURRENCY_MIN, start = CONCURRENCY_START, max = CONCURRENCY_MAX, signal, onAdaptiveChange } = {}) {
+function createLatencyTracker({ maxSamples = 50 } = {}) {
+  const perReport = new Map();
+
+  const push = (report, ms) => {
+    if (!perReport.has(report)) perReport.set(report, []);
+    const arr = perReport.get(report);
+    arr.push(ms);
+    if (arr.length > maxSamples) arr.shift();
+  };
+
+  const p90 = (report) => {
+    const arr = perReport.get(report) || [];
+    if (!arr.length) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9));
+    return sorted[idx];
+  };
+
+  const clear = () => perReport.clear();
+
+  return { push, p90, clear };
+}
+
+function createRequestScheduler({
+  min = CONCURRENCY_MIN,
+  start = CONCURRENCY_START,
+  max = CONCURRENCY_MAX,
+  signal,
+  onAdaptiveChange,
+  onLaneChange,
+  onRequestTiming,
+  perReportLimits = PER_REPORT_LIMITS,
+  latencyTargets = LATENCY_TARGETS,
+} = {}) {
   let concurrency = Math.min(Math.max(start, min), max);
   let active = 0;
   const queue = [];
   let cancelled = false;
   let successStreak = 0;
+  const laneUsage = new Map(); // report -> active count
+  const laneCaps = new Map(); // report -> { max, min }
+  const latency = createLatencyTracker({ maxSamples: latencyTargets.sampleSize });
 
   const cancel = (reason = 'Aborted') => {
     cancelled = true;
+    latency.clear();
     while (queue.length) {
       const job = queue.shift();
       job.reject(new DOMException(reason, 'AbortError'));
@@ -128,8 +176,16 @@ function createRequestScheduler({ min = CONCURRENCY_MIN, start = CONCURRENCY_STA
     else signal.addEventListener('abort', onAbort, { once: true });
   }
 
-  const recordTransientError = () => {
+  const recordTransientError = (report) => {
     successStreak = 0;
+    const lane = laneCaps.get(report) || perReportLimits.default || { max, min };
+    const currentLane = laneUsage.get(report) || 0;
+    const laneNext = Math.max(lane.min || min, Math.max(1, Math.floor(currentLane / 2)));
+    if (laneNext < (laneUsage.get(report) || lane.max || max)) {
+      laneCaps.set(report, { ...lane, max: laneNext });
+      onLaneChange?.({ report, direction: 'down', limit: laneNext });
+    }
+
     const next = Math.max(min, Math.floor(concurrency / 2) || min);
     if (next < concurrency) {
       concurrency = next;
@@ -146,34 +202,84 @@ function createRequestScheduler({ min = CONCURRENCY_MIN, start = CONCURRENCY_STA
     }
   };
 
+  const getLaneCap = (report) => {
+    if (!laneCaps.has(report)) {
+      const preset = perReportLimits[report] || perReportLimits.default || {};
+      const cap = {
+        max: Math.min(Math.max(preset.max ?? max, min), max),
+        min: Math.max(preset.min ?? min, 1),
+      };
+      laneCaps.set(report, cap);
+    }
+    return laneCaps.get(report);
+  };
+
   const scheduleNext = () => {
     if (cancelled) return;
     while (active < concurrency && queue.length) {
       const job = queue.shift();
+      if (!job) return;
+      const laneCap = getLaneCap(job.report);
+      const laneActive = laneUsage.get(job.report) || 0;
+      if (laneActive >= (laneCap.max || concurrency)) {
+        queue.push(job); // defer; lane saturated
+        if (queue.length === 1) return; // avoid tight loop if only this job exists
+        continue;
+      }
+
       active++;
+      laneUsage.set(job.report, laneActive + 1);
+
+      const startedAt = performance.now();
+
       job.fn()
         .then((res) => {
+          const elapsed = performance.now() - startedAt;
+          latency.push(job.report, elapsed);
+          onRequestTiming?.({ report: job.report, ms: elapsed });
+
+          const p90 = latency.p90(job.report);
+          const targets = latencyTargets || {};
+          if (p90 && targets.p90SpikeMs && p90 > targets.p90SpikeMs) {
+            const currentCap = getLaneCap(job.report);
+            const down = Math.max(currentCap.min || min, Math.max(1, Math.floor((currentCap.max || concurrency) / 2)));
+            if (down < (currentCap.max || concurrency)) {
+              laneCaps.set(job.report, { ...currentCap, max: down });
+              onLaneChange?.({ report: job.report, direction: 'down', limit: down, reason: 'latency' });
+            }
+          } else if (p90 && targets.p90RecoverMs && p90 < targets.p90RecoverMs) {
+            const currentCap = getLaneCap(job.report);
+            const upCandidate = Math.min((currentCap.max || concurrency) + 1, (perReportLimits[job.report]?.max ?? perReportLimits.default?.max ?? max));
+            if (upCandidate > (currentCap.max || concurrency)) {
+              laneCaps.set(job.report, { ...currentCap, max: upCandidate });
+              onLaneChange?.({ report: job.report, direction: 'up', limit: upCandidate, reason: 'latency_recover' });
+            }
+          }
+
           successStreak += 1;
           maybeRampUp();
           job.resolve(res);
         })
         .catch((err) => {
-          if (job.onTransient?.(err)) recordTransientError();
+          if (job.onTransient?.(err)) recordTransientError(job.report);
           job.reject(err);
         })
         .finally(() => {
           active--;
+          const laneActiveNow = (laneUsage.get(job.report) || 1) - 1;
+          if (laneActiveNow <= 0) laneUsage.delete(job.report);
+          else laneUsage.set(job.report, laneActiveNow);
           scheduleNext();
         });
     }
   };
 
-  const enqueue = (fn, { onTransient } = {}) => new Promise((resolve, reject) => {
+  const enqueue = (fn, { onTransient, report } = {}) => new Promise((resolve, reject) => {
     if (cancelled) {
       reject(new DOMException('Aborted', 'AbortError'));
       return;
     }
-    queue.push({ fn, resolve, reject, onTransient });
+    queue.push({ fn, resolve, reject, onTransient, report });
     scheduleNext();
   });
 
@@ -191,7 +297,7 @@ async function executeWithRetry(task, { signal, onWarning, context, scheduler } 
       if (auth || client || !transient || attempt >= RETRY_LIMIT) {
         throw wrapApiError(err, context);
       }
-      scheduler?.recordTransientError?.();
+      scheduler?.recordTransientError?.(context?.report);
       const backoff = BACKOFF_BASE_MS * Math.pow(2, attempt) + Math.floor(Math.random() * BACKOFF_JITTER);
       onWarning?.(`Retrying ${context.report}/${context.facility} page ${context.page} after ${backoff}ms (attempt ${attempt + 1}/${RETRY_LIMIT}).`);
       await abortableSleep(backoff, signal);
@@ -252,6 +358,8 @@ export function createApiRunner({
   onFacilityStatus,
   onWarning,
   onAdaptiveChange,
+  onLaneChange,
+  onPerf,
 }) {
   const scheduler = createRequestScheduler({
     min: CONCURRENCY_MIN,
@@ -259,6 +367,11 @@ export function createApiRunner({
     max: CONCURRENCY_MAX,
     signal,
     onAdaptiveChange,
+    onLaneChange,
+    onRequestTiming: (payload) => {
+      if (!payload || !onPerf) return;
+      onPerf({ type: 'request', ...payload });
+    },
   });
 
   async function processReportFacility({ report, facility, startDate, endDate, timezone, onRows }) {
@@ -297,7 +410,7 @@ export function createApiRunner({
         outerSignal: signal,
         onWarning,
         scheduler,
-      }), { onTransient: (err) => classifyError(err).transient });
+      }), { onTransient: (err) => classifyError(err).transient, report });
 
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
       handlePage(firstPayload, 1);
@@ -317,7 +430,7 @@ export function createApiRunner({
             outerSignal: signal,
             onWarning,
             scheduler,
-          }), { onTransient: (err) => classifyError(err).transient })
+          }), { onTransient: (err) => classifyError(err).transient, report })
             .then((payload) => handlePage(payload, p))
         );
       }

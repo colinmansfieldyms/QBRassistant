@@ -1,13 +1,15 @@
-import { createApiRunner, ApiError } from './api.js?v=2024.12.20.2';
-import { createAnalyzers, normalizeRowStrict } from './analysis.js?v=2024.12.20.2';
-import { renderReportResult, destroyAllCharts } from './charts.js?v=2024.12.20.2';
-import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2024.12.20.2';
-import { MOCK_TIMEZONES } from './mock-data.js?v=2024.12.20.2';
+import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
+import { createAnalyzers, normalizeRowStrict } from './analysis.js?v=2025.01.07.0';
+import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0';
+import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
+import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 
 const { DateTime } = window.luxon;
 
 const PROGRESS_THROTTLE_MS = 200; // 5x/second
 const CHART_RENDER_THROTTLE_MS = 1200; // avoid re-rendering charts too often during streaming
+const PERF_RENDER_THROTTLE_MS = 900;
+const PERF_DEBUG = new URLSearchParams(window.location.search).has('perf');
 
 const REPORTS = [
   'current_inventory',
@@ -42,6 +44,8 @@ const UI = {
   assumptionTargetMoves: document.querySelector('#assumptionTargetMoves'),
   workerToggle: document.querySelector('#workerToggle'),
   workerStatus: document.querySelector('#workerStatus'),
+  perfPanel: document.querySelector('#perfPanel'),
+  perfCard: document.querySelector('#perfCard'),
 };
 
 const state = {
@@ -57,6 +61,15 @@ const state = {
   results: {},  // report -> result payload
   chartRegistry: new Map(), // report -> [chartHandles]
   workerPreference: true,
+  perf: {
+    enabled: PERF_DEBUG,
+    startedAt: null,
+    requests: new Map(), // report -> durations (ms)
+    rows: 0,
+    processingMs: 0,
+    renderMs: 0,
+    lastRender: 0,
+  },
 };
 
 const progressRenderState = {
@@ -65,6 +78,11 @@ const progressRenderState = {
 };
 
 const resultsRenderState = {
+  timer: null,
+  pending: false,
+};
+
+const perfRenderState = {
   timer: null,
   pending: false,
 };
@@ -194,6 +212,9 @@ function resetAll() {
   abortInFlight('Reset all.');
   destroyAllCharts(state.chartRegistry);
   state.chartRegistry.clear();
+  perfRenderState.timer && clearTimeout(perfRenderState.timer);
+  perfRenderState.timer = null;
+  perfRenderState.pending = false;
 
   state.running = false;
   state.abortController = null;
@@ -202,6 +223,7 @@ function resetAll() {
   state.warnings = [];
   state.progress = {};
   state.results = {};
+  resetPerfStats();
   resetWorkerState();
   flushProgressRender();
   flushResultsRender();
@@ -225,6 +247,11 @@ function resetAll() {
   UI.printBtn.disabled = true;
   UI.cancelBtn.disabled = true;
   UI.runBtn.disabled = false;
+  if (UI.perfPanel) {
+    UI.perfPanel.textContent = state.perf.enabled
+      ? 'Perf debug ready. Will populate when a run starts.'
+      : 'Disabled. Append ?perf=1 to enable lightweight instrumentation (no tokens/PII logged).';
+  }
 
   // keep tenant/facilities/dates/timezone to reduce annoyance? The requirement says reset all inputs/results.
   UI.tenantInput.value = '';
@@ -367,6 +394,91 @@ function addWarning(msg) {
   UI.warningsPanel.textContent = state.warnings.length ? state.warnings.join('\n') : 'None.';
 }
 
+// ---------- Perf instrumentation (lightweight, optional) ----------
+function resetPerfStats() {
+  if (!state.perf.enabled) return;
+  state.perf.startedAt = performance.now();
+  state.perf.requests = new Map();
+  state.perf.rows = 0;
+  state.perf.processingMs = 0;
+  state.perf.renderMs = 0;
+  state.perf.lastRender = 0;
+  renderPerfNow();
+}
+
+function quantiles(arr) {
+  if (!arr.length) return { avg: 0, p50: 0, p90: 0 };
+  const sorted = [...arr].sort((a, b) => a - b);
+  const idx = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] || 0;
+  const sum = sorted.reduce((a, b) => a + b, 0);
+  return { avg: sum / sorted.length, p50: idx(0.5), p90: idx(0.9) };
+}
+
+function renderPerfNow() {
+  if (!state.perf.enabled || !UI.perfPanel) return;
+  const now = performance.now();
+  state.perf.lastRender = now;
+  const elapsedMs = state.perf.startedAt ? now - state.perf.startedAt : 0;
+  const elapsedSec = elapsedMs / 1000;
+
+  const lines = [];
+  lines.push(`Runtime: ${elapsedSec ? elapsedSec.toFixed(1) : '0.0'}s`);
+  lines.push(`Rows processed: ${state.perf.rows} (${elapsedSec ? Math.round((state.perf.rows / elapsedSec) * 10) / 10 : 0} rows/sec)`);
+  if (state.perf.processingMs) {
+    const perRow = state.perf.rows ? (state.perf.processingMs / state.perf.rows) : 0;
+    lines.push(`Processing time: ${Math.round(state.perf.processingMs)} ms (avg ${perRow.toFixed(3)} ms/row)`);
+  }
+  if (state.perf.renderMs) {
+    lines.push(`Chart render time: ${Math.round(state.perf.renderMs)} ms (throttled)`);
+  }
+
+  if (state.perf.requests?.size) {
+    lines.push('Request latency (per report):');
+    for (const [report, arr] of Array.from(state.perf.requests.entries()).sort()) {
+      const stats = quantiles(arr);
+      lines.push(` • ${report}: avg ${Math.round(stats.avg)}ms · p50 ${Math.round(stats.p50)}ms · p90 ${Math.round(stats.p90)}ms`);
+    }
+  }
+
+  UI.perfPanel.textContent = lines.join('\n');
+  UI.perfPanel.classList.remove('muted');
+}
+
+function schedulePerfRender() {
+  if (!state.perf.enabled || !UI.perfPanel) return;
+  if (perfRenderState.timer) {
+    perfRenderState.pending = true;
+    return;
+  }
+  perfRenderState.timer = setTimeout(() => {
+    perfRenderState.timer = null;
+    perfRenderState.pending = false;
+    renderPerfNow();
+  }, PERF_RENDER_THROTTLE_MS);
+}
+
+function recordRequestTiming({ report, ms }) {
+  if (!state.perf.enabled) return;
+  if (!state.perf.requests.has(report)) state.perf.requests.set(report, []);
+  const arr = state.perf.requests.get(report);
+  arr.push(ms);
+  if (arr.length > 200) arr.shift();
+  schedulePerfRender();
+}
+
+function recordProcessing({ rows, ms }) {
+  if (!state.perf.enabled) return;
+  state.perf.rows += rows;
+  state.perf.processingMs += ms;
+  schedulePerfRender();
+}
+
+function recordRender(ms) {
+  if (!state.perf.enabled) return;
+  state.perf.renderMs += ms;
+  schedulePerfRender();
+}
+
 // ---------- Worker helpers ----------
 function updateWorkerStatus(text) {
   if (UI.workerStatus) UI.workerStatus.textContent = text;
@@ -505,6 +617,7 @@ function resetWorkerState() {
 
 // ---------- Results rendering ----------
 function renderAllResults() {
+  const renderStart = state.perf.enabled ? performance.now() : 0;
   destroyAllCharts(state.chartRegistry);
   state.chartRegistry.clear();
 
@@ -587,6 +700,9 @@ function renderAllResults() {
 
   UI.downloadSummaryBtn.disabled = false;
   UI.printBtn.disabled = false;
+  if (state.perf.enabled) {
+    recordRender(performance.now() - renderStart);
+  }
 }
 
 function scheduleResultsRender() {
@@ -682,6 +798,7 @@ async function runAssessment() {
 
   // Put token in memory *only for this run*, then wipe on completion/cancel.
   setTokenInMemory(inputs.token);
+  resetPerfStats();
 
   state.inputs = {
     tenant: inputs.tenant,
@@ -758,7 +875,13 @@ async function runAssessment() {
     },
     onWarning: addWarning,
     onAdaptiveChange: ({ direction, concurrency }) => {
-      addWarning(`Adaptive concurrency ${direction === 'up' ? 'increased' : 'reduced'} to ${concurrency}.`);
+      if (PERF_DEBUG) addWarning(`Adaptive concurrency ${direction === 'up' ? 'increased' : 'reduced'} to ${concurrency}.`);
+    },
+    onLaneChange: ({ report, direction, limit, reason }) => {
+      if (PERF_DEBUG) addWarning(`Lane ${report} ${direction === 'up' ? 'recovered' : 'backed off'} to ${limit} (reason: ${reason || 'transient'}).`);
+    },
+    onPerf: (payload) => {
+      if (payload?.type === 'request') recordRequestTiming(payload);
     },
   });
 
@@ -787,9 +910,15 @@ async function runAssessment() {
         const analyzer = analyzers?.[report];
         if (!analyzer) return;
 
-        for (const raw of rows) {
-          const normalized = normalizeRowStrict(raw, { report, timezone: inputs.timezone, onWarning: addWarning });
+        const incoming = Array.isArray(rows) ? rows : [];
+        const t0 = state.perf.enabled ? performance.now() : 0;
+        for (let i = 0; i < incoming.length; i++) {
+          const normalized = normalizeRowStrict(incoming[i], { report, timezone: inputs.timezone, onWarning: addWarning });
           if (normalized) analyzer.ingest(normalized);
+        }
+        if (state.perf.enabled) {
+          const dt = performance.now() - t0;
+          recordProcessing({ rows: incoming.length, ms: dt });
         }
       }
     });
@@ -908,6 +1037,12 @@ UI.workerToggle?.addEventListener('change', () => {
 // ---------- Init ----------
 (function init() {
   buildTimezoneOptions(UI.timezoneSelect);
+
+  if (UI.perfPanel) {
+    UI.perfPanel.textContent = state.perf.enabled
+      ? 'Perf debug ready. Enable via ?perf=1 (already on) to view live timings.'
+      : 'Disabled. Append ?perf=1 to enable lightweight instrumentation (no tokens/PII logged).';
+  }
 
   // default dates: last 90 days
   const tz = state.timezone;

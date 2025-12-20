@@ -1,4 +1,4 @@
-import { createAnalyzers, normalizeRowStrict, setDateTimeImplementation } from './analysis.js?v=2024.12.20.2';
+import { createAnalyzers, normalizeRowStrict, setDateTimeImplementation } from './analysis.js?v=2025.01.07.0';
 import { DateTime } from 'https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/es6/luxon.js';
 
 setDateTimeImplementation(DateTime);
