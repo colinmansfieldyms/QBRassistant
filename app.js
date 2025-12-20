@@ -3,6 +3,7 @@ import { createAnalyzers, normalizeRowStrict } from './analysis.js?v=2025.01.07.
 import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
+import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
 
 const { DateTime } = window.luxon;
 
@@ -61,6 +62,8 @@ const state = {
   results: {},  // report -> result payload
   chartRegistry: new Map(), // report -> [chartHandles]
   workerPreference: true,
+  currentRunId: null, // For cancellation correctness
+  apiRunner: null, // Store runner reference for cancellation
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -72,19 +75,23 @@ const state = {
   },
 };
 
+// Batched UI update system - coalesces multiple updates into single render
 const progressRenderState = {
   pendingReports: new Set(),
   timer: null,
+  renderRequested: false, // Prevents multiple renders queuing
 };
 
 const resultsRenderState = {
   timer: null,
   pending: false,
+  renderRequested: false,
 };
 
 const perfRenderState = {
   timer: null,
   pending: false,
+  renderRequested: false,
 };
 
 const workerRuntime = {
@@ -202,9 +209,17 @@ function clearTokenEverywhere({ abort = true } = {}) {
 }
 
 function abortInFlight(reason = 'Cancelled.') {
+  // Invalidate runId to stop all async continuations
+  state.currentRunId = null;
+
   if (state.abortController) {
     try { state.abortController.abort(reason); } catch {}
   }
+
+  if (state.apiRunner) {
+    try { state.apiRunner.cancel(); } catch {}
+  }
+
   cancelWorkerRun(reason);
 }
 
@@ -369,11 +384,16 @@ function renderProgressNow(report) {
 
 function scheduleProgressRender(report) {
   progressRenderState.pendingReports.add(report);
+  if (progressRenderState.renderRequested) return; // Already queued
+  progressRenderState.renderRequested = true;
+
   if (progressRenderState.timer) return;
   progressRenderState.timer = setTimeout(() => {
     const toRender = Array.from(progressRenderState.pendingReports);
     progressRenderState.pendingReports.clear();
     progressRenderState.timer = null;
+    progressRenderState.renderRequested = false;
+    instrumentation.recordBatchedUpdate();
     toRender.forEach(renderProgressNow);
   }, PROGRESS_THROTTLE_MS);
 }
@@ -751,6 +771,9 @@ function renderAllResults() {
 }
 
 function scheduleResultsRender() {
+  if (resultsRenderState.renderRequested) return; // Already queued
+  resultsRenderState.renderRequested = true;
+
   if (resultsRenderState.timer) {
     resultsRenderState.pending = true;
     return;
@@ -758,7 +781,11 @@ function scheduleResultsRender() {
   resultsRenderState.timer = setTimeout(() => {
     resultsRenderState.timer = null;
     resultsRenderState.pending = false;
+    resultsRenderState.renderRequested = false;
+    instrumentation.recordBatchedUpdate();
+    const renderStart = performance.now();
     renderAllResults();
+    instrumentation.recordRender(performance.now() - renderStart);
   }, CHART_RENDER_THROTTLE_MS);
 }
 
@@ -844,6 +871,7 @@ async function runAssessment() {
   // Put token in memory *only for this run*, then wipe on completion/cancel.
   setTokenInMemory(inputs.token);
   resetPerfStats();
+  instrumentation.reset();
 
   state.inputs = {
     tenant: inputs.tenant,
@@ -871,6 +899,10 @@ async function runAssessment() {
 
   state.abortController = new AbortController();
   const signal = state.abortController.signal;
+
+  // Generate unique runId for this assessment
+  const assessmentRunId = `assess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  state.currentRunId = assessmentRunId;
 
   const roiEnabled = canComputeROI(inputs.assumptions);
   const useWorker = shouldUseWorker();
@@ -909,6 +941,7 @@ async function runAssessment() {
     mockMode: state.mockMode,
     signal,
     onProgress: ({ report, facility, page, lastPage, rowsProcessed }) => {
+      if (state.currentRunId !== assessmentRunId) return; // Cancelled
       const p = state.progress?.[report]?.[facility];
       if (!p) return;
       p.status = 'running';
@@ -918,6 +951,7 @@ async function runAssessment() {
       scheduleProgressRender(report);
     },
     onFacilityStatus: ({ report, facility, status, error }) => {
+      if (state.currentRunId !== assessmentRunId) return; // Cancelled
       const p = state.progress?.[report]?.[facility];
       if (!p) return;
       p.status = status;
@@ -935,6 +969,7 @@ async function runAssessment() {
       if (payload?.type === 'request') recordRequestTiming(payload);
     },
   });
+  state.apiRunner = apiRunner; // Store for cancellation
 
   // Run each report/facility streaming -> analyzer
   try {
@@ -944,7 +979,11 @@ async function runAssessment() {
       startDate: inputs.startDate,
       endDate: inputs.endDate,
       timezone: inputs.timezone,
-      onRows: async ({ report, facility, page, lastPage, rows }) => {
+      onRows: async ({ report, facility, page, lastPage, rows, runId: pageRunId }) => {
+        // Check cancellation via runId
+        if (state.currentRunId !== assessmentRunId) return;
+        if (pageRunId && pageRunId !== apiRunner.runId) return;
+
         if (workerRun) {
           workerRuntime.worker?.postMessage({
             type: 'PAGE_ROWS',
@@ -955,7 +994,7 @@ async function runAssessment() {
             lastPage,
             rows,
           });
-          // For worker mode, add a small delay to avoid overwhelming the worker
+          // Small delay to avoid overwhelming worker
           await new Promise(resolve => setTimeout(resolve, 5));
           return;
         }
@@ -963,19 +1002,27 @@ async function runAssessment() {
         const analyzer = analyzers?.[report];
         if (!analyzer) return;
 
+        // Stream/aggregate pattern: process rows immediately and discard page data
         const task = mainThreadIngest?.enqueue({ report, rows });
         if (task) {
-          // Wait for this page's rows to be processed before fetching more (backpressure)
           try {
+            const parseStart = performance.now();
             const result = await task;
+            const parseTime = performance.now() - parseStart;
+            instrumentation.recordParse(parseTime);
+
             if (state.perf.enabled && result) {
               const { processed, durationMs } = result;
-              if (durationMs != null) recordProcessing({ rows: processed, ms: durationMs });
+              if (durationMs != null) {
+                recordProcessing({ rows: processed, ms: durationMs });
+                instrumentation.recordAnalysis(durationMs);
+              }
             }
           } catch (err) {
             // Ignore ingestion errors; continue with next page
           }
         }
+        // Page data (rows) is now eligible for GC - not retained
       }
     });
 

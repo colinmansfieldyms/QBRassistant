@@ -1,4 +1,5 @@
 import { getMockPage } from './mock-data.js?v=2025.01.07.0';
+import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
 
 export class ApiError extends Error {
   constructor(message, { status = null, report = null, facility = null, url = null } = {}) {
@@ -31,8 +32,22 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 10; // Conservative limit to prevent overwhelming browser with too many concurrent pages
+const PAGE_QUEUE_LIMIT = 8; // Conservative limit with backpressure
+const MAX_IN_FLIGHT_PAGES = 6; // Hard cap on concurrent page fetches
+const YIELD_EVERY_N_PAGES = 5; // Yield to event loop after processing N pages
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
+
+// Yield helper - gives control back to event loop
+async function yieldToEventLoop() {
+  instrumentation.recordYield();
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
 
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -362,6 +377,8 @@ export function createApiRunner({
   onLaneChange,
   onPerf,
 }) {
+  const runId = `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
   const scheduler = createRequestScheduler({
     min: CONCURRENCY_MIN,
     start: CONCURRENCY_START,
@@ -375,16 +392,21 @@ export function createApiRunner({
     },
   });
 
-  async function processReportFacility({ report, facility, startDate, endDate, timezone, onRows }) {
+  async function processReportFacility({ report, facility, startDate, endDate, timezone, onRows, runIdCheck }) {
     onFacilityStatus?.({ report, facility, status: 'running' });
 
     let rowsProcessed = 0;
     let declaredLastPage = 1;
     let stopAtPage = null;
+    let pagesProcessed = 0;
 
     const handlePage = async (payload, pageNumber) => {
+      // Check cancellation via runId
+      if (runIdCheck && runIdCheck() !== runId) return;
+      if (signal?.aborted) return;
       if (!payload) return;
       if (stopAtPage && pageNumber > stopAtPage) return;
+
       const rows = Array.isArray(payload.data) ? payload.data : [];
       if (typeof payload.last_page === 'number') {
         declaredLastPage = Math.max(declaredLastPage, payload.last_page || 1);
@@ -394,16 +416,29 @@ export function createApiRunner({
       }
       const effectiveLastPage = stopAtPage ? stopAtPage : declaredLastPage;
       rowsProcessed += rows.length;
+
+      // Record metrics
+      const payloadSize = JSON.stringify(payload).length;
+      instrumentation.recordPageComplete(payloadSize);
+
       onProgress?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rowsProcessed });
 
-      // Wait for onRows to process before continuing (backpressure)
-      const result = onRows?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rows });
+      // Wait for onRows to process (backpressure)
+      const result = onRows?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rows, runId });
       if (result && typeof result.then === 'function') {
         await result;
+      }
+
+      pagesProcessed++;
+
+      // Yield to event loop periodically
+      if (pagesProcessed % YIELD_EVERY_N_PAGES === 0) {
+        await yieldToEventLoop();
       }
     };
 
     try {
+      instrumentation.recordRequest(1);
       const firstPayload = await scheduler.enqueue(() => fetchReportPage({
         tenant,
         report,
@@ -417,6 +452,7 @@ export function createApiRunner({
         onWarning,
         scheduler,
       }), { onTransient: (err) => classifyError(err).transient, report });
+      instrumentation.recordRequest(-1);
 
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
       await handlePage(firstPayload, 1);
@@ -425,18 +461,22 @@ export function createApiRunner({
       let effectiveLastPage = declaredLastPage;
       const inflight = new Set();
 
+      // Strict backpressure: cap in-flight pages
       const getBufferLimit = () => {
-        const dynamic = Math.max(CONCURRENCY_MIN, (scheduler.getConcurrency?.() || CONCURRENCY_START) * 2);
-        return Math.min(PAGE_QUEUE_LIMIT, dynamic);
+        return Math.min(MAX_IN_FLIGHT_PAGES, PAGE_QUEUE_LIMIT);
       };
 
       const pump = () => {
+        if (runIdCheck && runIdCheck() !== runId) return;
         if (signal?.aborted) return;
         const stopPage = stopAtPage || effectiveLastPage;
         const bufferLimit = getBufferLimit();
 
         while (inflight.size < bufferLimit && nextPage <= stopPage) {
           const pageNumber = nextPage++;
+          instrumentation.recordQueuedTask(1);
+          instrumentation.recordRequest(1);
+
           const task = scheduler.enqueue(() => fetchReportPage({
             tenant,
             report,
@@ -451,14 +491,21 @@ export function createApiRunner({
             scheduler,
           }), { onTransient: (err) => classifyError(err).transient, report })
             .then(async (payload) => {
+              instrumentation.recordRequest(-1);
+              if (runIdCheck && runIdCheck() !== runId) return;
               if (payload && typeof payload.last_page === 'number') {
                 effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
               }
               await handlePage(payload, pageNumber);
             })
+            .catch((err) => {
+              instrumentation.recordRequest(-1);
+              throw err;
+            })
             .finally(() => {
+              instrumentation.recordQueuedTask(-1);
               inflight.delete(task);
-              // Immediately pump more pages as tasks complete
+              // Pump more pages as tasks complete
               pump();
             });
 
@@ -469,13 +516,19 @@ export function createApiRunner({
       pump();
 
       while (inflight.size > 0) {
+        if (runIdCheck && runIdCheck() !== runId) {
+          // Cancelled - drain in-flight but don't process
+          await Promise.allSettled(inflight);
+          break;
+        }
         await Promise.race(inflight);
-        // No need to pump here since it's called in finally()
       }
 
-      onFacilityStatus?.({ report, facility, status: 'done' });
+      if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
+        onFacilityStatus?.({ report, facility, status: 'done' });
+      }
     } catch (e) {
-      if (signal?.aborted) {
+      if (signal?.aborted || (runIdCheck && runIdCheck() !== runId)) {
         onFacilityStatus?.({ report, facility, status: 'error', error: 'aborted' });
         throw e;
       }
@@ -499,10 +552,21 @@ export function createApiRunner({
       if (!t) throw new ApiError('Missing token (cleared or not provided).');
     }
 
+    let currentRunId = runId;
+    const runIdCheck = () => currentRunId;
+
     const tasks = [];
     for (const report of reports) {
       for (const facility of facilities) {
-        tasks.push(processReportFacility({ report, facility, startDate, endDate, timezone, onRows }));
+        tasks.push(processReportFacility({
+          report,
+          facility,
+          startDate,
+          endDate,
+          timezone,
+          onRows,
+          runIdCheck
+        }));
       }
     }
 
@@ -514,5 +578,9 @@ export function createApiRunner({
     }
   }
 
-  return { run };
+  function cancel() {
+    scheduler.cancel('cancelled');
+  }
+
+  return { run, cancel, runId };
 }
