@@ -32,18 +32,18 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 20; // Allow more pages to queue (network I/O doesn't block browser)
-const MAX_IN_FLIGHT_PAGES = 12; // Higher cap for concurrent fetches (adjusted dynamically)
-const YIELD_EVERY_N_PAGES = 5; // Yield to event loop after processing N pages
+const PAGE_QUEUE_LIMIT = 6; // Keep small to avoid memory issues
+const MAX_IN_FLIGHT_PAGES = 4; // Conservative default
+const YIELD_EVERY_N_PAGES = 3; // Yield frequently
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 // Dynamic backpressure thresholds based on total page count
-// Strategy: Aggressive API fetching (network I/O) + Conservative processing (CPU-bound)
+// Conservative settings that prioritize stability over speed
 const BACKPRESSURE_TIERS = [
-  { maxPages: 50, maxInFlight: 12, yieldEvery: 5 },      // Small: very aggressive
-  { maxPages: 200, maxInFlight: 10, yieldEvery: 4 },     // Medium: aggressive
-  { maxPages: 1000, maxInFlight: 8, yieldEvery: 3 },     // Large: moderate
-  { maxPages: Infinity, maxInFlight: 6, yieldEvery: 2 }  // Extreme (2k+): still conservative but faster
+  { maxPages: 50, maxInFlight: 6, yieldEvery: 4 },       // Small: moderate parallelism
+  { maxPages: 200, maxInFlight: 5, yieldEvery: 3 },      // Medium: slightly conservative
+  { maxPages: 1000, maxInFlight: 4, yieldEvery: 2 },     // Large: conservative
+  { maxPages: Infinity, maxInFlight: 3, yieldEvery: 1 }  // Extreme (2k+): very conservative
 ];
 
 function getBackpressureConfig(totalPages) {
@@ -489,23 +489,11 @@ export function createApiRunner({
       let nextPage = 2;
       let effectiveLastPage = declaredLastPage;
       const inflight = new Set();
-      const processingQueue = []; // Queue of fetched pages waiting to be processed
 
-      // Dynamic backpressure: cap in-flight FETCHES based on dataset size
+      // Dynamic backpressure: cap in-flight pages based on dataset size
       const getBufferLimit = () => {
         const configLimit = backpressureConfig?.maxInFlight || MAX_IN_FLIGHT_PAGES;
         return Math.min(configLimit, PAGE_QUEUE_LIMIT);
-      };
-
-      // Process pages from queue sequentially with yielding
-      const processQueue = async () => {
-        while (processingQueue.length > 0) {
-          if (runIdCheck && runIdCheck() !== runId) return;
-          if (signal?.aborted) return;
-
-          const { payload, pageNumber } = processingQueue.shift();
-          await handlePage(payload, pageNumber);
-        }
       };
 
       const pump = () => {
@@ -538,8 +526,8 @@ export function createApiRunner({
               if (payload && typeof payload.last_page === 'number') {
                 effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
               }
-              // Queue for processing instead of blocking here
-              processingQueue.push({ payload, pageNumber });
+              // Process immediately with backpressure (await ensures we don't overwhelm)
+              await handlePage(payload, pageNumber);
             })
             .catch((err) => {
               instrumentation.recordRequest(-1);
@@ -558,23 +546,14 @@ export function createApiRunner({
 
       pump();
 
-      // Process fetched pages concurrently with fetching more
-      while (inflight.size > 0 || processingQueue.length > 0) {
+      // Wait for all in-flight pages to complete
+      while (inflight.size > 0) {
         if (runIdCheck && runIdCheck() !== runId) {
           // Cancelled - drain in-flight but don't process
           await Promise.allSettled(inflight);
           break;
         }
-
-        // Process any queued pages
-        if (processingQueue.length > 0) {
-          await processQueue();
-        }
-
-        // Wait for more pages to arrive if still fetching
-        if (inflight.size > 0) {
-          await Promise.race(inflight);
-        }
+        await Promise.race(inflight);
       }
 
       if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
