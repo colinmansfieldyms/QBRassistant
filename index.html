@@ -105,6 +105,14 @@
               </label>
             </div>
           </fieldset>
+
+          <div class="row gap-md">
+            <label class="toggle" title="Uses a Web Worker to keep the UI responsive during heavy aggregation.">
+              <input id="workerToggle" type="checkbox" checked />
+              <span>Use Web Worker (recommended)</span>
+            </label>
+            <div id="workerStatus" class="muted small">Initializing…</div>
+          </div>
         </div>
 
         <div class="row gap-md">
