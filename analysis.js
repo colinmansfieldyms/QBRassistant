@@ -897,6 +897,12 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
   ingest({ row }) {
     this.totalRows++;
 
+    // Debug: Log first row to help diagnose field name issues
+    if (this.totalRows === 1) {
+      const keys = Object.keys(row).join(', ');
+      this.warn(`driver_history: First row field names: ${keys}`);
+    }
+
     const driver = safeStr(firstPresent(row, ['yard_driver_name', 'driver_name', 'driver', 'driver_username', 'driver_id']));
 
     // Determine if this is a completed move:
@@ -909,6 +915,11 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
 
     const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name']));
     const isMoveFinished = /move\s+has\s+been\s+finished|move\s+finished|finished/i.test(event);
+
+    // Debug logging for first row
+    if (this.totalRows === 1) {
+      this.warn(`driver_history: First row - driver="${driver}", complete_time="${completeRaw}", event="${event}", isMoveFinished=${isMoveFinished}`);
+    }
 
     // Count as a completed move if we have complete_time OR the event indicates completion
     const isCompletedMove = !!complete || isMoveFinished;
