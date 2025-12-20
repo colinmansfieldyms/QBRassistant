@@ -817,12 +817,12 @@ async function runAssessment() {
 
     flushProgressRender();
     flushResultsRender();
-    setBanner('ok', 'Complete. Token wiped from memory. You can export summaries, print, and download chart CSV/PNG.');
+    setBanner('ok', 'Complete. You can export summaries, print, and download chart CSV/PNG.');
 
   } catch (e) {
     if (workerRun) cancelWorkerRun('Run failed');
     if (signal.aborted) {
-      setBanner('info', 'Run cancelled. Token wiped from memory.');
+      setBanner('info', 'Run cancelled.');
     } else if (e instanceof ApiError) {
       setBanner('error', `API error: ${e.message}`);
       addWarning(`API error: ${e.message}`);
@@ -836,13 +836,10 @@ async function runAssessment() {
   } finally {
     flushProgressRender();
     flushResultsRender();
-    // Critical: null out token variables and abort controller refs
+    // Critical: null out token from memory (but leave it in the input field for user convenience)
     setTokenInMemory(null);
     state.abortController = null;
     setRunningUI(false);
-
-    // Also clear token field to avoid “token lingering in DOM”
-    UI.tokenInput.value = '';
   }
 }
 
@@ -868,9 +865,8 @@ UI.runBtn.addEventListener('click', runAssessment);
 
 UI.cancelBtn.addEventListener('click', () => {
   abortInFlight('User cancelled.');
-  // token wiped from memory immediately, and cancel aborts in-flight requests
+  // Token cleared from memory but kept in input field for convenience
   setTokenInMemory(null);
-  UI.tokenInput.value = '';
 });
 
 UI.clearTokenBtn.addEventListener('click', () => {
