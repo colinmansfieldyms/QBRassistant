@@ -492,6 +492,7 @@ function flushProgressRender() {
   }
   const toRender = Array.from(progressRenderState.pendingReports);
   progressRenderState.pendingReports.clear();
+  progressRenderState.renderRequested = false; // Reset flag to allow future updates
   toRender.forEach(renderProgressNow);
 }
 

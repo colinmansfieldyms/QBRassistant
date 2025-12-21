@@ -382,6 +382,7 @@ function createRequestScheduler({
     return Math.max(min, cap);
   };
   let concurrency = Math.min(Math.max(start, min), getEffectiveMax());
+  console.log('[Scheduler] Initial concurrency:', concurrency, 'max ceiling:', getEffectiveMax());
   let active = 0;
   const queue = [];
   let cancelled = false;
@@ -638,6 +639,20 @@ export function createApiRunner({
   // Read backpressure overrides at run start (snapshot for consistency)
   const bpConfig = getConfig();
 
+  // Debug: log applied config
+  console.log('[Backpressure Config]', {
+    globalMaxConcurrency: bpConfig.globalMaxConcurrency,
+    greenZoneEnabled: bpConfig.greenZoneEnabled,
+    greenZoneConcurrencyMax: bpConfig.greenZoneConcurrencyMax,
+    greenZoneStreakCount: bpConfig.greenZoneStreakCount,
+    fetchBufferSize: bpConfig.fetchBufferSize,
+    processingPoolSize: bpConfig.processingPoolSize,
+    pageQueueLimit: bpConfig.pageQueueLimit,
+    forceTier: bpConfig.forceTier,
+    batchSize: bpConfig.batchSize,
+    partialUpdateInterval: bpConfig.partialUpdateInterval,
+  });
+
   const scheduler = createRequestScheduler({
     min: CONCURRENCY_MIN,
     start: CONCURRENCY_START,
@@ -706,11 +721,21 @@ export function createApiRunner({
       return tierResult.config || getBackpressureConfig(totalPages);
     };
 
+    // Check if user is overriding automatic behavior
+    const isManualOverride = bpConfig.forceTier !== 'auto';
+
     const deriveInitialFetchCap = (totalPages) => {
       const tier = backpressureConfig || getTierConfig(totalPages);
       const tierCap = tier?.fetchBuffer ?? tier?.maxInFlight ?? MAX_IN_FLIGHT_PAGES;
-      // Use override fetch buffer size, falling back to tier/default
+      // Use override fetch buffer size from panel
       const configuredBuffer = bpConfig.fetchBufferSize;
+
+      if (isManualOverride) {
+        // User is overriding - use their settings directly, only bound by hard limits
+        return Math.max(FETCH_BUFFER_MAX_MIN, Math.min(configuredBuffer, bpConfig.pageQueueLimit));
+      }
+
+      // Auto mode - respect tier limits
       const base = Math.min(
         Math.max(configuredBuffer, FETCH_BUFFER_MAX_MIN),
         bpConfig.pageQueueLimit
@@ -724,8 +749,15 @@ export function createApiRunner({
     const deriveInitialProcessingCap = (totalPages) => {
       const tier = backpressureConfig || getTierConfig(totalPages);
       const tierCap = tier?.processingMax ?? PROCESSING_POOL_MAX_DEFAULT;
-      // Use override processing pool size, falling back to tier/default
+      // Use override processing pool size from panel
       const configuredPool = bpConfig.processingPoolSize;
+
+      if (isManualOverride) {
+        // User is overriding - use their settings directly, only bound by hard limits
+        return Math.max(PROCESSING_POOL_MAX_MIN, Math.min(configuredPool, PROCESSING_POOL_MAX_HARD));
+      }
+
+      // Auto mode - respect tier limits
       return Math.min(
         PROCESSING_POOL_MAX_HARD,
         Math.max(PROCESSING_POOL_MAX_MIN, Math.min(configuredPool, tierCap || configuredPool))
@@ -812,10 +844,24 @@ export function createApiRunner({
       latencyTracker.push(report, performance.now() - firstFetchStarted);
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
       effectiveLastPage = declaredLastPage;
-      backpressureConfig = getBackpressureConfig(declaredLastPage);
-      scheduler.setBackpressureCeiling(backpressureConfig?.maxInFlight);
-      if (declaredLastPage > 200) {
-        onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
+
+      // Get tier config - respects forceTier override from panel
+      const tierResult = getEffectiveTier(declaredLastPage);
+      backpressureConfig = tierResult.config;
+
+      // Only apply automatic backpressure ceiling if NOT using forced tier from panel
+      // When user forces a tier or sets custom values, they want to override automatic limits
+      if (bpConfig.forceTier === 'auto') {
+        scheduler.setBackpressureCeiling(backpressureConfig?.maxInFlight);
+        if (declaredLastPage > 200) {
+          onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
+        }
+      } else {
+        // User is overriding - don't apply automatic ceiling, let their settings take effect
+        console.log('[Backpressure] Using forced tier:', bpConfig.forceTier, '- automatic ceiling disabled');
+        if (declaredLastPage > 200) {
+          onWarning?.(`Large dataset (${declaredLastPage} pages) with manual override: tier forced to "${bpConfig.forceTier}".`);
+        }
       }
 
       const fetchBufferCapBase = pipelineOptions.fetchBufferMax ?? deriveInitialFetchCap(declaredLastPage);
