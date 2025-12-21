@@ -849,18 +849,19 @@ export function createApiRunner({
       const tierResult = getEffectiveTier(declaredLastPage);
       backpressureConfig = tierResult.config;
 
-      // Only apply automatic backpressure ceiling if NOT using forced tier from panel
-      // When user forces a tier or sets custom values, they want to override automatic limits
+      // Apply backpressure ceiling - either from tier (auto) or user settings (manual override)
       if (bpConfig.forceTier === 'auto') {
         scheduler.setBackpressureCeiling(backpressureConfig?.maxInFlight);
         if (declaredLastPage > 200) {
           onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
         }
       } else {
-        // User is overriding - don't apply automatic ceiling, let their settings take effect
-        console.log('[Backpressure] Using forced tier:', bpConfig.forceTier, '- automatic ceiling disabled');
+        // User is overriding - use their globalMaxConcurrency as the ceiling instead of tier's maxInFlight
+        // This still sets a ceiling (preventing runaway) but uses the user's chosen limit
+        scheduler.setBackpressureCeiling(bpConfig.globalMaxConcurrency);
+        console.log('[Backpressure] Using forced tier:', bpConfig.forceTier, '- ceiling set to user max:', bpConfig.globalMaxConcurrency);
         if (declaredLastPage > 200) {
-          onWarning?.(`Large dataset (${declaredLastPage} pages) with manual override: tier forced to "${bpConfig.forceTier}".`);
+          onWarning?.(`Large dataset (${declaredLastPage} pages) with manual override: tier forced to "${bpConfig.forceTier}", max concurrency ${bpConfig.globalMaxConcurrency}.`);
         }
       }
 
@@ -1102,6 +1103,8 @@ export function createApiRunner({
         if (waitSet.size === 0) {
           pump();
           if (!fetchBuffer.length && !inflightFetches.size && !activeProcessingTasks.size) break;
+          // Yield to prevent tight loop when pump() didn't start any new work
+          await performYield();
           continue;
         }
 
