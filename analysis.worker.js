@@ -143,6 +143,15 @@ async function handlePageRows(data) {
   }
 }
 
+async function handlePageBatch(data) {
+  const { pages, runId } = data || {};
+  if (!Array.isArray(pages) || !pages.length) return;
+  for (const page of pages) {
+    if (!page) continue;
+    await handlePageRows({ ...page, runId });
+  }
+}
+
 function handleFinalize(data) {
   const { runId } = data;
   const run = runs.get(runId);
@@ -182,6 +191,8 @@ self.addEventListener('message', (event) => {
         return handleInit(data);
       case 'PAGE_ROWS':
         return handlePageRows(data);
+      case 'PAGE_ROWS_BATCH':
+        return handlePageBatch(data);
       case 'FINALIZE':
         return handleFinalize(data);
       case 'CANCEL':

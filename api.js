@@ -56,6 +56,8 @@ const BACKPRESSURE_TIERS = [
   { maxPages: 1000, maxInFlight: 3, yieldEvery: 1, fetchBuffer: 5, processingMax: 3 },      // Very large: extremely conservative
   { maxPages: Infinity, maxInFlight: 2, yieldEvery: 1, fetchBuffer: 4, processingMax: 2 }   // Extreme (1k+): maximum conservation
 ];
+const APPROX_STRING_CAP = 256;
+const APPROX_COMPLEX_FIELD_BYTES = 16;
 
 function getBackpressureConfig(totalPages) {
   const tier = BACKPRESSURE_TIERS.find(t => totalPages <= t.maxPages) || BACKPRESSURE_TIERS[BACKPRESSURE_TIERS.length - 1];
@@ -157,6 +159,43 @@ function wrapApiError(err, context = {}) {
     : '';
   const msg = `Request failed${suffix}: ${err?.message || String(err)}`;
   return new ApiError(msg, { status, report: context.report, facility: context.facility });
+}
+
+// Approximate payload sizing that avoids large JSON.stringify allocations.
+// Counts key lengths and a capped slice of string values; numbers/booleans receive a tiny fixed weight.
+export function estimatePayloadWeight(rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { approxBytes: 0, fieldCount: 0, rowCount: Array.isArray(rows) ? rows.length : 0 };
+  }
+
+  let approxBytes = 0;
+  let fieldCount = 0;
+  const baseRowOverhead = 12; // Lightweight per-row overhead to mimic delimiters/metadata without stringifying
+
+  for (const row of rows) {
+    approxBytes += baseRowOverhead;
+    if (!row || typeof row !== 'object') continue;
+    for (const key in row) {
+      if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+      fieldCount += 1;
+      approxBytes += key.length;
+      const value = row[key];
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string') {
+        approxBytes += Math.min(value.length, APPROX_STRING_CAP);
+      } else if (typeof value === 'number') {
+        approxBytes += 8;
+      } else if (typeof value === 'boolean') {
+        approxBytes += 4;
+      } else if (Array.isArray(value)) {
+        approxBytes += Math.min(value.length, APPROX_STRING_CAP / 2);
+      } else {
+        approxBytes += APPROX_COMPLEX_FIELD_BYTES;
+      }
+    }
+  }
+
+  return { approxBytes, fieldCount, rowCount: rows.length };
 }
 
 function createLatencyTracker({ maxSamples = 50 } = {}) {
@@ -517,7 +556,7 @@ export function createApiRunner({
       rowsProcessed += rows.length;
 
       // Record metrics
-      const payloadSize = payload.payloadBytes ?? JSON.stringify(payload).length;
+      const payloadSize = payload.payloadBytes ?? estimatePayloadWeight(rows).approxBytes;
       instrumentation.recordPageComplete(payloadSize);
 
       onProgress?.({ report, facility, page: pageNumber, lastPage: effectivePageCap, rowsProcessed });
@@ -676,7 +715,10 @@ export function createApiRunner({
           last_page: payload.last_page ?? declaredLastPage,
           next_page_url: payload.next_page_url ?? null,
         };
-        compactPayload.payloadBytes = JSON.stringify(compactPayload).length;
+        const weight = estimatePayloadWeight(rows);
+        compactPayload.payloadBytes = weight.approxBytes;
+        compactPayload.fieldCount = weight.fieldCount;
+        compactPayload.rowCount = weight.rowCount;
         return compactPayload;
       };
 

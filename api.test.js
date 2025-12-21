@@ -11,7 +11,7 @@ global.requestAnimationFrame = global.requestAnimationFrame || ((cb) => setTimeo
 const apiModule = await import('./api.js');
 const instrumentationModule = await import('./instrumentation.js');
 
-const { createApiRunner } = apiModule;
+const { createApiRunner, estimatePayloadWeight } = apiModule;
 const { instrumentation } = instrumentationModule;
 
 const defaultDates = { startDate: '2024-01-01', endDate: '2024-01-02', timezone: 'UTC' };
@@ -248,4 +248,14 @@ test('no retained buffer after completion', async () => {
   const stats = results[0].stats;
   assert.equal(stats.finalBuffer, 0, 'prefetch buffer should be empty at completion');
   assert.equal(stats.finalProcessing, 0, 'processing pool should be empty at completion');
+});
+
+test('payload weight estimator scales with content without stringifying', () => {
+  const small = estimatePayloadWeight([{ id: 1, note: 'abc' }]);
+  const larger = estimatePayloadWeight([{ id: 1, note: 'abc'.repeat(120) }, { id: 2, active: true }]);
+
+  assert.equal(small.rowCount, 1);
+  assert.equal(larger.rowCount, 2);
+  assert.ok(larger.approxBytes > small.approxBytes, 'larger payload should have higher estimated weight');
+  assert.ok(larger.fieldCount >= small.fieldCount, 'field count should reflect total properties scanned');
 });

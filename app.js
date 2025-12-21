@@ -5,6 +5,7 @@ import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buil
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
 import { createETATracker } from './eta.js?v=2025.01.07.0';
+import { createWorkerBatcher } from './worker-transfer.js?v=2025.01.07.0';
 
 const { DateTime } = window.luxon;
 
@@ -1015,6 +1016,11 @@ async function runAssessment() {
     tenant: inputs.tenant,
     roiEnabled,
   }) : null;
+  const workerBatcher = workerRun && workerRuntime.worker ? createWorkerBatcher({
+    runId: workerRun.runId,
+    signal,
+    postMessage: (payload) => workerRuntime.worker?.postMessage(payload),
+  }) : null;
 
   if (useWorker && !workerRun) {
     addWarning('Web Worker preferred but unavailable; using main-thread analysis.');
@@ -1090,18 +1096,8 @@ async function runAssessment() {
         if (state.currentRunId !== assessmentRunId) return;
         if (pageRunId && pageRunId !== apiRunner.runId) return;
 
-        if (workerRun) {
-          workerRuntime.worker?.postMessage({
-            type: 'PAGE_ROWS',
-            runId: workerRun.runId,
-            report,
-            facility,
-            page,
-            lastPage,
-            rows,
-          });
-          // Small delay to avoid overwhelming worker
-          await new Promise(resolve => setTimeout(resolve, 5));
+        if (workerBatcher) {
+          await workerBatcher.enqueue({ report, facility, page, lastPage, rows });
           return;
         }
 
@@ -1134,6 +1130,7 @@ async function runAssessment() {
 
     // Finalize per report
     if (workerRun) {
+      await workerBatcher?.flush();
       const payload = await finalizeWorkerRun(workerRun.runId);
       if (Array.isArray(payload?.warnings)) payload.warnings.forEach(addWarning);
       state.results = payload?.results || {};
@@ -1173,6 +1170,7 @@ async function runAssessment() {
       addWarning(`Unexpected error: ${e?.stack || e?.message || String(e)}`);
     }
   } finally {
+    await workerBatcher?.stop?.();
     flushProgressRender();
     flushResultsRender();
     // Critical: null out token from memory (but leave it in the input field for user convenience)
