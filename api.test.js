@@ -11,7 +11,7 @@ global.requestAnimationFrame = global.requestAnimationFrame || ((cb) => setTimeo
 const apiModule = await import('./api.js');
 const instrumentationModule = await import('./instrumentation.js');
 
-const { createApiRunner, estimatePayloadWeight } = apiModule;
+const { createApiRunner, estimatePayloadWeight, createGreenZoneController } = apiModule;
 const { instrumentation } = instrumentationModule;
 
 const defaultDates = { startDate: '2024-01-01', endDate: '2024-01-02', timezone: 'UTC' };
@@ -258,4 +258,76 @@ test('payload weight estimator scales with content without stringifying', () => 
   assert.equal(larger.rowCount, 2);
   assert.ok(larger.approxBytes > small.approxBytes, 'larger payload should have higher estimated weight');
   assert.ok(larger.fieldCount >= small.fieldCount, 'field count should reflect total properties scanned');
+});
+
+test('green zone enters after sustained low latency and respects cooldown before re-entry', () => {
+  let now = 0;
+  const controller = createGreenZoneController({
+    baseMax: 6,
+    greenMax: 10,
+    latencyStreak: 2,
+    cooldownMs: 5000,
+    latencyTargets: { p90RecoverMs: 150, p90SpikeMs: 400, sampleSize: 10 },
+    nowFn: () => now,
+    memoryProvider: () => ({ jsHeapSizeLimit: 1000, usedJSHeapSize: 400 }),
+  });
+
+  controller.recordSample('detention_history', 140);
+  assert.equal(controller.isGreen(), false);
+  controller.recordSample('detention_history', 120);
+  assert.equal(controller.isGreen(), true, 'should enter after streak of low p90');
+
+  controller.recordSample('detention_history', 450);
+  assert.equal(controller.isGreen(), false, 'latency spike should exit green zone');
+
+  now += 1000;
+  controller.recordSample('detention_history', 120);
+  assert.equal(controller.isGreen(), false, 'cooldown should block immediate re-entry');
+
+  now += 5000;
+  controller.recordSample('detention_history', 110);
+  controller.recordSample('detention_history', 110);
+  assert.equal(controller.isGreen(), true, 'should re-enter after cooldown and fresh streak');
+});
+
+test('green zone exits when memory pressure is detected via performance.memory', () => {
+  let ratio = 0.5;
+  const controller = createGreenZoneController({
+    baseMax: 5,
+    greenMax: 9,
+    latencyStreak: 2,
+    latencyTargets: { p90RecoverMs: 160, p90SpikeMs: 500, sampleSize: 10 },
+    memoryEnterRatio: 0.6,
+    memoryExitRatio: 0.7,
+    memoryProvider: () => ({
+      jsHeapSizeLimit: 1000,
+      usedJSHeapSize: Math.floor(1000 * ratio),
+    }),
+  });
+
+  controller.recordSample('detention_history', 100);
+  controller.recordSample('detention_history', 100);
+  assert.ok(controller.isGreen(), 'should enter when memory headroom is available');
+
+  ratio = 0.8;
+  controller.recordSample('detention_history', 120);
+  assert.equal(controller.isGreen(), false, 'memory pressure should force exit');
+});
+
+test('backpressure ceilings clamp green zone concurrency lift', () => {
+  const controller = createGreenZoneController({
+    baseMax: 4,
+    greenMax: 9,
+    latencyStreak: 1,
+    latencyTargets: { p90RecoverMs: 120, p90SpikeMs: 400, sampleSize: 10 },
+    memoryProvider: () => ({ jsHeapSizeLimit: 1000, usedJSHeapSize: 300 }),
+  });
+
+  controller.recordSample('detention_history', 100);
+  assert.ok(controller.isGreen(), 'should enter green zone immediately for streak 1');
+  assert.equal(controller.getConcurrencyCeiling(), 9, 'green zone raises concurrency ceiling');
+
+  controller.setBackpressureCeiling(3);
+  assert.equal(controller.isGreen(), false, 'backpressure ceiling should exit green zone');
+  assert.equal(controller.getConcurrencyCeiling(), 3, 'ceiling should honor backpressure clamp');
 });
