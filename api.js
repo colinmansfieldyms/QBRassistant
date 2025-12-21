@@ -1,6 +1,6 @@
 import { getMockPage } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
-import { getConfig, getConfigValue, getEffectiveTier } from './backpressure-config.js';
+import { getConfig, getEffectiveTier } from './backpressure-config.js';
 
 export class ApiError extends Error {
   constructor(message, { status = null, report = null, facility = null, url = null } = {}) {
@@ -43,7 +43,6 @@ export const GREEN_ZONE_MEMORY_EXIT_RATIO = 0.78;
 // Tune green zone behavior: *_MAX lifts ceilings, *_STREAK_COUNT gates entry, *_COOLDOWN_MS slows re-entry,
 // *_RATIO thresholds gate memory headroom checks. Disable via GREEN_ZONE_ENABLED when needed.
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 10;       // Prefetch queue guardrail (combined with adaptive caps)
 const MAX_IN_FLIGHT_PAGES = 6;     // Base network prefetch ceiling before adaptive controls
 const YIELD_EVERY_N_PAGES = 1;     // Yield after every page for responsiveness
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
@@ -821,7 +820,9 @@ export function createApiRunner({
 
       const fetchBufferCapBase = pipelineOptions.fetchBufferMax ?? deriveInitialFetchCap(declaredLastPage);
       const processingCapBase = pipelineOptions.processingPoolMax ?? deriveInitialProcessingCap(declaredLastPage);
-      let fetchBufferCap = Math.max(FETCH_BUFFER_MAX_MIN, Math.min(fetchBufferCapBase, PAGE_QUEUE_LIMIT));
+      // Use pageQueueLimit from backpressure config
+      const effectiveQueueLimit = bpConfig.pageQueueLimit;
+      let fetchBufferCap = Math.max(FETCH_BUFFER_MAX_MIN, Math.min(fetchBufferCapBase, effectiveQueueLimit));
       let processingCap = Math.max(PROCESSING_POOL_MAX_MIN, Math.min(processingCapBase, PROCESSING_POOL_MAX_HARD));
       let lastLatencyAdjust = 0;
       let lastMemoryCheck = 0;
@@ -980,7 +981,7 @@ export function createApiRunner({
         maybeAdjustForMemory();
         const targetLastPage = stopAtPage || declaredLastPage;
         const remainingToFetch = Math.max(0, targetLastPage - (nextPage - 1));
-        const desiredFetchSlots = Math.min(fetchBufferCap, PAGE_QUEUE_LIMIT, remainingToFetch || fetchBufferCap);
+        const desiredFetchSlots = Math.min(fetchBufferCap, effectiveQueueLimit, remainingToFetch || fetchBufferCap);
 
         while (
           activeProcessingTasks.size + fetchBuffer.length < fetchBufferCap + processingCap &&

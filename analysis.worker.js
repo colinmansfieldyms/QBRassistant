@@ -61,8 +61,14 @@ function buildResults(run) {
 }
 
 function handleInit(data) {
-  const { runId, timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled } = data;
+  const { runId, timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled, partialEmitIntervalMs } = data;
   if (!runId) return;
+
+  const adaptive = createAdaptiveState();
+  // Apply override from backpressure config if provided
+  if (typeof partialEmitIntervalMs === 'number' && partialEmitIntervalMs > 0) {
+    adaptive.partialIntervalMs = partialEmitIntervalMs;
+  }
 
   const run = {
     analyzers: null,
@@ -75,7 +81,7 @@ function handleInit(data) {
     cancelled: false,
     lastPartialAt: 0,
     backlogPages: 0,
-    adaptive: createAdaptiveState(),
+    adaptive,
   };
 
   run.analyzers = createAnalyzers({

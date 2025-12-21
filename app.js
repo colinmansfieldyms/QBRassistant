@@ -13,7 +13,6 @@ import {
   computeRenderThrottle,
 } from './worker-adaptation.js';
 import {
-  SYSTEM_DEFAULTS,
   PRESETS,
   getConfig,
   getConfigValue,
@@ -1095,6 +1094,8 @@ async function runAssessment() {
         }
         const ready = await waitForWorkerReady();
         if (ready) {
+          // Get current backpressure config for worker settings
+          const bpConfig = getConfig();
           workerRun = beginWorkerRun({
             timezone: inputs.timezone,
             startDate: inputs.startDate,
@@ -1104,12 +1105,14 @@ async function runAssessment() {
             facilities: inputs.facilities,
             tenant: inputs.tenant,
             roiEnabled,
+            partialEmitIntervalMs: bpConfig.partialUpdateInterval,
           });
           if (workerRun && workerRuntime.worker) {
             workerBatcher = createWorkerBatcher({
               runId: workerRun.runId,
               signal,
               postMessage: (payload) => workerRuntime.worker?.postMessage(payload),
+              maxBatchRows: bpConfig.batchSize,
             });
             analysisMode = 'worker';
             updateWorkerStatus('Web Worker active for this run.');
