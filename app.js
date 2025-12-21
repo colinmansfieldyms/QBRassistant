@@ -12,6 +12,18 @@ import {
   shouldAutoUseWorker,
   computeRenderThrottle,
 } from './worker-adaptation.js';
+import {
+  SYSTEM_DEFAULTS,
+  PRESETS,
+  getConfig,
+  getConfigValue,
+  setConfigValue,
+  applyPreset,
+  resetToDefaults,
+  hasAnyOverrides,
+  isOverridden,
+  addChangeListener,
+} from './backpressure-config.js';
 
 const { DateTime } = window.luxon;
 
@@ -55,6 +67,24 @@ const UI = {
   workerStatus: document.querySelector('#workerStatus'),
   perfPanel: document.querySelector('#perfPanel'),
   perfCard: document.querySelector('#perfCard'),
+  // Backpressure drawer elements
+  bpDrawer: document.querySelector('#backpressureDrawer'),
+  bpDrawerToggle: document.querySelector('#bpDrawerToggle'),
+  bpDrawerClose: document.querySelector('#bpDrawerClose'),
+  bpResetAll: document.querySelector('#bpResetAll'),
+  bpOverrideIndicator: document.querySelector('#bpOverrideIndicator'),
+  bpPresetsBody: document.querySelector('#bpPresetsBody'),
+  // Backpressure controls
+  bpGlobalMaxConcurrency: document.querySelector('#bpGlobalMaxConcurrency'),
+  bpGreenZoneEnabled: document.querySelector('#bpGreenZoneEnabled'),
+  bpGreenZoneConcurrencyMax: document.querySelector('#bpGreenZoneConcurrencyMax'),
+  bpGreenZoneStreakCount: document.querySelector('#bpGreenZoneStreakCount'),
+  bpFetchBufferSize: document.querySelector('#bpFetchBufferSize'),
+  bpProcessingPoolSize: document.querySelector('#bpProcessingPoolSize'),
+  bpPageQueueLimit: document.querySelector('#bpPageQueueLimit'),
+  bpForceTier: document.querySelector('#bpForceTier'),
+  bpBatchSize: document.querySelector('#bpBatchSize'),
+  bpPartialUpdateInterval: document.querySelector('#bpPartialUpdateInterval'),
 };
 
 const state = {
@@ -1326,6 +1356,187 @@ UI.workerToggle?.addEventListener('change', () => {
 
 // Safety: do not log tokens even in debug. (No debug console in this draft.)
 
+// ---------- Backpressure Drawer ----------
+
+// Map of control IDs to config keys
+const BP_CONTROL_MAP = {
+  bpGlobalMaxConcurrency: 'globalMaxConcurrency',
+  bpGreenZoneEnabled: 'greenZoneEnabled',
+  bpGreenZoneConcurrencyMax: 'greenZoneConcurrencyMax',
+  bpGreenZoneStreakCount: 'greenZoneStreakCount',
+  bpFetchBufferSize: 'fetchBufferSize',
+  bpProcessingPoolSize: 'processingPoolSize',
+  bpPageQueueLimit: 'pageQueueLimit',
+  bpForceTier: 'forceTier',
+  bpBatchSize: 'batchSize',
+  bpPartialUpdateInterval: 'partialUpdateInterval',
+};
+
+function openBackpressureDrawer() {
+  UI.bpDrawer?.classList.add('open');
+  UI.bpDrawerToggle?.classList.add('hidden');
+}
+
+function closeBackpressureDrawer() {
+  UI.bpDrawer?.classList.remove('open');
+  UI.bpDrawerToggle?.classList.remove('hidden');
+}
+
+function updateBpOverrideIndicator() {
+  if (UI.bpOverrideIndicator) {
+    UI.bpOverrideIndicator.classList.toggle('hidden', !hasAnyOverrides());
+  }
+}
+
+function updateBpValueDisplay(controlId, value) {
+  const valueEl = document.querySelector(`.bp-value[data-for="${controlId}"]`);
+  if (valueEl) {
+    valueEl.textContent = value;
+    const configKey = BP_CONTROL_MAP[controlId];
+    valueEl.classList.toggle('modified', configKey && isOverridden(configKey));
+  }
+}
+
+function updateBpControlFromConfig(controlId, configKey) {
+  const el = UI[controlId];
+  if (!el) return;
+
+  const value = getConfigValue(configKey);
+
+  if (el.type === 'checkbox') {
+    el.checked = value;
+    // Update dependent controls
+    const dependents = document.querySelectorAll(`[data-depends-on="${controlId}"]`);
+    dependents.forEach(dep => {
+      dep.classList.toggle('disabled', !value);
+    });
+  } else if (el.tagName === 'SELECT') {
+    el.value = value;
+  } else if (el.type === 'range') {
+    el.value = value;
+    updateBpValueDisplay(controlId, value);
+  }
+}
+
+function syncAllBpControlsFromConfig() {
+  for (const [controlId, configKey] of Object.entries(BP_CONTROL_MAP)) {
+    updateBpControlFromConfig(controlId, configKey);
+  }
+  updateBpOverrideIndicator();
+}
+
+function initBackpressurePresets() {
+  if (!UI.bpPresetsBody) return;
+
+  UI.bpPresetsBody.innerHTML = '';
+
+  for (const [presetId, preset] of Object.entries(PRESETS)) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td class="bp-preset-name">${escapeHtml(preset.name)}</td>
+      <td class="bp-preset-desc">${escapeHtml(preset.description)}</td>
+      <td>
+        <button class="btn btn-ghost bp-preset-btn" data-preset="${presetId}">Apply</button>
+      </td>
+    `;
+    UI.bpPresetsBody.appendChild(row);
+  }
+
+  // Add event listeners to preset buttons
+  UI.bpPresetsBody.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-preset]');
+    if (btn) {
+      const presetId = btn.dataset.preset;
+      applyPreset(presetId);
+      syncAllBpControlsFromConfig();
+
+      // Brief visual feedback
+      btn.textContent = 'Applied!';
+      setTimeout(() => { btn.textContent = 'Apply'; }, 800);
+    }
+  });
+}
+
+function initBackpressureDrawer() {
+  // Drawer open/close
+  UI.bpDrawerToggle?.addEventListener('click', openBackpressureDrawer);
+  UI.bpDrawerClose?.addEventListener('click', closeBackpressureDrawer);
+
+  // Close drawer on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && UI.bpDrawer?.classList.contains('open')) {
+      closeBackpressureDrawer();
+    }
+  });
+
+  // Reset button
+  UI.bpResetAll?.addEventListener('click', () => {
+    resetToDefaults();
+    syncAllBpControlsFromConfig();
+  });
+
+  // Initialize presets table
+  initBackpressurePresets();
+
+  // Set up slider controls
+  const sliderControls = [
+    'bpGlobalMaxConcurrency',
+    'bpGreenZoneConcurrencyMax',
+    'bpGreenZoneStreakCount',
+    'bpFetchBufferSize',
+    'bpProcessingPoolSize',
+    'bpPageQueueLimit',
+    'bpBatchSize',
+    'bpPartialUpdateInterval',
+  ];
+
+  sliderControls.forEach(controlId => {
+    const el = UI[controlId];
+    if (!el) return;
+
+    el.addEventListener('input', () => {
+      const value = Number(el.value);
+      updateBpValueDisplay(controlId, value);
+    });
+
+    el.addEventListener('change', () => {
+      const configKey = BP_CONTROL_MAP[controlId];
+      if (configKey) {
+        setConfigValue(configKey, Number(el.value));
+        updateBpOverrideIndicator();
+      }
+    });
+  });
+
+  // Green Zone toggle
+  UI.bpGreenZoneEnabled?.addEventListener('change', () => {
+    const enabled = UI.bpGreenZoneEnabled.checked;
+    setConfigValue('greenZoneEnabled', enabled);
+
+    // Update dependent controls
+    const dependents = document.querySelectorAll('[data-depends-on="bpGreenZoneEnabled"]');
+    dependents.forEach(dep => {
+      dep.classList.toggle('disabled', !enabled);
+    });
+
+    updateBpOverrideIndicator();
+  });
+
+  // Tier select
+  UI.bpForceTier?.addEventListener('change', () => {
+    setConfigValue('forceTier', UI.bpForceTier.value);
+    updateBpOverrideIndicator();
+  });
+
+  // Listen for config changes (e.g., from presets) to update UI
+  addChangeListener(() => {
+    updateBpOverrideIndicator();
+  });
+
+  // Initialize all controls from current config (defaults)
+  syncAllBpControlsFromConfig();
+}
+
 // ---------- Init ----------
 (function init() {
   buildTimezoneOptions(UI.timezoneSelect);
@@ -1361,6 +1572,9 @@ UI.workerToggle?.addEventListener('change', () => {
   if (UI.workerToggle) UI.workerToggle.checked = workerRuntime.preferred;
   updateWorkerStatus(workerRuntime.supported ? 'Initializing Web Worker…' : 'Web Worker unavailable; using main thread.');
   initWorker();
+
+  // Initialize backpressure override drawer
+  initBackpressureDrawer();
 
   clearBanner();
 })();

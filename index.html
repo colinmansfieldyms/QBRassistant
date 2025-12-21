@@ -165,6 +165,203 @@
         </div>
       </section>
     </section>
+
+    <!-- BACKPRESSURE OVERRIDE DRAWER -->
+    <aside id="backpressureDrawer" class="bp-drawer">
+      <div class="bp-drawer-header">
+        <span class="bp-drawer-title">Backpressure Overrides</span>
+        <button id="bpDrawerClose" class="btn btn-ghost bp-drawer-close" type="button" title="Close drawer">&times;</button>
+      </div>
+
+      <div class="bp-drawer-content">
+        <div class="bp-drawer-actions">
+          <button id="bpResetAll" class="btn btn-warn bp-reset-btn" type="button" title="Reset all settings to system defaults">
+            Reset to Defaults
+          </button>
+          <span id="bpOverrideIndicator" class="bp-override-indicator hidden">Modified</span>
+        </div>
+
+        <!-- PRESETS (collapsed by default) -->
+        <details class="bp-presets-section">
+          <summary class="bp-presets-toggle">
+            <span>Testing Presets</span>
+            <span class="bp-presets-chevron"></span>
+          </summary>
+          <div class="bp-presets-content">
+            <table class="bp-presets-table">
+              <thead>
+                <tr>
+                  <th>Preset</th>
+                  <th>Description</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="bpPresetsBody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </details>
+
+        <!-- CONCURRENCY GROUP -->
+        <div class="bp-group">
+          <div class="bp-group-title">Concurrency</div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpGlobalMaxConcurrency" class="bp-label">Global Max Concurrency</label>
+              <span class="bp-tooltip" data-tooltip="Maximum simultaneous API requests across all reports. Higher values fetch data faster but may overwhelm the server or browser.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpGlobalMaxConcurrency" class="bp-slider" min="1" max="20" step="1" />
+              <span class="bp-value" data-for="bpGlobalMaxConcurrency">8</span>
+              <span class="bp-unit">requests</span>
+            </div>
+            <div class="bp-default" data-default-for="bpGlobalMaxConcurrency">Default: 8</div>
+          </div>
+        </div>
+
+        <!-- GREEN ZONE GROUP -->
+        <div class="bp-group">
+          <div class="bp-group-title">Green Zone</div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label class="bp-label">Enable Green Zone</label>
+              <span class="bp-tooltip" data-tooltip="When enabled, the system automatically boosts concurrency when all reports are responding quickly and memory is healthy.">?</span>
+            </div>
+            <label class="bp-toggle-label">
+              <input type="checkbox" id="bpGreenZoneEnabled" class="bp-checkbox" checked />
+              <span class="bp-toggle-text">Enabled</span>
+            </label>
+            <div class="bp-default">Default: Enabled</div>
+          </div>
+
+          <div class="bp-control bp-control-dependent" data-depends-on="bpGreenZoneEnabled">
+            <div class="bp-control-header">
+              <label for="bpGreenZoneConcurrencyMax" class="bp-label">Green Zone Boost Level</label>
+              <span class="bp-tooltip" data-tooltip="Maximum concurrency allowed when Green Zone is active. Only takes effect when Green Zone is enabled and conditions are favorable.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpGreenZoneConcurrencyMax" class="bp-slider" min="8" max="20" step="1" />
+              <span class="bp-value" data-for="bpGreenZoneConcurrencyMax">12</span>
+              <span class="bp-unit">requests</span>
+            </div>
+            <div class="bp-default" data-default-for="bpGreenZoneConcurrencyMax">Default: 12</div>
+          </div>
+
+          <div class="bp-control bp-control-dependent" data-depends-on="bpGreenZoneEnabled">
+            <div class="bp-control-header">
+              <label for="bpGreenZoneStreakCount" class="bp-label">Entry Streak Count</label>
+              <span class="bp-tooltip" data-tooltip="Number of consecutive 'good' latency samples required before entering Green Zone. Lower = more aggressive boosting, higher = more conservative.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpGreenZoneStreakCount" class="bp-slider" min="1" max="10" step="1" />
+              <span class="bp-value" data-for="bpGreenZoneStreakCount">4</span>
+              <span class="bp-unit">samples</span>
+            </div>
+            <div class="bp-default" data-default-for="bpGreenZoneStreakCount">Default: 4</div>
+          </div>
+        </div>
+
+        <!-- PIPELINE GROUP -->
+        <div class="bp-group">
+          <div class="bp-group-title">Pipeline</div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpFetchBufferSize" class="bp-label">Fetch Buffer Size</label>
+              <span class="bp-tooltip" data-tooltip="Maximum pages to download ahead of processing. Larger buffers keep workers busy but use more memory.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpFetchBufferSize" class="bp-slider" min="2" max="20" step="1" />
+              <span class="bp-value" data-for="bpFetchBufferSize">9</span>
+              <span class="bp-unit">pages</span>
+            </div>
+            <div class="bp-default" data-default-for="bpFetchBufferSize">Default: 9</div>
+          </div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpProcessingPoolSize" class="bp-label">Processing Pool Size</label>
+              <span class="bp-tooltip" data-tooltip="Number of pages to process simultaneously. Higher values increase CPU usage but can speed up analysis.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpProcessingPoolSize" class="bp-slider" min="1" max="6" step="1" />
+              <span class="bp-value" data-for="bpProcessingPoolSize">3</span>
+              <span class="bp-unit">tasks</span>
+            </div>
+            <div class="bp-default" data-default-for="bpProcessingPoolSize">Default: 3</div>
+          </div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpPageQueueLimit" class="bp-label">Page Queue Limit</label>
+              <span class="bp-tooltip" data-tooltip="Maximum pages waiting in the prefetch queue. Acts as a memory safety valve.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpPageQueueLimit" class="bp-slider" min="5" max="30" step="1" />
+              <span class="bp-value" data-for="bpPageQueueLimit">10</span>
+              <span class="bp-unit">pages</span>
+            </div>
+            <div class="bp-default" data-default-for="bpPageQueueLimit">Default: 10</div>
+          </div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpForceTier" class="bp-label">Force Tier</label>
+              <span class="bp-tooltip" data-tooltip="Override automatic dataset size detection. Use 'Auto' for normal operation, or force a specific tier to test behavior.">?</span>
+            </div>
+            <select id="bpForceTier" class="bp-select">
+              <option value="auto">Auto (detect from data)</option>
+              <option value="tiny">Tiny (&lt;50 pages)</option>
+              <option value="small">Small (&lt;200 pages)</option>
+              <option value="medium">Medium (&lt;500 pages)</option>
+              <option value="large">Large (&lt;1000 pages)</option>
+              <option value="huge">Huge (1000+ pages)</option>
+            </select>
+            <div class="bp-default">Default: Auto</div>
+          </div>
+        </div>
+
+        <!-- WORKER GROUP -->
+        <div class="bp-group">
+          <div class="bp-group-title">Worker</div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpBatchSize" class="bp-label">Batch Size</label>
+              <span class="bp-tooltip" data-tooltip="Number of rows sent to the Web Worker at once. Larger batches reduce transfer overhead but increase memory spikes.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpBatchSize" class="bp-slider" min="100" max="2000" step="50" />
+              <span class="bp-value" data-for="bpBatchSize">600</span>
+              <span class="bp-unit">rows</span>
+            </div>
+            <div class="bp-default" data-default-for="bpBatchSize">Default: 600</div>
+          </div>
+
+          <div class="bp-control">
+            <div class="bp-control-header">
+              <label for="bpPartialUpdateInterval" class="bp-label">Partial Update Interval</label>
+              <span class="bp-tooltip" data-tooltip="How often the UI receives progress updates during processing. Faster updates feel more responsive but add overhead.">?</span>
+            </div>
+            <div class="bp-control-row">
+              <input type="range" id="bpPartialUpdateInterval" class="bp-slider" min="200" max="5000" step="100" />
+              <span class="bp-value" data-for="bpPartialUpdateInterval">1000</span>
+              <span class="bp-unit">ms</span>
+            </div>
+            <div class="bp-default" data-default-for="bpPartialUpdateInterval">Default: 1000</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- DRAWER TOGGLE BUTTON -->
+    <button id="bpDrawerToggle" class="bp-drawer-toggle" type="button" title="Open Backpressure Overrides">
+      <span class="bp-drawer-toggle-icon"></span>
+      <span class="bp-drawer-toggle-label">Backpressure</span>
+    </button>
   </main>
 
   <!-- CDNs (no build step) -->

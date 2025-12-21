@@ -1,5 +1,6 @@
 import { getMockPage } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
+import { getConfig, getConfigValue, getEffectiveTier } from './backpressure-config.js';
 
 export class ApiError extends Error {
   constructor(message, { status = null, report = null, facility = null, url = null } = {}) {
@@ -635,16 +636,24 @@ export function createApiRunner({
 }) {
   const runId = `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
+  // Read backpressure overrides at run start (snapshot for consistency)
+  const bpConfig = getConfig();
+
   const scheduler = createRequestScheduler({
     min: CONCURRENCY_MIN,
     start: CONCURRENCY_START,
-    max: CONCURRENCY_MAX,
+    max: bpConfig.globalMaxConcurrency,
     signal,
     onAdaptiveChange,
     onLaneChange,
     onRequestTiming: (payload) => {
       if (!payload || !onPerf) return;
       onPerf({ type: 'request', ...payload });
+    },
+    greenZoneConfig: {
+      enabled: bpConfig.greenZoneEnabled,
+      greenMax: bpConfig.greenZoneConcurrencyMax,
+      latencyStreak: bpConfig.greenZoneStreakCount,
     },
   });
 
@@ -692,25 +701,35 @@ export function createApiRunner({
       if (!pipelineError) pipelineError = err;
     };
 
+    // Helper to get tier config, respecting forceTier override
+    const getTierConfig = (totalPages) => {
+      const tierResult = getEffectiveTier(totalPages);
+      return tierResult.config || getBackpressureConfig(totalPages);
+    };
+
     const deriveInitialFetchCap = (totalPages) => {
-      const tier = backpressureConfig || getBackpressureConfig(totalPages);
+      const tier = backpressureConfig || getTierConfig(totalPages);
       const tierCap = tier?.fetchBuffer ?? tier?.maxInFlight ?? MAX_IN_FLIGHT_PAGES;
+      // Use override fetch buffer size, falling back to tier/default
+      const configuredBuffer = bpConfig.fetchBufferSize;
       const base = Math.min(
-        Math.max(FETCH_BUFFER_MAX_DEFAULT, FETCH_BUFFER_MAX_MIN),
-        PAGE_QUEUE_LIMIT
+        Math.max(configuredBuffer, FETCH_BUFFER_MAX_MIN),
+        bpConfig.pageQueueLimit
       );
       return Math.max(
         FETCH_BUFFER_MAX_MIN,
-        Math.min(base, tierCap || base, PAGE_QUEUE_LIMIT)
+        Math.min(base, tierCap || base, bpConfig.pageQueueLimit)
       );
     };
 
     const deriveInitialProcessingCap = (totalPages) => {
-      const tier = backpressureConfig || getBackpressureConfig(totalPages);
+      const tier = backpressureConfig || getTierConfig(totalPages);
       const tierCap = tier?.processingMax ?? PROCESSING_POOL_MAX_DEFAULT;
+      // Use override processing pool size, falling back to tier/default
+      const configuredPool = bpConfig.processingPoolSize;
       return Math.min(
         PROCESSING_POOL_MAX_HARD,
-        Math.max(PROCESSING_POOL_MAX_MIN, tierCap || PROCESSING_POOL_MAX_DEFAULT)
+        Math.max(PROCESSING_POOL_MAX_MIN, Math.min(configuredPool, tierCap || configuredPool))
       );
     };
 
