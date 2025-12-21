@@ -488,9 +488,12 @@ export function createApiRunner({
 
       let nextPage = 2;
       let effectiveLastPage = declaredLastPage;
-      const inflight = new Set();
+      const inflightFetches = new Set();  // Track fetches (network I/O)
+      const processingTasks = [];         // Track all processing for final await
+      let activeProcessingCount = 0;      // Count of pages currently being processed
+      const MAX_CONCURRENT_PROCESSING = 4;  // Limit concurrent CPU work to stay responsive
 
-      // Dynamic backpressure: cap in-flight pages based on dataset size
+      // Dynamic backpressure: cap in-flight FETCHES based on dataset size
       const getBufferLimit = () => {
         const configLimit = backpressureConfig?.maxInFlight || MAX_IN_FLIGHT_PAGES;
         return Math.min(configLimit, PAGE_QUEUE_LIMIT);
@@ -502,12 +505,24 @@ export function createApiRunner({
         const stopPage = stopAtPage || effectiveLastPage;
         const bufferLimit = getBufferLimit();
 
-        while (inflight.size < bufferLimit && nextPage <= stopPage) {
+        // Also check processing backpressure - don't fetch too far ahead of processing
+        const maxQueuedForProcessing = MAX_CONCURRENT_PROCESSING * 2;
+        const queuedForProcessing = inflightFetches.size + activeProcessingCount;
+        if (queuedForProcessing >= maxQueuedForProcessing) {
+          return; // Wait for processing to catch up
+        }
+
+        while (inflightFetches.size < bufferLimit && nextPage <= stopPage) {
+          // Recheck processing backpressure inside loop
+          if (inflightFetches.size + activeProcessingCount >= maxQueuedForProcessing) {
+            break;
+          }
+
           const pageNumber = nextPage++;
           instrumentation.recordQueuedTask(1);
           instrumentation.recordRequest(1);
 
-          const task = scheduler.enqueue(() => fetchReportPage({
+          const fetchPromise = scheduler.enqueue(() => fetchReportPage({
             tenant,
             report,
             facility,
@@ -519,41 +534,68 @@ export function createApiRunner({
             outerSignal: signal,
             onWarning,
             scheduler,
-          }), { onTransient: (err) => classifyError(err).transient, report })
-            .then(async (payload) => {
+          }), { onTransient: (err) => classifyError(err).transient, report });
+
+          // Fetch task - resolves when network completes, NOT when processing completes
+          const fetchTask = fetchPromise
+            .then((payload) => {
               instrumentation.recordRequest(-1);
-              if (runIdCheck && runIdCheck() !== runId) return;
+              if (runIdCheck && runIdCheck() !== runId) return null;
               if (payload && typeof payload.last_page === 'number') {
                 effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
               }
-              // Process immediately with backpressure (await ensures we don't overwhelm)
-              await handlePage(payload, pageNumber);
+              return payload;
             })
             .catch((err) => {
               instrumentation.recordRequest(-1);
               throw err;
-            })
-            .finally(() => {
-              instrumentation.recordQueuedTask(-1);
-              inflight.delete(task);
-              // Pump more pages as tasks complete
-              pump();
             });
 
-          inflight.add(task);
+          // Processing task - runs in parallel, tracked separately
+          // This allows fetches to continue while processing happens
+          const processTask = fetchTask.then(async (payload) => {
+            if (payload) {
+              activeProcessingCount++;
+              try {
+                await handlePage(payload, pageNumber);
+              } finally {
+                activeProcessingCount--;
+                // Try to pump more when processing slot frees up
+                pump();
+              }
+            }
+          }).catch((err) => {
+            console.error(`Processing error page ${pageNumber}:`, err);
+            throw err;
+          });
+          processingTasks.push(processTask);
+
+          // When FETCH completes (not processing), pump more
+          fetchTask.finally(() => {
+            instrumentation.recordQueuedTask(-1);
+            inflightFetches.delete(fetchTask);
+            pump();
+          });
+
+          inflightFetches.add(fetchTask);
         }
       };
 
       pump();
 
-      // Wait for all in-flight pages to complete
-      while (inflight.size > 0) {
+      // Wait for all FETCHES to complete first
+      while (inflightFetches.size > 0) {
         if (runIdCheck && runIdCheck() !== runId) {
-          // Cancelled - drain in-flight but don't process
-          await Promise.allSettled(inflight);
+          await Promise.allSettled(inflightFetches);
           break;
         }
-        await Promise.race(inflight);
+        await Promise.race(inflightFetches);
+      }
+
+      // Then wait for all PROCESSING to complete
+      // This ensures we don't declare success until all rows are processed
+      if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
+        await Promise.allSettled(processingTasks);
       }
 
       if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
