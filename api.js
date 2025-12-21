@@ -32,19 +32,29 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 6;       // Conservative limit to prevent memory pressure
-const MAX_IN_FLIGHT_PAGES = 4;    // Reduced for stability with large datasets
-const YIELD_EVERY_N_PAGES = 1;    // Yield after every page for responsiveness
+const PAGE_QUEUE_LIMIT = 10;       // Prefetch queue guardrail (combined with adaptive caps)
+const MAX_IN_FLIGHT_PAGES = 6;     // Base network prefetch ceiling before adaptive controls
+const YIELD_EVERY_N_PAGES = 1;     // Yield after every page for responsiveness
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
+export const FETCH_BUFFER_MAX_DEFAULT = 9;
+export const FETCH_BUFFER_MAX_MIN = 2;
+export const PROCESSING_POOL_MAX_DEFAULT = 3;
+export const PROCESSING_POOL_MAX_MIN = 1;
+const PROCESSING_POOL_MAX_HARD = 4;
+const LATENCY_ADJUST_COOLDOWN_MS = 5000;
+const MEMORY_PRESSURE_THRESHOLD = 0.82;
+const MEMORY_PRESSURE_RECOVER = 0.65;
+const MEMORY_CHECK_INTERVAL_MS = 2500;
+const YIELD_EVERY_PAGE_THRESHOLD = 1000;
 
 // Dynamic backpressure thresholds based on total page count
 // More conservative for extreme datasets to prevent browser freeze/crash
 const BACKPRESSURE_TIERS = [
-  { maxPages: 50, maxInFlight: 8, yieldEvery: 2 },       // Small: moderate
-  { maxPages: 200, maxInFlight: 6, yieldEvery: 1 },      // Medium: conservative
-  { maxPages: 500, maxInFlight: 4, yieldEvery: 1 },      // Large: very conservative
-  { maxPages: 1000, maxInFlight: 3, yieldEvery: 1 },     // Very large: extremely conservative
-  { maxPages: Infinity, maxInFlight: 2, yieldEvery: 1 }  // Extreme (1k+): maximum conservation
+  { maxPages: 50, maxInFlight: 8, yieldEvery: 2, fetchBuffer: 10, processingMax: 4 },       // Small: moderate
+  { maxPages: 200, maxInFlight: 6, yieldEvery: 1, fetchBuffer: 8, processingMax: 4 },       // Medium: conservative
+  { maxPages: 500, maxInFlight: 4, yieldEvery: 1, fetchBuffer: 6, processingMax: 3 },       // Large: very conservative
+  { maxPages: 1000, maxInFlight: 3, yieldEvery: 1, fetchBuffer: 5, processingMax: 3 },      // Very large: extremely conservative
+  { maxPages: Infinity, maxInFlight: 2, yieldEvery: 1, fetchBuffer: 4, processingMax: 2 }   // Extreme (1k+): maximum conservation
 ];
 
 function getBackpressureConfig(totalPages) {
@@ -391,6 +401,7 @@ export function createApiRunner({
   onAdaptiveChange,
   onLaneChange,
   onPerf,
+  pipelineConfig,
 }) {
   const runId = `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
@@ -407,14 +418,92 @@ export function createApiRunner({
     },
   });
 
-  async function processReportFacility({ report, facility, startDate, endDate, timezone, onRows, runIdCheck }) {
+  async function processReportFacility({
+    report,
+    facility,
+    startDate,
+    endDate,
+    timezone,
+    onRows,
+    runIdCheck,
+  }) {
     onFacilityStatus?.({ report, facility, status: 'running' });
+
+    const facilityStats = {
+      maxFetchBuffer: 0,
+      maxBufferedPlusInFlight: 0,
+      maxProcessingActive: 0,
+      yieldCount: 0,
+      progressEvents: 0,
+      finalBuffer: 0,
+      finalProcessing: 0,
+    };
+
+    const pipelineOptions = pipelineConfig || {};
+    const yieldHelper = pipelineOptions.yieldFn || yieldToEventLoop;
+    const performYield = async () => {
+      facilityStats.yieldCount++;
+      await yieldHelper();
+      if (yieldHelper !== yieldToEventLoop) {
+        instrumentation.recordYield();
+      }
+    };
 
     let rowsProcessed = 0;
     let declaredLastPage = 1;
     let stopAtPage = null;
     let pagesProcessed = 0;
     let backpressureConfig = null; // Will be set after first page
+    let effectiveLastPage = 1;
+    let pipelineError = null;
+    const latencyTracker = createLatencyTracker({ maxSamples: LATENCY_TARGETS.sampleSize });
+
+    const markError = (err) => {
+      if (!pipelineError) pipelineError = err;
+    };
+
+    const deriveInitialFetchCap = (totalPages) => {
+      const tier = backpressureConfig || getBackpressureConfig(totalPages);
+      const tierCap = tier?.fetchBuffer ?? tier?.maxInFlight ?? MAX_IN_FLIGHT_PAGES;
+      const base = Math.min(
+        Math.max(FETCH_BUFFER_MAX_DEFAULT, FETCH_BUFFER_MAX_MIN),
+        PAGE_QUEUE_LIMIT
+      );
+      return Math.max(
+        FETCH_BUFFER_MAX_MIN,
+        Math.min(base, tierCap || base, PAGE_QUEUE_LIMIT)
+      );
+    };
+
+    const deriveInitialProcessingCap = (totalPages) => {
+      const tier = backpressureConfig || getBackpressureConfig(totalPages);
+      const tierCap = tier?.processingMax ?? PROCESSING_POOL_MAX_DEFAULT;
+      return Math.min(
+        PROCESSING_POOL_MAX_HARD,
+        Math.max(PROCESSING_POOL_MAX_MIN, tierCap || PROCESSING_POOL_MAX_DEFAULT)
+      );
+    };
+
+    const emitPipelinePerf = (extra = {}) => {
+      onPerf?.({
+        type: 'pipeline',
+        report,
+        facility,
+        ...extra,
+      });
+    };
+
+    const updateStats = (state) => {
+      facilityStats.maxFetchBuffer = Math.max(facilityStats.maxFetchBuffer, state.fetchBufferLength);
+      facilityStats.maxBufferedPlusInFlight = Math.max(
+        facilityStats.maxBufferedPlusInFlight,
+        state.fetchBufferLength + state.fetchInFlight
+      );
+      facilityStats.maxProcessingActive = Math.max(
+        facilityStats.maxProcessingActive,
+        state.processingActive
+      );
+    };
 
     const handlePage = async (payload, pageNumber) => {
       // Check cancellation via runId
@@ -423,32 +512,19 @@ export function createApiRunner({
       if (!payload) return;
       if (stopAtPage && pageNumber > stopAtPage) return;
 
-      const rows = Array.isArray(payload.data) ? payload.data : [];
-      if (typeof payload.last_page === 'number') {
-        declaredLastPage = Math.max(declaredLastPage, payload.last_page || 1);
-
-        // Set backpressure config based on total pages (after first page)
-        if (!backpressureConfig && declaredLastPage > 0) {
-          backpressureConfig = getBackpressureConfig(declaredLastPage);
-          if (declaredLastPage > 200) {
-            onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
-          }
-        }
-      }
-      if (!payload.next_page_url) {
-        stopAtPage = stopAtPage ? Math.min(stopAtPage, pageNumber) : pageNumber;
-      }
-      const effectiveLastPage = stopAtPage ? stopAtPage : declaredLastPage;
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const effectivePageCap = stopAtPage ? stopAtPage : declaredLastPage;
       rowsProcessed += rows.length;
 
       // Record metrics
-      const payloadSize = JSON.stringify(payload).length;
+      const payloadSize = payload.payloadBytes ?? JSON.stringify(payload).length;
       instrumentation.recordPageComplete(payloadSize);
 
-      onProgress?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rowsProcessed });
+      onProgress?.({ report, facility, page: pageNumber, lastPage: effectivePageCap, rowsProcessed });
+      facilityStats.progressEvents += 1;
 
       // Wait for onRows to process (backpressure)
-      const result = onRows?.({ report, facility, page: pageNumber, lastPage: effectiveLastPage, rows, runId });
+      const result = onRows?.({ report, facility, page: pageNumber, lastPage: effectivePageCap, rows, runId });
       if (result && typeof result.then === 'function') {
         await result;
       }
@@ -457,18 +533,18 @@ export function createApiRunner({
 
       // Dynamic yielding based on dataset size
       const yieldInterval = backpressureConfig?.yieldEvery || YIELD_EVERY_N_PAGES;
-      if (pagesProcessed % yieldInterval === 0) {
-        await yieldToEventLoop();
+      const alwaysYield = (stopAtPage || declaredLastPage) >= (pipelineOptions.yieldPageThreshold ?? YIELD_EVERY_PAGE_THRESHOLD);
+      if (alwaysYield || pagesProcessed % yieldInterval === 0) {
+        await performYield();
       }
 
-      // For extreme datasets (1000+ pages), yield after EVERY page to maximize responsiveness
-      if (declaredLastPage >= 1000 && pagesProcessed % yieldInterval !== 0) {
-        await yieldToEventLoop();
-      }
+      // Ensure payload rows are released ASAP
+      payload.rows = null;
     };
 
     try {
       instrumentation.recordRequest(1);
+      const firstFetchStarted = performance.now();
       const firstPayload = await scheduler.enqueue(() => fetchReportPage({
         tenant,
         report,
@@ -481,63 +557,187 @@ export function createApiRunner({
         outerSignal: signal,
         onWarning,
         scheduler,
-      }), { onTransient: (err) => classifyError(err).transient, report });
-      instrumentation.recordRequest(-1);
+      }), { onTransient: (err) => classifyError(err).transient, report }).finally(() => {
+        instrumentation.recordRequest(-1);
+      });
 
+      latencyTracker.push(report, performance.now() - firstFetchStarted);
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
-      await handlePage(firstPayload, 1);
+      effectiveLastPage = declaredLastPage;
+      backpressureConfig = getBackpressureConfig(declaredLastPage);
+      if (declaredLastPage > 200) {
+        onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
+      }
 
+      const fetchBufferCapBase = pipelineOptions.fetchBufferMax ?? deriveInitialFetchCap(declaredLastPage);
+      const processingCapBase = pipelineOptions.processingPoolMax ?? deriveInitialProcessingCap(declaredLastPage);
+      let fetchBufferCap = Math.max(FETCH_BUFFER_MAX_MIN, Math.min(fetchBufferCapBase, PAGE_QUEUE_LIMIT));
+      let processingCap = Math.max(PROCESSING_POOL_MAX_MIN, Math.min(processingCapBase, PROCESSING_POOL_MAX_HARD));
+      let lastLatencyAdjust = 0;
+      let lastMemoryCheck = 0;
+
+      const fetchBuffer = [];
+      const inflightFetches = new Set();
+      const activeProcessingTasks = new Set();
+      let completedProcessingCount = 0;
       let nextPage = 2;
-      let effectiveLastPage = declaredLastPage;
-      const inflightFetches = new Set();  // Track fetches (network I/O)
-      const activeProcessingTasks = new Set();  // Track ACTIVE processing only (not completed)
-      let completedProcessingCount = 0;   // Count of completed processing tasks
-      let totalPagesScheduled = 1;        // Already handled page 1
-      const MAX_CONCURRENT_PROCESSING = 3;  // Reduced to prevent memory pressure
 
-      // Dynamic backpressure: cap in-flight FETCHES based on dataset size
-      const getBufferLimit = () => {
-        const configLimit = backpressureConfig?.maxInFlight || MAX_IN_FLIGHT_PAGES;
-        // Be more conservative for very large datasets
-        const conservativeLimit = declaredLastPage >= 500 ? Math.min(configLimit, 4) : configLimit;
-        return Math.min(conservativeLimit, PAGE_QUEUE_LIMIT);
+      const applyLatencyAdjustments = () => {
+        const now = performance.now();
+        if (now - lastLatencyAdjust < LATENCY_ADJUST_COOLDOWN_MS) return;
+        const p90 = latencyTracker.p90(report);
+        if (!p90) return;
+
+        if (p90 > (LATENCY_TARGETS?.p90SpikeMs || Infinity)) {
+          if (fetchBufferCap > FETCH_BUFFER_MAX_MIN) {
+            const nextCap = Math.max(FETCH_BUFFER_MAX_MIN, Math.floor(fetchBufferCap * 0.7));
+            fetchBufferCap = nextCap;
+            lastLatencyAdjust = now;
+            emitPipelinePerf({ reason: 'latency_backoff', fetchBufferCap, processingCap });
+          } else if (processingCap > PROCESSING_POOL_MAX_MIN) {
+            processingCap = Math.max(PROCESSING_POOL_MAX_MIN, processingCap - 1);
+            lastLatencyAdjust = now;
+            emitPipelinePerf({ reason: 'latency_processing_backoff', fetchBufferCap, processingCap });
+          }
+        } else if (p90 < (LATENCY_TARGETS?.p90RecoverMs || 0)) {
+          let changed = false;
+          if (fetchBufferCap < fetchBufferCapBase) {
+            fetchBufferCap = Math.min(fetchBufferCapBase, fetchBufferCap + 1);
+            changed = true;
+          }
+          if (processingCap < processingCapBase && !changed) {
+            processingCap = Math.min(processingCapBase, processingCap + 1);
+            changed = true;
+          }
+          if (changed) {
+            lastLatencyAdjust = now;
+            emitPipelinePerf({ reason: 'latency_recover', fetchBufferCap, processingCap });
+          }
+        }
       };
 
-      // Use setTimeout to avoid deep recursion in pump()
-      let pumpScheduled = false;
-      const schedulePump = () => {
-        if (pumpScheduled) return;
-        pumpScheduled = true;
-        setTimeout(() => {
-          pumpScheduled = false;
-          pump();
-        }, 0);
+      const maybeAdjustForMemory = () => {
+        if (typeof performance === 'undefined' || !performance.memory) return;
+        const now = performance.now();
+        if (now - lastMemoryCheck < MEMORY_CHECK_INTERVAL_MS) return;
+        lastMemoryCheck = now;
+        const { usedJSHeapSize, jsHeapSizeLimit } = performance.memory;
+        if (!jsHeapSizeLimit || !usedJSHeapSize) return;
+        const ratio = usedJSHeapSize / jsHeapSizeLimit;
+        if (ratio > MEMORY_PRESSURE_THRESHOLD) {
+          if (fetchBufferCap > FETCH_BUFFER_MAX_MIN) {
+            fetchBufferCap = Math.max(FETCH_BUFFER_MAX_MIN, fetchBufferCap - 1);
+            emitPipelinePerf({ reason: 'memory_backoff', fetchBufferCap, processingCap });
+          } else if (processingCap > PROCESSING_POOL_MAX_MIN) {
+            processingCap = Math.max(PROCESSING_POOL_MAX_MIN, processingCap - 1);
+            emitPipelinePerf({ reason: 'memory_processing_backoff', fetchBufferCap, processingCap });
+          }
+        } else if (ratio < MEMORY_PRESSURE_RECOVER) {
+          let updated = false;
+          if (fetchBufferCap < fetchBufferCapBase) {
+            fetchBufferCap = Math.min(fetchBufferCapBase, fetchBufferCap + 1);
+            updated = true;
+          }
+          if (!updated && processingCap < processingCapBase) {
+            processingCap = Math.min(processingCapBase, processingCap + 1);
+            updated = true;
+          }
+          if (updated) {
+            emitPipelinePerf({ reason: 'memory_recover', fetchBufferCap, processingCap });
+          }
+        }
+      };
+
+      const schedulePump = (() => {
+        let scheduled = false;
+        return () => {
+          if (scheduled) return;
+          scheduled = true;
+          setTimeout(() => {
+            scheduled = false;
+            pump();
+          }, 0);
+        };
+      })();
+
+      const normalizePayload = (payload, pageNumber) => {
+        if (!payload) return null;
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        if (typeof payload.last_page === 'number') {
+          declaredLastPage = Math.max(declaredLastPage, payload.last_page || pageNumber);
+        }
+        if (!payload.next_page_url) {
+          stopAtPage = stopAtPage ? Math.min(stopAtPage, pageNumber) : pageNumber;
+        }
+        effectiveLastPage = stopAtPage || declaredLastPage;
+        const compactPayload = {
+          pageNumber,
+          rows,
+          last_page: payload.last_page ?? declaredLastPage,
+          next_page_url: payload.next_page_url ?? null,
+        };
+        compactPayload.payloadBytes = JSON.stringify(compactPayload).length;
+        return compactPayload;
+      };
+
+      const fetchBufferState = () => ({
+        fetchBufferLength: fetchBuffer.length,
+        fetchInFlight: inflightFetches.size,
+        processingActive: activeProcessingTasks.size,
+      });
+
+      const maybeEmitSnapshot = () => {
+        const state = fetchBufferState();
+        updateStats(state);
+        emitPipelinePerf({
+          fetchBuffer: state.fetchBufferLength,
+          fetchInFlight: state.fetchInFlight,
+          processingActive: state.processingActive,
+          fetchBufferCap,
+          processingCap,
+        });
+      };
+
+      const scheduleProcessing = () => {
+        while (activeProcessingTasks.size < processingCap && fetchBuffer.length) {
+          const payload = fetchBuffer.shift();
+          const processTask = (async () => {
+            try {
+              await handlePage(payload, payload.pageNumber);
+              completedProcessingCount++;
+            } catch (err) {
+              markError(err);
+              throw err;
+            } finally {
+              activeProcessingTasks.delete(processTask);
+              maybeEmitSnapshot();
+              schedulePump();
+            }
+          })();
+          activeProcessingTasks.add(processTask);
+          maybeEmitSnapshot();
+        }
       };
 
       const pump = () => {
+        if (pipelineError) return;
         if (runIdCheck && runIdCheck() !== runId) return;
         if (signal?.aborted) return;
-        const stopPage = stopAtPage || effectiveLastPage;
-        const bufferLimit = getBufferLimit();
 
-        // Strict backpressure: limit total outstanding work (fetches + processing)
-        const maxOutstanding = MAX_CONCURRENT_PROCESSING + bufferLimit;
-        const currentOutstanding = inflightFetches.size + activeProcessingTasks.size;
-        if (currentOutstanding >= maxOutstanding) {
-          return; // Wait for work to complete
-        }
+        maybeAdjustForMemory();
+        const targetLastPage = stopAtPage || declaredLastPage;
+        const remainingToFetch = Math.max(0, targetLastPage - (nextPage - 1));
+        const desiredFetchSlots = Math.min(fetchBufferCap, PAGE_QUEUE_LIMIT, remainingToFetch || fetchBufferCap);
 
-        while (inflightFetches.size < bufferLimit && nextPage <= stopPage) {
-          // Recheck backpressure inside loop
-          if (inflightFetches.size + activeProcessingTasks.size >= maxOutstanding) {
-            break;
-          }
-
+        while (
+          activeProcessingTasks.size + fetchBuffer.length < fetchBufferCap + processingCap &&
+          inflightFetches.size + fetchBuffer.length < desiredFetchSlots &&
+          nextPage <= targetLastPage
+        ) {
           const pageNumber = nextPage++;
-          totalPagesScheduled++;
           instrumentation.recordQueuedTask(1);
           instrumentation.recordRequest(1);
-
+          const startedAt = performance.now();
           const fetchPromise = scheduler.enqueue(() => fetchReportPage({
             tenant,
             report,
@@ -552,82 +752,76 @@ export function createApiRunner({
             scheduler,
           }), { onTransient: (err) => classifyError(err).transient, report });
 
-          // Fetch task - resolves when network completes, NOT when processing completes
           const fetchTask = fetchPromise
             .then((payload) => {
               instrumentation.recordRequest(-1);
+              latencyTracker.push(report, performance.now() - startedAt);
+              applyLatencyAdjustments();
               if (runIdCheck && runIdCheck() !== runId) return null;
-              if (payload && typeof payload.last_page === 'number') {
-                effectiveLastPage = Math.max(effectiveLastPage, payload.last_page || pageNumber);
+              return normalizePayload(payload, pageNumber);
+            })
+            .then((compact) => {
+              if (compact) {
+                fetchBuffer.push(compact);
               }
-              return payload;
+              inflightFetches.delete(fetchTask);
+              instrumentation.recordQueuedTask(-1);
+              maybeEmitSnapshot();
+              scheduleProcessing();
             })
             .catch((err) => {
               instrumentation.recordRequest(-1);
+              instrumentation.recordQueuedTask(-1);
+              inflightFetches.delete(fetchTask);
+              markError(err);
+              schedulePump();
               throw err;
             });
 
-          // Processing task - runs in parallel, tracked in Set (auto-cleanup)
-          const processTask = fetchTask.then(async (payload) => {
-            if (payload) {
-              try {
-                await handlePage(payload, pageNumber);
-              } finally {
-                completedProcessingCount++;
-                activeProcessingTasks.delete(processTask);
-                // Schedule pump to avoid recursion
-                schedulePump();
-              }
-            } else {
-              activeProcessingTasks.delete(processTask);
-              schedulePump();
-            }
-          }).catch((err) => {
-            activeProcessingTasks.delete(processTask);
-            console.error(`Processing error page ${pageNumber}:`, err);
-            schedulePump();
-            throw err;
-          });
-          activeProcessingTasks.add(processTask);
-
-          // When FETCH completes (not processing), schedule pump
-          fetchTask.finally(() => {
-            instrumentation.recordQueuedTask(-1);
-            inflightFetches.delete(fetchTask);
-            schedulePump();
-          });
-
           inflightFetches.add(fetchTask);
+          maybeEmitSnapshot();
         }
+
+        scheduleProcessing();
       };
+
+      // Process first page immediately using the new pipeline stats helpers
+      await handlePage(normalizePayload(firstPayload, 1), 1);
+      completedProcessingCount = 1;
+      maybeEmitSnapshot();
 
       pump();
 
       // Wait for all work to complete using a loop that checks remaining work
-      const allPagesCount = stopAtPage || effectiveLastPage;
-      while (completedProcessingCount < allPagesCount) {
+      while (completedProcessingCount < (stopAtPage || effectiveLastPage)) {
         if (runIdCheck && runIdCheck() !== runId) break;
         if (signal?.aborted) break;
+        if (pipelineError) break;
 
-        // Wait for any active task to complete
         const waitSet = new Set([...inflightFetches, ...activeProcessingTasks]);
         if (waitSet.size === 0) {
-          // No active work but not all pages done - pump more
           pump();
-          if (inflightFetches.size === 0 && activeProcessingTasks.size === 0) {
-            break; // Nothing more to do
-          }
+          if (!fetchBuffer.length && !inflightFetches.size && !activeProcessingTasks.size) break;
           continue;
         }
 
-        await Promise.race(waitSet).catch(() => {});
-        // Yield to event loop periodically
-        await yieldToEventLoop();
+        try {
+          await Promise.race(waitSet);
+        } catch {
+          // Errors are recorded via pipelineError
+        }
+        await performYield();
       }
+
+      facilityStats.finalBuffer = fetchBuffer.length;
+      facilityStats.finalProcessing = activeProcessingTasks.size;
+
+      if (pipelineError) throw pipelineError;
 
       if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
         onFacilityStatus?.({ report, facility, status: 'done' });
       }
+      return { report, facility, stats: facilityStats };
     } catch (e) {
       if (signal?.aborted || (runIdCheck && runIdCheck() !== runId)) {
         onFacilityStatus?.({ report, facility, status: 'error', error: 'aborted' });
@@ -672,7 +866,7 @@ export function createApiRunner({
     }
 
     try {
-      await Promise.all(tasks);
+      return await Promise.all(tasks);
     } catch (err) {
       scheduler.cancel('failure');
       throw err;
