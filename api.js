@@ -31,6 +31,16 @@ export const BACKOFF_BASE_MS = 400;
 export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
+export const GREEN_ZONE_ENABLED = true;
+export const GREEN_ZONE_CONCURRENCY_MAX = 12;
+export const GREEN_ZONE_LANE_BONUS = 2;
+export const GREEN_ZONE_LANE_CAP = 10;
+export const GREEN_ZONE_STREAK_COUNT = 4;
+export const GREEN_ZONE_COOLDOWN_MS = 8000;
+export const GREEN_ZONE_MEMORY_ENTER_RATIO = 0.58;
+export const GREEN_ZONE_MEMORY_EXIT_RATIO = 0.78;
+// Tune green zone behavior: *_MAX lifts ceilings, *_STREAK_COUNT gates entry, *_COOLDOWN_MS slows re-entry,
+// *_RATIO thresholds gate memory headroom checks. Disable via GREEN_ZONE_ENABLED when needed.
 const SUCCESS_RAMP_THRESHOLD = 5;
 const PAGE_QUEUE_LIMIT = 10;       // Prefetch queue guardrail (combined with adaptive caps)
 const MAX_IN_FLIGHT_PAGES = 6;     // Base network prefetch ceiling before adaptive controls
@@ -221,6 +231,133 @@ function createLatencyTracker({ maxSamples = 50 } = {}) {
   return { push, p90, clear };
 }
 
+// Adaptive green zone controller:
+// - Enter after sustained per-report latency streaks under p90RecoverMs while memory has headroom.
+// - Exit quickly on latency spikes, memory pressure, or strict backpressure ceilings; cooldown prevents flapping.
+export function createGreenZoneController({
+  enabled = GREEN_ZONE_ENABLED,
+  baseMax = CONCURRENCY_MAX,
+  greenMax = GREEN_ZONE_CONCURRENCY_MAX,
+  laneBonus = GREEN_ZONE_LANE_BONUS,
+  laneCap = GREEN_ZONE_LANE_CAP,
+  latencyStreak = GREEN_ZONE_STREAK_COUNT,
+  cooldownMs = GREEN_ZONE_COOLDOWN_MS,
+  latencyTargets = LATENCY_TARGETS,
+  memoryEnterRatio = GREEN_ZONE_MEMORY_ENTER_RATIO,
+  memoryExitRatio = GREEN_ZONE_MEMORY_EXIT_RATIO,
+  nowFn = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()),
+  memoryProvider = () => (typeof performance !== 'undefined' && performance.memory ? performance.memory : null),
+} = {}) {
+  const streaks = new Map();
+  const observedReports = new Set();
+  const entryThreshold = latencyTargets?.p90RecoverMs ?? 0;
+  const exitThreshold = latencyTargets?.p90SpikeMs ?? Math.max(entryThreshold + 500, entryThreshold * 1.2);
+  const state = {
+    green: false,
+    lastExit: 0,
+    backpressureCeiling: null,
+  };
+
+  const inCooldown = () => {
+    if (!state.lastExit) return false;
+    return nowFn() - state.lastExit < cooldownMs;
+  };
+
+  const getMemoryRatio = () => {
+    const mem = memoryProvider?.();
+    if (!mem || !mem.jsHeapSizeLimit || !mem.usedJSHeapSize) return null;
+    if (mem.jsHeapSizeLimit === 0) return null;
+    return mem.usedJSHeapSize / mem.jsHeapSizeLimit;
+  };
+
+  const hasMemoryHeadroom = (forEntry) => {
+    const ratio = getMemoryRatio();
+    if (ratio === null) return true;
+    const limit = forEntry ? memoryEnterRatio : memoryExitRatio;
+    return ratio < limit;
+  };
+
+  const canEnter = () => {
+    if (!enabled || state.green) return false;
+    if (inCooldown()) return false;
+    if (!hasMemoryHeadroom(true)) return false;
+    if (state.backpressureCeiling && state.backpressureCeiling < baseMax) return false;
+    if (!observedReports.size) return false;
+    return [...observedReports].every((r) => (streaks.get(r) || 0) >= latencyStreak);
+  };
+
+  const recordSample = (report, p90) => {
+    if (!enabled) return { green: false, changed: state.green };
+    if (typeof report === 'string') observedReports.add(report);
+    if (typeof p90 === 'number' && report) {
+      if (p90 < entryThreshold) {
+        streaks.set(report, (streaks.get(report) || 0) + 1);
+      } else {
+        streaks.set(report, 0);
+      }
+    }
+
+    let changed = false;
+    let reason = null;
+    if (state.green) {
+      const exitByLatency = typeof p90 === 'number' && p90 >= exitThreshold;
+      const exitByMemory = !hasMemoryHeadroom(false);
+      const exitByBackpressure = state.backpressureCeiling && state.backpressureCeiling < baseMax;
+      if (exitByLatency || exitByMemory || exitByBackpressure) {
+        state.green = false;
+        state.lastExit = nowFn();
+        changed = true;
+        reason = exitByLatency ? 'latency_spike' : (exitByMemory ? 'memory_pressure' : 'backpressure');
+      }
+    } else if (canEnter()) {
+      state.green = true;
+      changed = true;
+      reason = 'enter';
+    }
+
+    return { green: state.green, changed, reason, memoryRatio: getMemoryRatio() };
+  };
+
+  const setBackpressureCeiling = (limit) => {
+    state.backpressureCeiling = typeof limit === 'number' && limit > 0 ? limit : null;
+    if (state.green && state.backpressureCeiling && state.backpressureCeiling < baseMax) {
+      state.green = false;
+      state.lastExit = nowFn();
+      return { changed: true, reason: 'backpressure' };
+    }
+    return { changed: false };
+  };
+
+  const getConcurrencyCeiling = () => {
+    const backpressureCap = state.backpressureCeiling;
+    if (!enabled) {
+      return backpressureCap ? Math.min(baseMax, backpressureCap) : baseMax;
+    }
+    const desired = state.green
+      ? Math.max(baseMax, Math.min(greenMax, backpressureCap ?? greenMax))
+      : baseMax;
+    const capped = backpressureCap ? Math.min(desired, backpressureCap) : desired;
+    return Math.max(CONCURRENCY_MIN, capped);
+  };
+
+  const getLaneCeiling = (baseLaneMax, globalCeiling) => {
+    const normalizedBase = Math.max(1, baseLaneMax || baseMax);
+    const ceiling = state.green
+      ? Math.min(globalCeiling, Math.min(normalizedBase + laneBonus, laneCap ?? greenMax, greenMax))
+      : Math.min(normalizedBase, globalCeiling);
+    return Math.max(1, ceiling);
+  };
+
+  return {
+    recordSample,
+    setBackpressureCeiling,
+    getConcurrencyCeiling,
+    getLaneCeiling,
+    isGreen: () => state.green,
+    lastExitAt: () => state.lastExit,
+  };
+}
+
 function createRequestScheduler({
   min = CONCURRENCY_MIN,
   start = CONCURRENCY_START,
@@ -231,8 +368,20 @@ function createRequestScheduler({
   onRequestTiming,
   perReportLimits = PER_REPORT_LIMITS,
   latencyTargets = LATENCY_TARGETS,
+  greenZoneConfig,
 } = {}) {
-  let concurrency = Math.min(Math.max(start, min), max);
+  const greenZone = createGreenZoneController({
+    baseMax: max,
+    latencyTargets,
+    ...greenZoneConfig,
+  });
+  let backpressureCeiling = null;
+  const getEffectiveMax = () => {
+    const zoneMax = greenZone.getConcurrencyCeiling();
+    const cap = backpressureCeiling ? Math.min(zoneMax, backpressureCeiling) : zoneMax;
+    return Math.max(min, cap);
+  };
+  let concurrency = Math.min(Math.max(start, min), getEffectiveMax());
   let active = 0;
   const queue = [];
   let cancelled = false;
@@ -240,6 +389,7 @@ function createRequestScheduler({
   const laneUsage = new Map(); // report -> active count
   const laneCaps = new Map(); // report -> { max, min }
   const latency = createLatencyTracker({ maxSamples: latencyTargets.sampleSize });
+  const laneDefaults = new Map(); // report -> presets for reuse
 
   const cancel = (reason = 'Aborted') => {
     cancelled = true;
@@ -266,16 +416,29 @@ function createRequestScheduler({
       onLaneChange?.({ report, direction: 'down', limit: laneNext });
     }
 
-    const next = Math.max(min, Math.floor(concurrency / 2) || min);
+    clampConcurrency('transient_error');
+  };
+
+  const clampConcurrency = (reason) => {
+    const cap = getEffectiveMax();
+    const next = Math.max(min, Math.min(cap, concurrency));
     if (next < concurrency) {
       concurrency = next;
-      onAdaptiveChange?.({ direction: 'down', concurrency });
+      onAdaptiveChange?.({ direction: 'down', concurrency, reason });
     }
+  };
+
+  const setBackpressureCeiling = (limit) => {
+    backpressureCeiling = typeof limit === 'number' && limit > 0 ? limit : null;
+    const transition = greenZone.setBackpressureCeiling(backpressureCeiling);
+    clampConcurrency(transition.changed ? 'backpressure' : 'backpressure_ceiling');
+    refreshLaneCaps(transition.changed ? 'green_exit' : 'backpressure');
   };
 
   const maybeRampUp = () => {
     if (queue.length === 0) return;
-    if (successStreak >= SUCCESS_RAMP_THRESHOLD && concurrency < max) {
+    const cap = getEffectiveMax();
+    if (successStreak >= SUCCESS_RAMP_THRESHOLD && concurrency < cap) {
       concurrency += 1;
       successStreak = 0;
       onAdaptiveChange?.({ direction: 'up', concurrency });
@@ -283,19 +446,41 @@ function createRequestScheduler({
   };
 
   const getLaneCap = (report) => {
+    if (!laneDefaults.has(report)) {
+      laneDefaults.set(report, perReportLimits[report] || perReportLimits.default || {});
+    }
+    const defaults = laneDefaults.get(report);
     if (!laneCaps.has(report)) {
-      const preset = perReportLimits[report] || perReportLimits.default || {};
       const cap = {
-        max: Math.min(Math.max(preset.max ?? max, min), max),
-        min: Math.max(preset.min ?? min, 1),
+        min: Math.max(defaults?.min ?? min, 1),
+        ceiling: greenZone.getLaneCeiling(defaults?.max ?? max, getEffectiveMax()),
       };
+      cap.max = Math.min(Math.max(defaults?.max ?? max, cap.min), cap.ceiling);
       laneCaps.set(report, cap);
     }
     return laneCaps.get(report);
   };
 
+  const refreshLaneCaps = (reason) => {
+    laneCaps.forEach((cap, report) => {
+      const defaults = laneDefaults.get(report) || perReportLimits[report] || perReportLimits.default || {};
+      const ceiling = greenZone.getLaneCeiling(defaults?.max ?? max, getEffectiveMax());
+      let nextMax = cap.max;
+      if (cap.max > ceiling) {
+        nextMax = ceiling;
+      } else if (reason === 'green_enter' && ceiling > cap.ceiling) {
+        nextMax = Math.min(ceiling, cap.max + 1);
+      }
+      laneCaps.set(report, { ...cap, max: nextMax, ceiling });
+      if (nextMax !== cap.max) {
+        onLaneChange?.({ report, direction: nextMax > cap.max ? 'up' : 'down', limit: nextMax, reason });
+      }
+    });
+  };
+
   const scheduleNext = () => {
     if (cancelled) return;
+    clampConcurrency();
     while (active < concurrency && queue.length) {
       const job = queue.shift();
       if (!job) return;
@@ -329,11 +514,17 @@ function createRequestScheduler({
             }
           } else if (p90 && targets.p90RecoverMs && p90 < targets.p90RecoverMs) {
             const currentCap = getLaneCap(job.report);
-            const upCandidate = Math.min((currentCap.max || concurrency) + 1, (perReportLimits[job.report]?.max ?? perReportLimits.default?.max ?? max));
+            const upCandidate = Math.min((currentCap.max || concurrency) + 1, currentCap.ceiling || getEffectiveMax());
             if (upCandidate > (currentCap.max || concurrency)) {
               laneCaps.set(job.report, { ...currentCap, max: upCandidate });
               onLaneChange?.({ report: job.report, direction: 'up', limit: upCandidate, reason: 'latency_recover' });
             }
+          }
+
+          const zoneChange = greenZone.recordSample(job.report, p90);
+          if (zoneChange.changed) {
+            clampConcurrency(zoneChange.reason || (zoneChange.green ? 'green_enter' : 'green_exit'));
+            refreshLaneCaps(zoneChange.green ? 'green_enter' : 'green_exit');
           }
 
           successStreak += 1;
@@ -363,7 +554,7 @@ function createRequestScheduler({
     scheduleNext();
   });
 
-  return { enqueue, cancel, recordTransientError, getConcurrency: () => concurrency };
+  return { enqueue, cancel, recordTransientError, getConcurrency: () => concurrency, setBackpressureCeiling };
 }
 
 async function executeWithRetry(task, { signal, onWarning, context, scheduler } = {}) {
@@ -604,6 +795,7 @@ export function createApiRunner({
       declaredLastPage = Math.max(1, Number(firstPayload?.last_page || 1));
       effectiveLastPage = declaredLastPage;
       backpressureConfig = getBackpressureConfig(declaredLastPage);
+      scheduler.setBackpressureCeiling(backpressureConfig?.maxInFlight);
       if (declaredLastPage > 200) {
         onWarning?.(`Large dataset detected (${declaredLastPage} pages). Using conservative backpressure: max ${backpressureConfig.maxInFlight} concurrent, yield every ${backpressureConfig.yieldEvery} pages.`);
       }
