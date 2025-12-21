@@ -6,13 +6,19 @@ import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
 import { createETATracker } from './eta.js?v=2025.01.07.0';
 import { createWorkerBatcher } from './worker-transfer.js?v=2025.01.07.0';
+import {
+  WORKER_AUTO_THRESHOLD_PAGES,
+  PARTIAL_EMIT_INTERVAL_MS_DEFAULT,
+  shouldAutoUseWorker,
+  computeRenderThrottle,
+} from './worker-adaptation.js';
 
 const { DateTime } = window.luxon;
 
 const PROGRESS_THROTTLE_MS = 200; // 5x/second
-const CHART_RENDER_THROTTLE_MS = 1200; // avoid re-rendering charts too often during streaming
 const PERF_RENDER_THROTTLE_MS = 900;
 const PERF_DEBUG = new URLSearchParams(window.location.search).has('perf');
+const WORKER_READY_TIMEOUT_MS = 1500;
 
 const REPORTS = [
   'current_inventory',
@@ -64,6 +70,7 @@ const state = {
   results: {},  // report -> result payload
   chartRegistry: new Map(), // report -> [chartHandles]
   workerPreference: true,
+  resultsRenderThrottleMs: computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT),
   currentRunId: null, // For cancellation correctness
   apiRunner: null, // Store runner reference for cancellation
   etaTracker: null, // ETA tracking instance
@@ -649,6 +656,19 @@ function updateWorkerStatus(text) {
   }
 }
 
+async function waitForWorkerReady(timeoutMs = WORKER_READY_TIMEOUT_MS) {
+  if (!workerRuntime.supported) return false;
+  if (workerRuntime.ready) return true;
+  const start = performance.now ? performance.now() : Date.now();
+  while ((performance.now ? performance.now() : Date.now()) - start < timeoutMs) {
+    if (workerRuntime.ready) return true;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  workerRuntime.fallbackReason = 'Worker handshake timeout';
+  updateWorkerStatus('Worker handshake timeout; using main thread.');
+  return false;
+}
+
 function handleWorkerMessage(event) {
   const data = event.data || {};
   switch (data.type) {
@@ -669,6 +689,9 @@ function handleWorkerMessage(event) {
       if (data.runId !== workerRuntime.currentRunId) return;
       if (data.results && state.running) {
         state.results = data.results;
+        if (data.partialIntervalMs) {
+          state.resultsRenderThrottleMs = computeRenderThrottle(data.partialIntervalMs);
+        }
         scheduleResultsRender();
       }
       break;
@@ -874,6 +897,7 @@ function scheduleResultsRender() {
     resultsRenderState.pending = true;
     return;
   }
+  const throttleMs = state.resultsRenderThrottleMs || computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT);
   resultsRenderState.timer = setTimeout(() => {
     resultsRenderState.timer = null;
     resultsRenderState.pending = false;
@@ -986,6 +1010,7 @@ async function runAssessment() {
   state.progress = {};
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
+  state.resultsRenderThrottleMs = computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT);
 
   // Initialize ETA tracker
   state.etaTracker = createETATracker();
@@ -1005,40 +1030,83 @@ async function runAssessment() {
   state.currentRunId = assessmentRunId;
 
   const roiEnabled = canComputeROI(inputs.assumptions);
-  const useWorker = shouldUseWorker();
-  const workerRun = useWorker ? beginWorkerRun({
-    timezone: inputs.timezone,
-    startDate: inputs.startDate,
-    endDate: inputs.endDate,
-    assumptions: inputs.assumptions,
-    selectedReports: inputs.reports,
-    facilities: inputs.facilities,
-    tenant: inputs.tenant,
-    roiEnabled,
-  }) : null;
-  const workerBatcher = workerRun && workerRuntime.worker ? createWorkerBatcher({
-    runId: workerRun.runId,
-    signal,
-    postMessage: (payload) => workerRuntime.worker?.postMessage(payload),
-  }) : null;
 
-  if (useWorker && !workerRun) {
-    addWarning('Web Worker preferred but unavailable; using main-thread analysis.');
-  }
+  let workerRun = null;
+  let workerBatcher = null;
+  let analyzers = null;
+  let mainThreadIngest = null;
+  let analysisMode = null; // 'worker' | 'main'
+  let analysisInitPromise = null;
+  const previousWorkerPreference = state.workerPreference;
+  let autoPreferenceOverride = false;
 
-  const analyzers = workerRun ? null : createAnalyzers({
-    timezone: inputs.timezone,
-    startDate: inputs.startDate,
-    endDate: inputs.endDate,
-    assumptions: inputs.assumptions,
-    onWarning: (w) => addWarning(w),
-  });
-  const mainThreadIngest = workerRun ? null : createMainThreadIngestQueue({
-    analyzers,
-    timezone: inputs.timezone,
-    onWarning: addWarning,
-    signal,
-  });
+  const ensureAnalysisMode = async ({ lastPage, sampleRowCount }) => {
+    if (analysisMode) return analysisMode;
+    if (analysisInitPromise) return analysisInitPromise;
+    analysisInitPromise = (async () => {
+      const estimatedPages = typeof lastPage === 'number' && lastPage > 0
+        ? lastPage
+        : (sampleRowCount > 0 ? Math.ceil((WORKER_AUTO_THRESHOLD_PAGES * 50) / sampleRowCount) : null);
+      const workerAvailable = workerRuntime.supported && !workerRuntime.fallbackReason;
+      const preferWorker = state.workerPreference;
+      const autoWorker = shouldAutoUseWorker({
+        estimatedPages,
+        threshold: WORKER_AUTO_THRESHOLD_PAGES,
+        workerAvailable,
+        preferred: preferWorker,
+      });
+
+      if (autoWorker && workerAvailable) {
+        if (!preferWorker) {
+          addWarning(`Large dataset detected (${estimatedPages || 'many'} pages). Auto-enabling Web Worker to protect UI responsiveness.`);
+          autoPreferenceOverride = true;
+          workerRuntime.preferred = true;
+          state.workerPreference = true;
+        }
+        const ready = await waitForWorkerReady();
+        if (ready) {
+          workerRun = beginWorkerRun({
+            timezone: inputs.timezone,
+            startDate: inputs.startDate,
+            endDate: inputs.endDate,
+            assumptions: inputs.assumptions,
+            selectedReports: inputs.reports,
+            facilities: inputs.facilities,
+            tenant: inputs.tenant,
+            roiEnabled,
+          });
+          if (workerRun && workerRuntime.worker) {
+            workerBatcher = createWorkerBatcher({
+              runId: workerRun.runId,
+              signal,
+              postMessage: (payload) => workerRuntime.worker?.postMessage(payload),
+            });
+            analysisMode = 'worker';
+            updateWorkerStatus('Web Worker active for this run.');
+            return analysisMode;
+          }
+        }
+        addWarning('Web Worker unavailable; using main-thread analysis.');
+      }
+
+      analyzers = createAnalyzers({
+        timezone: inputs.timezone,
+        startDate: inputs.startDate,
+        endDate: inputs.endDate,
+        assumptions: inputs.assumptions,
+        onWarning: (w) => addWarning(w),
+      });
+      mainThreadIngest = createMainThreadIngestQueue({
+        analyzers,
+        timezone: inputs.timezone,
+        onWarning: addWarning,
+        signal,
+      });
+      analysisMode = 'main';
+      return analysisMode;
+    })();
+    return analysisInitPromise;
+  };
 
   const apiRunner = createApiRunner({
     tenant: inputs.tenant,
@@ -1096,7 +1164,9 @@ async function runAssessment() {
         if (state.currentRunId !== assessmentRunId) return;
         if (pageRunId && pageRunId !== apiRunner.runId) return;
 
-        if (workerBatcher) {
+        const mode = await ensureAnalysisMode({ lastPage, sampleRowCount: Array.isArray(rows) ? rows.length : 0 });
+
+        if (mode === 'worker' && workerBatcher) {
           await workerBatcher.enqueue({ report, facility, page, lastPage, rows });
           return;
         }
@@ -1129,11 +1199,18 @@ async function runAssessment() {
     });
 
     // Finalize per report
-    if (workerRun) {
+    if (!analysisMode) {
+      await ensureAnalysisMode({ lastPage: 0, sampleRowCount: 0 });
+    }
+
+    if (analysisMode === 'worker' && workerRun) {
       await workerBatcher?.flush();
       const payload = await finalizeWorkerRun(workerRun.runId);
       if (Array.isArray(payload?.warnings)) payload.warnings.forEach(addWarning);
       state.results = payload?.results || {};
+      if (payload?.partialIntervalMs) {
+        state.resultsRenderThrottleMs = computeRenderThrottle(payload.partialIntervalMs);
+      }
     } else {
       await mainThreadIngest?.drain();
       for (const report of inputs.reports) {
@@ -1156,7 +1233,7 @@ async function runAssessment() {
     setBanner('ok', 'Complete. You can export summaries, print, and download chart CSV/PNG.');
 
   } catch (e) {
-    if (workerRun) cancelWorkerRun('Run failed');
+    if (analysisMode === 'worker' && workerRun) cancelWorkerRun('Run failed');
     if (signal.aborted) {
       setBanner('info', 'Run cancelled.');
     } else if (e instanceof ApiError) {
@@ -1176,6 +1253,13 @@ async function runAssessment() {
     // Critical: null out token from memory (but leave it in the input field for user convenience)
     setTokenInMemory(null);
     state.abortController = null;
+    if (autoPreferenceOverride) {
+      workerRuntime.preferred = previousWorkerPreference;
+      state.workerPreference = previousWorkerPreference;
+      updateWorkerStatus(previousWorkerPreference
+        ? 'Web Worker enabled when available.'
+        : 'Web Worker disabled; analysis will run on the main thread.');
+    }
     setRunningUI(false);
   }
 }
