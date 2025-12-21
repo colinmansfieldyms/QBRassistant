@@ -200,15 +200,24 @@ When running with `?debug=1`, console logs appear every 2s:
 | 1000  | CRASH      | ~10min    | ∞           |
 | 2000  | CRASH      | ~20min    | ∞           |
 
-### Backpressure Tiers (Updated)
+### Backpressure Tiers (Updated for Stability)
 | Dataset Size | Max Concurrent Fetches | Yield Frequency |
 |--------------|------------------------|-----------------|
-| ≤50 pages    | 12                     | Every 2 pages   |
-| 51-200       | 10                     | Every 2 pages   |
-| 201-500      | 8                      | Every page      |
-| 501-1000     | 6                      | Every page      |
-| 1001-2000    | 5                      | Every page      |
-| 2000+        | 4                      | Every page      |
+| ≤50 pages    | 8                      | Every 2 pages   |
+| 51-200       | 6                      | Every page      |
+| 201-500      | 4                      | Every page      |
+| 501-1000     | 3                      | Every page      |
+| 1000+        | 2                      | Every page      |
+
+### Global Concurrency Limits
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| CONCURRENCY_MIN | 2 | Minimum concurrent requests |
+| CONCURRENCY_START | 4 | Starting concurrency level |
+| CONCURRENCY_MAX | 8 | Maximum concurrent requests |
+| PAGE_QUEUE_LIMIT | 6 | Max pages queued for fetch |
+| MAX_IN_FLIGHT_PAGES | 4 | Max pages being fetched |
+| MAX_CONCURRENT_PROCESSING | 3 | Max pages being processed |
 
 ### Memory Usage
 | Pages | Before Fix | After Fix | Improvement |

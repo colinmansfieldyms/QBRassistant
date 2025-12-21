@@ -12,12 +12,12 @@ export class ApiError extends Error {
   }
 }
 
-export const CONCURRENCY_MIN = 4;
-export const CONCURRENCY_START = 8;
-export const CONCURRENCY_MAX = 20;
+export const CONCURRENCY_MIN = 2;
+export const CONCURRENCY_START = 4;
+export const CONCURRENCY_MAX = 8;
 export const PER_REPORT_LIMITS = {
-  driver_history: { max: 6, min: 2 },
-  default: { max: 18, min: 3 },
+  driver_history: { max: 3, min: 1 },
+  default: { max: 6, min: 2 },
 };
 export const LATENCY_TARGETS = {
   // If p90 latency for a report lane spikes beyond this, back off that lane first.
@@ -32,20 +32,19 @@ export const BACKOFF_JITTER = 180;
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const SLOW_FIRST_PAGE_TIMEOUT_MS = 90000;
 const SUCCESS_RAMP_THRESHOLD = 5;
-const PAGE_QUEUE_LIMIT = 15; // Testing higher limit
-const MAX_IN_FLIGHT_PAGES = 15; // Testing 15 concurrent
-const YIELD_EVERY_N_PAGES = 2; // Yield frequently to stay responsive
+const PAGE_QUEUE_LIMIT = 6;       // Conservative limit to prevent memory pressure
+const MAX_IN_FLIGHT_PAGES = 4;    // Reduced for stability with large datasets
+const YIELD_EVERY_N_PAGES = 1;    // Yield after every page for responsiveness
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 // Dynamic backpressure thresholds based on total page count
-// More conservative for extreme datasets to prevent browser freeze
+// More conservative for extreme datasets to prevent browser freeze/crash
 const BACKPRESSURE_TIERS = [
-  { maxPages: 50, maxInFlight: 12, yieldEvery: 2 },      // Small: aggressive
-  { maxPages: 200, maxInFlight: 10, yieldEvery: 2 },     // Medium: moderate
-  { maxPages: 500, maxInFlight: 8, yieldEvery: 1 },      // Large: conservative
-  { maxPages: 1000, maxInFlight: 6, yieldEvery: 1 },     // Very large: more conservative
-  { maxPages: 2000, maxInFlight: 5, yieldEvery: 1 },     // Extreme: very conservative
-  { maxPages: Infinity, maxInFlight: 4, yieldEvery: 1 }  // Massive (2k+): maximum conservation
+  { maxPages: 50, maxInFlight: 8, yieldEvery: 2 },       // Small: moderate
+  { maxPages: 200, maxInFlight: 6, yieldEvery: 1 },      // Medium: conservative
+  { maxPages: 500, maxInFlight: 4, yieldEvery: 1 },      // Large: very conservative
+  { maxPages: 1000, maxInFlight: 3, yieldEvery: 1 },     // Very large: extremely conservative
+  { maxPages: Infinity, maxInFlight: 2, yieldEvery: 1 }  // Extreme (1k+): maximum conservation
 ];
 
 function getBackpressureConfig(totalPages) {
@@ -491,14 +490,28 @@ export function createApiRunner({
       let nextPage = 2;
       let effectiveLastPage = declaredLastPage;
       const inflightFetches = new Set();  // Track fetches (network I/O)
-      const processingTasks = [];         // Track all processing for final await
-      let activeProcessingCount = 0;      // Count of pages currently being processed
-      const MAX_CONCURRENT_PROCESSING = 4;  // Limit concurrent CPU work to stay responsive
+      const activeProcessingTasks = new Set();  // Track ACTIVE processing only (not completed)
+      let completedProcessingCount = 0;   // Count of completed processing tasks
+      let totalPagesScheduled = 1;        // Already handled page 1
+      const MAX_CONCURRENT_PROCESSING = 3;  // Reduced to prevent memory pressure
 
       // Dynamic backpressure: cap in-flight FETCHES based on dataset size
       const getBufferLimit = () => {
         const configLimit = backpressureConfig?.maxInFlight || MAX_IN_FLIGHT_PAGES;
-        return Math.min(configLimit, PAGE_QUEUE_LIMIT);
+        // Be more conservative for very large datasets
+        const conservativeLimit = declaredLastPage >= 500 ? Math.min(configLimit, 4) : configLimit;
+        return Math.min(conservativeLimit, PAGE_QUEUE_LIMIT);
+      };
+
+      // Use setTimeout to avoid deep recursion in pump()
+      let pumpScheduled = false;
+      const schedulePump = () => {
+        if (pumpScheduled) return;
+        pumpScheduled = true;
+        setTimeout(() => {
+          pumpScheduled = false;
+          pump();
+        }, 0);
       };
 
       const pump = () => {
@@ -507,20 +520,21 @@ export function createApiRunner({
         const stopPage = stopAtPage || effectiveLastPage;
         const bufferLimit = getBufferLimit();
 
-        // Also check processing backpressure - don't fetch too far ahead of processing
-        const maxQueuedForProcessing = MAX_CONCURRENT_PROCESSING * 2;
-        const queuedForProcessing = inflightFetches.size + activeProcessingCount;
-        if (queuedForProcessing >= maxQueuedForProcessing) {
-          return; // Wait for processing to catch up
+        // Strict backpressure: limit total outstanding work (fetches + processing)
+        const maxOutstanding = MAX_CONCURRENT_PROCESSING + bufferLimit;
+        const currentOutstanding = inflightFetches.size + activeProcessingTasks.size;
+        if (currentOutstanding >= maxOutstanding) {
+          return; // Wait for work to complete
         }
 
         while (inflightFetches.size < bufferLimit && nextPage <= stopPage) {
-          // Recheck processing backpressure inside loop
-          if (inflightFetches.size + activeProcessingCount >= maxQueuedForProcessing) {
+          // Recheck backpressure inside loop
+          if (inflightFetches.size + activeProcessingTasks.size >= maxOutstanding) {
             break;
           }
 
           const pageNumber = nextPage++;
+          totalPagesScheduled++;
           instrumentation.recordQueuedTask(1);
           instrumentation.recordRequest(1);
 
@@ -553,30 +567,34 @@ export function createApiRunner({
               throw err;
             });
 
-          // Processing task - runs in parallel, tracked separately
-          // This allows fetches to continue while processing happens
+          // Processing task - runs in parallel, tracked in Set (auto-cleanup)
           const processTask = fetchTask.then(async (payload) => {
             if (payload) {
-              activeProcessingCount++;
               try {
                 await handlePage(payload, pageNumber);
               } finally {
-                activeProcessingCount--;
-                // Try to pump more when processing slot frees up
-                pump();
+                completedProcessingCount++;
+                activeProcessingTasks.delete(processTask);
+                // Schedule pump to avoid recursion
+                schedulePump();
               }
+            } else {
+              activeProcessingTasks.delete(processTask);
+              schedulePump();
             }
           }).catch((err) => {
+            activeProcessingTasks.delete(processTask);
             console.error(`Processing error page ${pageNumber}:`, err);
+            schedulePump();
             throw err;
           });
-          processingTasks.push(processTask);
+          activeProcessingTasks.add(processTask);
 
-          // When FETCH completes (not processing), pump more
+          // When FETCH completes (not processing), schedule pump
           fetchTask.finally(() => {
             instrumentation.recordQueuedTask(-1);
             inflightFetches.delete(fetchTask);
-            pump();
+            schedulePump();
           });
 
           inflightFetches.add(fetchTask);
@@ -585,19 +603,26 @@ export function createApiRunner({
 
       pump();
 
-      // Wait for all FETCHES to complete first
-      while (inflightFetches.size > 0) {
-        if (runIdCheck && runIdCheck() !== runId) {
-          await Promise.allSettled(inflightFetches);
-          break;
-        }
-        await Promise.race(inflightFetches);
-      }
+      // Wait for all work to complete using a loop that checks remaining work
+      const allPagesCount = stopAtPage || effectiveLastPage;
+      while (completedProcessingCount < allPagesCount) {
+        if (runIdCheck && runIdCheck() !== runId) break;
+        if (signal?.aborted) break;
 
-      // Then wait for all PROCESSING to complete
-      // This ensures we don't declare success until all rows are processed
-      if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {
-        await Promise.allSettled(processingTasks);
+        // Wait for any active task to complete
+        const waitSet = new Set([...inflightFetches, ...activeProcessingTasks]);
+        if (waitSet.size === 0) {
+          // No active work but not all pages done - pump more
+          pump();
+          if (inflightFetches.size === 0 && activeProcessingTasks.size === 0) {
+            break; // Nothing more to do
+          }
+          continue;
+        }
+
+        await Promise.race(waitSet).catch(() => {});
+        // Yield to event loop periodically
+        await yieldToEventLoop();
       }
 
       if (!signal?.aborted && (!runIdCheck || runIdCheck() === runId)) {

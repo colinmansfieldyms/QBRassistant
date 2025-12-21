@@ -550,7 +550,7 @@ function recordRender(ms) {
 }
 
 // ---------- Main-thread ingestion helper (yields to keep UI responsive) ----------
-const MAIN_THREAD_INGEST_CHUNK = 400;
+const MAIN_THREAD_INGEST_CHUNK = 200;  // Reduced chunk size for better responsiveness
 
 async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal }) {
   const incoming = Array.isArray(rows) ? rows : [];
@@ -567,9 +567,8 @@ async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, 
         processed++;
       }
     }
-    if (incoming.length > MAIN_THREAD_INGEST_CHUNK) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    // Always yield after each chunk to keep UI responsive
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   const dt = state.perf.enabled ? (performance.now() - t0) : 0;
@@ -577,19 +576,65 @@ async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, 
 }
 
 function createMainThreadIngestQueue({ analyzers, timezone, onWarning, signal }) {
-  let chain = Promise.resolve();
-  const tasks = [];
+  // Use a bounded queue instead of unbounded array
+  const MAX_PENDING = 8;  // Max pending ingestion tasks
+  let pendingCount = 0;
+  let completedCount = 0;
+  let currentChain = Promise.resolve();
+  let drainResolve = null;
+  let drainPromise = null;
 
-  const enqueue = ({ report, rows }) => {
+  const checkDrain = () => {
+    if (drainResolve && pendingCount === 0) {
+      drainResolve();
+      drainResolve = null;
+      drainPromise = null;
+    }
+  };
+
+  const enqueue = async ({ report, rows }) => {
     const analyzer = analyzers?.[report];
     if (!analyzer) return null;
-    const task = chain.then(() => ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal }));
-    tasks.push(task);
-    chain = task.catch(() => {});
+
+    // Apply backpressure if too many pending
+    while (pendingCount >= MAX_PENDING) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      if (signal?.aborted) return null;
+    }
+
+    pendingCount++;
+
+    // Chain tasks to ensure sequential processing per enqueue call
+    const task = currentChain.then(async () => {
+      if (signal?.aborted) {
+        pendingCount--;
+        checkDrain();
+        return { processed: 0, durationMs: 0 };
+      }
+      try {
+        return await ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal });
+      } finally {
+        pendingCount--;
+        completedCount++;
+        checkDrain();
+      }
+    });
+
+    // Update chain but don't hold reference to old chain
+    currentChain = task.catch(() => {});
+
     return task;
   };
 
-  const drain = () => Promise.all(tasks);
+  const drain = () => {
+    if (pendingCount === 0) return Promise.resolve();
+    if (!drainPromise) {
+      drainPromise = new Promise(resolve => {
+        drainResolve = resolve;
+      });
+    }
+    return drainPromise;
+  };
 
   return { enqueue, drain };
 }
