@@ -227,6 +227,41 @@ input:focus, textarea:focus, select:focus{
   gap:10px;
 }
 
+.eta-display{
+  background: linear-gradient(135deg, var(--accent), #3b35a2);
+  border-radius:14px;
+  padding:14px 16px;
+  color:white;
+  margin-bottom:4px;
+}
+.eta-content{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.eta-progress{
+  font-size:1.05rem;
+  font-weight:600;
+}
+.eta-time{
+  font-size:0.95rem;
+  opacity:0.9;
+  background:rgba(255,255,255,0.15);
+  padding:4px 10px;
+  border-radius:999px;
+  display:none;
+}
+.eta-time.eta-visible{
+  display:inline-block;
+}
+.eta-stats{
+  margin-top:8px;
+  font-size:0.85rem;
+  opacity:0.75;
+}
+
 .progress-report{
   border:1px solid var(--border);
   border-radius:14px;

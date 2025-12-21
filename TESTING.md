@@ -93,9 +93,32 @@ When running with `?debug=1`, console logs appear every 2s:
 | Medium load | `?largedata=50&mock=1` | ~15s, responsive |
 | Large load | `?largedata=200&mock=1` | ~60s, responsive |
 | Extreme load | `?largedata=500&mock=1` | ~4min, responsive |
+| Very extreme | `?largedata=2000&mock=1` | ~15min, responsive |
 | Multi-report | `?largedata=50&mock=1` + select all reports | ~45s, responsive |
 | Multi-facility | `?largedata=50&mock=1` + 3 facilities | ~45s, responsive |
 | Live API | (no mock, real data) | Depends on API, but UI responsive |
+
+## ETA Display Feature
+
+### Test: ETA Accuracy
+```
+1. Open: https://colinmansfieldyms.github.io/QBRassistant?largedata=100&mock=1
+2. Same setup as Test 1
+3. Observe the purple ETA bar at top of progress panel
+4. Expected:
+   - Shows "Calculating..." initially
+   - After ~3 pages: Shows "X / 100 pages (X%)" and "~X sec/min remaining"
+   - Time estimate updates dynamically
+   - "pages/sec" and elapsed time stats shown
+5. Verify estimate becomes more accurate over time
+```
+
+### Test: ETA with Variable API Speed
+```
+1. In live API mode (not mock), run assessment
+2. Observe ETA adjusts based on actual API latency
+3. Expected: Uses exponential moving average (responsive to changes)
+```
 
 ## Cancellation Test Cases
 
@@ -173,6 +196,19 @@ When running with `?debug=1`, console logs appear every 2s:
 | 50    | FREEZE     | 18s       | ∞           |
 | 100   | CRASH      | 40s       | ∞           |
 | 200   | CRASH      | 75s       | ∞           |
+| 500   | CRASH      | ~4min     | ∞           |
+| 1000  | CRASH      | ~10min    | ∞           |
+| 2000  | CRASH      | ~20min    | ∞           |
+
+### Backpressure Tiers (Updated)
+| Dataset Size | Max Concurrent Fetches | Yield Frequency |
+|--------------|------------------------|-----------------|
+| ≤50 pages    | 12                     | Every 2 pages   |
+| 51-200       | 10                     | Every 2 pages   |
+| 201-500      | 8                      | Every page      |
+| 501-1000     | 6                      | Every page      |
+| 1001-2000    | 5                      | Every page      |
+| 2000+        | 4                      | Every page      |
 
 ### Memory Usage
 | Pages | Before Fix | After Fix | Improvement |
@@ -180,11 +216,15 @@ When running with `?debug=1`, console logs appear every 2s:
 | 10    | ~8MB       | ~6MB      | 25%         |
 | 50    | ~40MB+     | ~12MB     | 70%         |
 | 100   | CRASH      | ~15MB     | ∞           |
+| 2000  | CRASH      | ~30MB     | ∞           |
 
 ## Manual Testing Checklist
 
 - [ ] Large dataset mode generates correct number of pages
 - [ ] UI remains responsive during 100-page run
+- [ ] UI remains responsive during 2000-page run
+- [ ] ETA display shows and updates dynamically
+- [ ] ETA becomes more accurate over time
 - [ ] Cancellation stops within 500ms
 - [ ] Memory doesn't grow linearly with page count
 - [ ] Small datasets complete faster than before
@@ -193,7 +233,7 @@ When running with `?debug=1`, console logs appear every 2s:
 - [ ] Charts render correctly after completion
 - [ ] Export buttons work after large dataset run
 - [ ] Print to PDF works after large dataset run
-- [ ] Mock mode works with large datasets
+- [ ] Mock mode works with large datasets (up to 5000 pages)
 - [ ] Live API mode works (if available)
 - [ ] PII scrubbing still active
 - [ ] Retry logic still works

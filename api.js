@@ -38,12 +38,14 @@ const YIELD_EVERY_N_PAGES = 2; // Yield frequently to stay responsive
 const SLOW_FIRST_PAGE_REPORTS = new Set(['driver_history']);
 
 // Dynamic backpressure thresholds based on total page count
-// Testing higher concurrency while maintaining stability
+// More conservative for extreme datasets to prevent browser freeze
 const BACKPRESSURE_TIERS = [
-  { maxPages: 50, maxInFlight: 15, yieldEvery: 3 },      // Small: aggressive
-  { maxPages: 200, maxInFlight: 12, yieldEvery: 2 },     // Medium: moderate
-  { maxPages: 1000, maxInFlight: 10, yieldEvery: 2 },    // Large: slightly conservative
-  { maxPages: Infinity, maxInFlight: 8, yieldEvery: 1 }  // Extreme (2k+): conservative
+  { maxPages: 50, maxInFlight: 12, yieldEvery: 2 },      // Small: aggressive
+  { maxPages: 200, maxInFlight: 10, yieldEvery: 2 },     // Medium: moderate
+  { maxPages: 500, maxInFlight: 8, yieldEvery: 1 },      // Large: conservative
+  { maxPages: 1000, maxInFlight: 6, yieldEvery: 1 },     // Very large: more conservative
+  { maxPages: 2000, maxInFlight: 5, yieldEvery: 1 },     // Extreme: very conservative
+  { maxPages: Infinity, maxInFlight: 4, yieldEvery: 1 }  // Massive (2k+): maximum conservation
 ];
 
 function getBackpressureConfig(totalPages) {

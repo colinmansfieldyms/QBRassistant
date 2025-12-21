@@ -4,6 +4,7 @@ import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
+import { createETATracker } from './eta.js?v=2025.01.07.0';
 
 const { DateTime } = window.luxon;
 
@@ -64,6 +65,7 @@ const state = {
   workerPreference: true,
   currentRunId: null, // For cancellation correctness
   apiRunner: null, // Store runner reference for cancellation
+  etaTracker: null, // ETA tracking instance
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -238,6 +240,7 @@ function resetAll() {
   state.warnings = [];
   state.progress = {};
   state.results = {};
+  state.etaTracker = null;
   resetPerfStats();
   resetWorkerState();
   flushProgressRender();
@@ -306,6 +309,19 @@ function setRunningUI(running) {
 function initProgressUI(selectedReports, facilities) {
   state.progress = {};
   UI.progressPanel.innerHTML = '';
+
+  // Add ETA display at the top
+  const etaEl = document.createElement('div');
+  etaEl.id = 'etaDisplay';
+  etaEl.className = 'eta-display';
+  etaEl.innerHTML = `
+    <div class="eta-content">
+      <span class="eta-progress" data-eta-progress>Initializing...</span>
+      <span class="eta-time" data-eta-time></span>
+    </div>
+    <div class="eta-stats" data-eta-stats></div>
+  `;
+  UI.progressPanel.appendChild(etaEl);
 
   selectedReports.forEach(report => {
     state.progress[report] = {};
@@ -382,6 +398,39 @@ function renderProgressNow(report) {
   else metaEl.textContent = `queued`;
 }
 
+function renderETANow() {
+  if (!state.etaTracker) return;
+
+  const etaEl = document.getElementById('etaDisplay');
+  if (!etaEl) return;
+
+  const estimate = state.etaTracker.getEstimate();
+  const progressEl = etaEl.querySelector('[data-eta-progress]');
+  const timeEl = etaEl.querySelector('[data-eta-time]');
+  const statsEl = etaEl.querySelector('[data-eta-stats]');
+
+  if (!estimate.ready) {
+    progressEl.textContent = estimate.totalPages > 0
+      ? `${estimate.completedPages} / ${estimate.totalPages} pages (${estimate.percentComplete}%)`
+      : 'Calculating...';
+    timeEl.textContent = '';
+    statsEl.textContent = '';
+    return;
+  }
+
+  progressEl.textContent = `${estimate.completedPages} / ${estimate.totalPages} pages (${estimate.percentComplete}%)`;
+  timeEl.textContent = estimate.remainingText || '';
+  timeEl.className = 'eta-time' + (estimate.remainingText ? ' eta-visible' : '');
+
+  // Show speed stats
+  const elapsedSec = Math.round(estimate.elapsedMs / 1000);
+  const elapsedText = elapsedSec < 60
+    ? `${elapsedSec}s elapsed`
+    : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s elapsed`;
+
+  statsEl.textContent = `${estimate.pagesPerSecond} pages/sec | ${elapsedText}`;
+}
+
 function scheduleProgressRender(report) {
   progressRenderState.pendingReports.add(report);
   if (progressRenderState.renderRequested) return; // Already queued
@@ -395,6 +444,7 @@ function scheduleProgressRender(report) {
     progressRenderState.renderRequested = false;
     instrumentation.recordBatchedUpdate();
     toRender.forEach(renderProgressNow);
+    renderETANow();
   }, PROGRESS_THROTTLE_MS);
 }
 
@@ -891,6 +941,10 @@ async function runAssessment() {
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
 
+  // Initialize ETA tracker
+  state.etaTracker = createETATracker();
+  state.etaTracker.start();
+
   initProgressUI(inputs.reports, inputs.facilities);
   setRunningUI(true);
   setBanner('info', 'Running assessment… streaming pages, updating metrics, discarding raw rows.');
@@ -948,6 +1002,13 @@ async function runAssessment() {
       p.page = page;
       p.lastPage = lastPage;
       p.rowsProcessed = rowsProcessed;
+
+      // Update ETA tracker
+      if (state.etaTracker) {
+        state.etaTracker.setTotalPages(report, facility, lastPage);
+        state.etaTracker.recordPageComplete(report, facility);
+      }
+
       scheduleProgressRender(report);
     },
     onFacilityStatus: ({ report, facility, status, error }) => {

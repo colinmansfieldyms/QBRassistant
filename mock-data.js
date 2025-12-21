@@ -160,7 +160,7 @@ export function getMockPage({ report, facility, page }) {
   const params = new URLSearchParams(window.location.search);
   const largeDataPages = parseInt(params.get('largedata'), 10);
 
-  if (largeDataPages > 0 && largeDataPages <= 1000) {
+  if (largeDataPages > 0 && largeDataPages <= 5000) {
     return generateLargeDatasetPage({ report, facility, page, totalPages: largeDataPages });
   }
 
