@@ -578,6 +578,10 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     this.totalTrailers = 0;
 
     this.updatedBuckets = { '0–1d': 0, '1–7d': 0, '7–30d': 0, '30d+': 0, 'unknown': 0 };
+    // CSV mode yard-age buckets (using Elapsed Time (Hours))
+    this.yardAgeBuckets = { '0-1d': 0, '1-7d': 0, '7-30d': 0, '30d+': 0, 'unknown': 0 };
+    this.hasCSVYardAge = false;
+
     this.moveType = new CounterMap();
     this.outbound = 0;
     this.inbound = 0;
@@ -633,6 +637,77 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       this.liveLoads++;
       if (!flags.driverContactPresent) this.liveLoadMissingDriverContact++;
     }
+
+    // CSV-specific: yard-age buckets from Elapsed Time (Hours)
+    if (row.csv_elapsed_hours !== undefined && row.csv_elapsed_hours !== null && row.csv_elapsed_hours !== '') {
+      this.hasCSVYardAge = true;
+      const hours = parseFloat(row.csv_elapsed_hours);
+      if (Number.isFinite(hours) && hours >= 0) {
+        if (hours <= 24) this.yardAgeBuckets['0-1d']++;
+        else if (hours <= 168) this.yardAgeBuckets['1-7d']++;
+        else if (hours <= 720) this.yardAgeBuckets['7-30d']++;
+        else this.yardAgeBuckets['30d+']++;
+      } else {
+        this.yardAgeBuckets['unknown']++;
+      }
+    }
+  }
+
+  buildCharts(moveTypeTop, updatedSeries) {
+    const charts = [
+      {
+        id: 'move_type_distribution',
+        title: 'Move type distribution',
+        kind: 'pie',
+        description: 'Distribution of move_type_name values in current inventory.',
+        data: {
+          labels: Object.keys(moveTypeTop),
+          datasets: [{ label: 'Count', data: Object.values(moveTypeTop) }]
+        },
+        csv: {
+          columns: ['move_type_name', 'count'],
+          rows: Object.entries(moveTypeTop).map(([k, v]) => ({ move_type_name: k, count: v })),
+        }
+      },
+      {
+        id: 'updated_recency_buckets',
+        title: 'Updated_at recency buckets',
+        kind: 'bar',
+        description: 'How recently inventory records were updated.',
+        data: {
+          labels: updatedSeries.map(r => r.bucket),
+          datasets: [{ label: 'Records', data: updatedSeries.map(r => r.count) }]
+        },
+        csv: {
+          columns: ['bucket', 'count'],
+          rows: updatedSeries,
+        }
+      }
+    ];
+
+    // Add yard-age chart for CSV mode
+    if (this.hasCSVYardAge) {
+      const yardAgeSeries = Object.entries(this.yardAgeBuckets)
+        .filter(([k]) => k !== 'unknown')
+        .map(([bucket, count]) => ({ bucket, count }));
+
+      charts.push({
+        id: 'yard_age_distribution',
+        title: 'Trailer yard-age distribution',
+        kind: 'bar',
+        description: 'How long trailers have been in the yard (from CSV Elapsed Time Hours).',
+        data: {
+          labels: yardAgeSeries.map(r => r.bucket),
+          datasets: [{ label: 'Trailers', data: yardAgeSeries.map(r => r.count) }]
+        },
+        csv: {
+          columns: ['yard_age_bucket', 'count'],
+          rows: yardAgeSeries.map(r => ({ yard_age_bucket: r.bucket, count: r.count })),
+        }
+      });
+    }
+
+    return charts;
   }
 
   finalize(meta) {
@@ -740,36 +815,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         outbound_vs_inbound_ratio: outboundInboundRatio,
         live_load_missing_driver_contact_pct: missingDriverRate,
       },
-      charts: [
-        {
-          id: 'move_type_distribution',
-          title: 'Move type distribution',
-          kind: 'pie',
-          description: 'Distribution of move_type_name values in current inventory.',
-          data: {
-            labels: Object.keys(moveTypeTop),
-            datasets: [{ label: 'Count', data: Object.values(moveTypeTop) }]
-          },
-          csv: {
-            columns: ['move_type_name', 'count'],
-            rows: Object.entries(moveTypeTop).map(([k, v]) => ({ move_type_name: k, count: v })),
-          }
-        },
-        {
-          id: 'updated_recency_buckets',
-          title: 'Updated_at recency buckets',
-          kind: 'bar',
-          description: 'How recently inventory records were updated.',
-          data: {
-            labels: updatedSeries.map(r => r.bucket),
-            datasets: [{ label: 'Records', data: updatedSeries.map(r => r.count) }]
-          },
-          csv: {
-            columns: ['bucket', 'count'],
-            rows: updatedSeries,
-          }
-        }
-      ],
+      charts: this.buildCharts(moveTypeTop, updatedSeries),
       findings,
       recommendations: recs,
       roi: null, // current inventory doesn’t drive ROI directly in MVP

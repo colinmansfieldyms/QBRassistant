@@ -36,6 +36,18 @@
       <section class="card">
         <div class="card-title">Inputs</div>
 
+        <!-- Data Source Tab Bar -->
+        <div class="data-source-tabs">
+          <button class="data-source-tab active" data-source="api" type="button">
+            <span class="tab-icon">&#128268;</span>
+            <span>API</span>
+          </button>
+          <button class="data-source-tab" data-source="csv" type="button">
+            <span class="tab-icon">&#128196;</span>
+            <span>CSV</span>
+          </button>
+        </div>
+
         <div class="form-grid">
           <label class="field">
             <span>Client subdomain (tenant)</span>
@@ -43,23 +55,47 @@
             <small>Base URL: <code>https://{client}.api.ymshub.com/api/v2</code></small>
           </label>
 
-          <label class="field">
-            <span>API token (in-memory only)</span>
-            <div class="row gap-sm">
-              <input id="tokenInput" type="password" placeholder="Paste token…" autocomplete="off" spellcheck="false" />
-              <button id="clearTokenBtn" class="btn btn-warn" type="button">Clear token now</button>
+          <!-- API Mode Fields -->
+          <div id="apiModeFields">
+            <label class="field">
+              <span>API token (in-memory only)</span>
+              <div class="row gap-sm">
+                <input id="tokenInput" type="password" placeholder="Paste token…" autocomplete="off" spellcheck="false" />
+                <button id="clearTokenBtn" class="btn btn-warn" type="button">Clear token now</button>
+              </div>
+              <small class="warn">
+                Token is never persisted (no storage/cookies/URL). Network tools may still show auth headers during live requests.
+              </small>
+            </label>
+          </div>
+
+          <!-- CSV Mode Fields (hidden by default) -->
+          <div id="csvModeFields" class="hidden">
+            <div class="csv-upload-zone" id="csvDropZone">
+              <div class="csv-upload-icon">&#128193;</div>
+              <div class="csv-upload-text">
+                <strong>Drop CSV files here</strong>
+                <span>or click to browse</span>
+              </div>
+              <input type="file" id="csvFileInput" accept=".csv,text/csv" multiple class="csv-file-input" />
             </div>
-            <small class="warn">
-              Token is never persisted (no storage/cookies/URL). Network tools may still show auth headers during live requests.
-            </small>
-          </label>
+
+            <div id="csvFileList" class="csv-file-list-container">
+              <!-- File list rendered here -->
+            </div>
+
+            <div id="csvValidationMessages" class="csv-validation-messages hidden">
+              <!-- Validation messages rendered here -->
+            </div>
+          </div>
 
           <label class="field">
             <span>Facility codes (one per line)</span>
             <textarea id="facilitiesInput" rows="5" placeholder="FAC1&#10;FAC2"></textarea>
           </label>
 
-          <div class="row gap-md">
+          <!-- Date Range (API mode only) -->
+          <div id="dateRangeFields" class="row gap-md">
             <label class="field grow">
               <span>Start date</span>
               <input id="startDateInput" type="date" />
@@ -367,6 +403,7 @@
   <!-- CDNs (no build step) -->
   <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <!-- App -->
   <script type="module" src="./app.js?v=2025.01.07.0"></script>

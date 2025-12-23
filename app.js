@@ -23,6 +23,16 @@ import {
   isOverridden,
   addChangeListener,
 } from './backpressure-config.js';
+import {
+  createCSVImportState,
+  handleFileUpload,
+  processCSVFiles,
+  renderFileList,
+  renderCSVProgress,
+  renderCSVDisclaimers,
+  setupDropZone,
+  REPORT_TYPE_LABELS,
+} from './csv-import.js';
 
 const { DateTime } = window.luxon;
 
@@ -66,6 +76,16 @@ const UI = {
   workerStatus: document.querySelector('#workerStatus'),
   perfPanel: document.querySelector('#perfPanel'),
   perfCard: document.querySelector('#perfCard'),
+  // Data source tabs (API / CSV)
+  dataSourceTabs: Array.from(document.querySelectorAll('.data-source-tab')),
+  apiModeFields: document.querySelector('#apiModeFields'),
+  csvModeFields: document.querySelector('#csvModeFields'),
+  dateRangeFields: document.querySelector('#dateRangeFields'),
+  // CSV import elements
+  csvDropZone: document.querySelector('#csvDropZone'),
+  csvFileInput: document.querySelector('#csvFileInput'),
+  csvFileList: document.querySelector('#csvFileList'),
+  csvValidationMessages: document.querySelector('#csvValidationMessages'),
   // Backpressure drawer elements
   bpDrawer: document.querySelector('#backpressureDrawer'),
   bpDrawerToggle: document.querySelector('#bpDrawerToggle'),
@@ -89,6 +109,7 @@ const UI = {
 const state = {
   running: false,
   mockMode: false,
+  dataSource: 'api', // 'api' or 'csv'
   token: null, // IMPORTANT: in-memory only
   abortController: null,
   runStartedAt: null,
@@ -103,6 +124,8 @@ const state = {
   currentRunId: null, // For cancellation correctness
   apiRunner: null, // Store runner reference for cancellation
   etaTracker: null, // ETA tracking instance
+  csvImportState: null, // CSV import state manager
+  csvProgress: {}, // CSV processing progress
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -854,12 +877,17 @@ function renderAllResults() {
 
   const root = document.createElement('div');
 
+  // Determine mode badge
+  const isCSVMode = inputs.csvMode === true;
+  const modeBadge = isCSVMode ? 'CSV Import' : (state.mockMode ? 'Mock mode' : 'Live API');
+  const modeBadgeClass = isCSVMode ? 'yellow' : (state.mockMode ? 'yellow' : 'green');
+
   const summary = document.createElement('div');
   summary.className = 'report-card';
   summary.innerHTML = `
     <div class="section-title">
       <h2>Assessment summary</h2>
-      <span class="badge ${state.mockMode ? 'yellow' : 'green'}">${state.mockMode ? 'Mock mode' : 'Live API'}</span>
+      <span class="badge ${modeBadgeClass}">${modeBadge}</span>
     </div>
 
     <div class="kpi-grid">
@@ -870,8 +898,8 @@ function renderAllResults() {
       </div>
       <div class="kpi">
         <div class="label">Facilities</div>
-        <div class="value">${inputs.facilities.length}</div>
-        <div class="sub">${inputs.facilities.map(escapeHtml).join(', ')}</div>
+        <div class="value">${Array.isArray(inputs.facilities) ? inputs.facilities.length : 1}</div>
+        <div class="sub">${Array.isArray(inputs.facilities) ? inputs.facilities.map(escapeHtml).join(', ') : escapeHtml(inputs.facilities)}</div>
       </div>
       <div class="kpi">
         <div class="label">Date range</div>
@@ -886,6 +914,13 @@ function renderAllResults() {
     </div>
   `;
   root.appendChild(summary);
+
+  // Add CSV mode disclaimers if applicable
+  if (isCSVMode) {
+    const disclaimers = document.createElement('div');
+    disclaimers.innerHTML = renderCSVDisclaimers();
+    root.appendChild(disclaimers.firstElementChild);
+  }
 
   reports.forEach(report => {
     const result = state.results[report];
@@ -962,6 +997,21 @@ function validateInputs(inputs) {
   if (!inputs.tenant || !/^[a-z0-9-]+$/i.test(inputs.tenant)) {
     return 'Tenant must be a non-empty subdomain (letters/numbers/dash).';
   }
+
+  // CSV mode validation
+  if (state.dataSource === 'csv') {
+    if (!state.csvImportState || state.csvImportState.count === 0) {
+      return 'Please upload at least one CSV file.';
+    }
+    if (!state.csvImportState.allFilesReady()) {
+      return 'Please select a report type for all uploaded CSV files.';
+    }
+    if (!inputs.timezone) return 'Timezone is required.';
+    // Facilities are optional for CSV mode
+    return null;
+  }
+
+  // API mode validation
   if (!state.mockMode) {
     if (!inputs.token || inputs.token.length < 10) return 'Token is required for live API mode.';
   }
@@ -1298,6 +1348,242 @@ async function runAssessment() {
   }
 }
 
+// ---------- CSV Assessment ----------
+async function runCSVAssessment() {
+  clearInputError();
+  clearBanner();
+  state.warnings = [];
+  UI.warningsPanel.textContent = 'None.';
+
+  const inputs = {
+    tenant: UI.tenantInput.value.trim(),
+    facilities: parseFacilities(UI.facilitiesInput.value),
+    timezone: UI.timezoneSelect.value,
+    assumptions: readAssumptions(),
+    // CSV mode doesn't use date range from inputs - dates come from CSV data
+    startDate: null,
+    endDate: null,
+    reports: [], // Will be populated from CSV files
+  };
+
+  const err = validateInputs(inputs);
+  if (err) {
+    showInputError(err);
+    return;
+  }
+
+  resetPerfStats();
+  instrumentation.reset();
+
+  // Get reports from CSV files
+  const filesByReport = state.csvImportState.getFilesByReportType();
+  inputs.reports = Object.keys(filesByReport);
+
+  state.inputs = {
+    tenant: inputs.tenant,
+    facilities: inputs.facilities.length > 0 ? inputs.facilities : ['(from CSV)'],
+    startDate: '(from CSV)',
+    endDate: '(from CSV)',
+    timezone: inputs.timezone,
+    reports: inputs.reports,
+    assumptions: inputs.assumptions,
+    mockMode: false,
+    csvMode: true,
+  };
+
+  destroyAllCharts(state.chartRegistry);
+  state.chartRegistry.clear();
+  state.results = {};
+  state.progress = {};
+  state.csvProgress = {};
+  state.runStartedAt = Date.now();
+  state.timezone = inputs.timezone;
+
+  // Initialize progress UI for CSV mode
+  initCSVProgressUI(inputs.reports);
+  setRunningUI(true);
+  setBanner('info', 'Processing CSV files...');
+  flushProgressRender();
+  flushResultsRender();
+
+  state.abortController = new AbortController();
+  const signal = state.abortController.signal;
+
+  const assessmentRunId = `csv_assess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  state.currentRunId = assessmentRunId;
+
+  const roiEnabled = canComputeROI(inputs.assumptions);
+
+  try {
+    // Create analyzers for the reports we have CSV files for
+    const analyzers = createAnalyzers({
+      timezone: inputs.timezone,
+      startDate: null, // CSV mode - will extract from data
+      endDate: null,
+      assumptions: inputs.assumptions,
+      onWarning: (w) => addWarning(w),
+    });
+
+    // Process all CSV files
+    const processingResults = await processCSVFiles(state.csvImportState, analyzers, {
+      timezone: inputs.timezone,
+      onProgress: (progress) => {
+        if (state.currentRunId !== assessmentRunId) return;
+        state.csvProgress[progress.report] = progress;
+        renderCSVProgressUI();
+      },
+      onWarning: addWarning,
+      signal,
+    });
+
+    if (signal.aborted) {
+      setBanner('info', 'Run cancelled.');
+      return;
+    }
+
+    // Add processing warnings
+    processingResults.warnings.forEach(w => {
+      if (state.warnings.length < 50) addWarning(w);
+    });
+
+    // Finalize analyzers
+    for (const report of inputs.reports) {
+      const analyzer = analyzers[report];
+      if (!analyzer) continue;
+      state.results[report] = analyzer.finalize({
+        tenant: inputs.tenant,
+        facilities: inputs.facilities.length > 0 ? inputs.facilities : ['CSV Import'],
+        startDate: '(from CSV)',
+        endDate: '(from CSV)',
+        timezone: inputs.timezone,
+        assumptions: inputs.assumptions,
+        roiEnabled,
+        csvMode: true,
+      });
+    }
+
+    flushProgressRender();
+    flushResultsRender();
+    setBanner('ok', `Complete. Processed ${processingResults.totalRows.toLocaleString()} rows from ${state.csvImportState.count} file(s).`);
+
+  } catch (e) {
+    if (signal.aborted) {
+      setBanner('info', 'Run cancelled.');
+    } else {
+      setBanner('error', `Error processing CSV: ${e?.message || String(e)}`);
+      addWarning(`CSV processing error: ${e?.stack || e?.message || String(e)}`);
+    }
+  } finally {
+    flushProgressRender();
+    flushResultsRender();
+    state.abortController = null;
+    setRunningUI(false);
+  }
+}
+
+function initCSVProgressUI(reports) {
+  UI.progressPanel.innerHTML = '';
+
+  const container = document.createElement('div');
+  container.className = 'csv-progress-container';
+  container.id = 'csvProgressContainer';
+
+  const header = document.createElement('div');
+  header.className = 'eta-display';
+  header.innerHTML = `
+    <div class="eta-content">
+      <span class="eta-progress">Processing CSV files...</span>
+    </div>
+  `;
+  container.appendChild(header);
+
+  reports.forEach(report => {
+    const el = document.createElement('div');
+    el.className = 'csv-progress-item';
+    el.dataset.report = report;
+    el.innerHTML = `
+      <span class="csv-progress-report">${REPORT_TYPE_LABELS[report] || report}</span>
+      <span class="csv-progress-count">Waiting...</span>
+    `;
+    container.appendChild(el);
+  });
+
+  UI.progressPanel.appendChild(container);
+}
+
+function renderCSVProgressUI() {
+  const container = document.getElementById('csvProgressContainer');
+  if (!container) return;
+
+  for (const [report, progress] of Object.entries(state.csvProgress)) {
+    const el = container.querySelector(`[data-report="${report}"]`);
+    if (!el) continue;
+
+    el.innerHTML = renderCSVProgress(progress);
+  }
+}
+
+// ---------- Data Source Switching ----------
+function setDataSource(source) {
+  state.dataSource = source;
+
+  // Update tab appearance
+  UI.dataSourceTabs.forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.source === source);
+  });
+
+  // Toggle field visibility
+  if (source === 'api') {
+    UI.apiModeFields?.classList.remove('hidden');
+    UI.csvModeFields?.classList.add('hidden');
+    UI.dateRangeFields?.classList.remove('hidden');
+  } else {
+    UI.apiModeFields?.classList.add('hidden');
+    UI.csvModeFields?.classList.remove('hidden');
+    UI.dateRangeFields?.classList.add('hidden');
+  }
+
+  // Initialize CSV state if needed
+  if (source === 'csv' && !state.csvImportState) {
+    state.csvImportState = createCSVImportState();
+  }
+}
+
+function updateCSVFileList() {
+  if (!state.csvImportState || !UI.csvFileList) return;
+  UI.csvFileList.innerHTML = renderFileList(state.csvImportState);
+
+  // Attach event listeners to new elements
+  UI.csvFileList.querySelectorAll('.csv-type-select').forEach(select => {
+    select.addEventListener('change', (e) => {
+      const fileId = e.target.dataset.fileId;
+      const reportType = e.target.value || null;
+      state.csvImportState.updateFile(fileId, { reportType, status: reportType ? 'ready' : 'pending' });
+      updateCSVFileList();
+    });
+  });
+
+  UI.csvFileList.querySelectorAll('.csv-file-remove').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const fileId = e.target.dataset.fileId;
+      state.csvImportState.removeFile(fileId);
+      updateCSVFileList();
+    });
+  });
+}
+
+async function handleCSVFileUpload(files) {
+  if (!state.csvImportState) {
+    state.csvImportState = createCSVImportState();
+  }
+
+  const result = await handleFileUpload(files, state.csvImportState, updateCSVFileList);
+
+  if (result.error) {
+    showInputError(result.error);
+  }
+}
+
 // ---------- Export wiring ----------
 function downloadSummary() {
   if (!state.inputs || !Object.keys(state.results).length) return;
@@ -1316,7 +1602,13 @@ function doPrint() {
 }
 
 // ---------- Events ----------
-UI.runBtn.addEventListener('click', runAssessment);
+UI.runBtn.addEventListener('click', () => {
+  if (state.dataSource === 'csv') {
+    runCSVAssessment();
+  } else {
+    runAssessment();
+  }
+});
 
 UI.cancelBtn.addEventListener('click', () => {
   abortInFlight('User cancelled.');
@@ -1357,6 +1649,27 @@ UI.workerToggle?.addEventListener('change', () => {
     : 'Web Worker disabled; analysis will run on the main thread.'
   );
 });
+
+// Data source tab switching
+UI.dataSourceTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    if (state.running) return; // Don't switch while running
+    setDataSource(tab.dataset.source);
+  });
+});
+
+// CSV file input
+UI.csvFileInput?.addEventListener('change', (e) => {
+  if (e.target.files?.length > 0) {
+    handleCSVFileUpload(e.target.files);
+    e.target.value = ''; // Reset so same file can be selected again
+  }
+});
+
+// CSV drag and drop
+if (UI.csvDropZone) {
+  setupDropZone(UI.csvDropZone, handleCSVFileUpload);
+}
 
 // Safety: do not log tokens even in debug. (No debug console in this draft.)
 
