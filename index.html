@@ -202,10 +202,10 @@
       </section>
     </section>
 
-    <!-- BACKPRESSURE OVERRIDE DRAWER -->
+    <!-- ADVANCED SETTINGS DRAWER -->
     <aside id="backpressureDrawer" class="bp-drawer">
       <div class="bp-drawer-header">
-        <span class="bp-drawer-title">Backpressure Overrides</span>
+        <span class="bp-drawer-title">Advanced Settings</span>
         <button id="bpDrawerClose" class="btn btn-ghost bp-drawer-close" type="button" title="Close drawer">&times;</button>
       </div>
 
@@ -217,31 +217,82 @@
           <span id="bpOverrideIndicator" class="bp-override-indicator hidden">Modified</span>
         </div>
 
-        <!-- PRESETS (collapsed by default) -->
-        <details class="bp-presets-section">
-          <summary class="bp-presets-toggle">
-            <span>Testing Presets</span>
-            <span class="bp-presets-chevron"></span>
+        <!-- DATA HANDLING SECTION (open by default) -->
+        <details class="bp-section" open>
+          <summary class="bp-section-toggle">
+            <span>Data Handling</span>
+            <span class="bp-section-chevron"></span>
           </summary>
-          <div class="bp-presets-content">
-            <table class="bp-presets-table">
-              <thead>
-                <tr>
-                  <th>Preset</th>
-                  <th>Description</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="bpPresetsBody">
-                <!-- Populated by JS -->
-              </tbody>
-            </table>
+          <div class="bp-section-content">
+            <!-- Partial Period Handling -->
+            <div class="bp-control">
+              <div class="bp-control-header">
+                <label class="bp-label">Partial Period Handling</label>
+                <span class="bp-tooltip" data-tooltip="Control how incomplete first/last time periods (e.g., partial weeks at the start or end of your data range) are displayed in charts.">?</span>
+              </div>
+              <div class="bp-radio-group" id="partialPeriodMode">
+                <label class="bp-radio-label">
+                  <input type="radio" name="partialPeriodMode" value="include" class="bp-radio" checked />
+                  <span class="bp-radio-text">
+                    <span class="bp-radio-title">Include all data</span>
+                    <span class="bp-radio-desc">Show all data points including partial periods</span>
+                  </span>
+                </label>
+                <label class="bp-radio-label">
+                  <input type="radio" name="partialPeriodMode" value="trim" class="bp-radio" />
+                  <span class="bp-radio-text">
+                    <span class="bp-radio-title">Trim partial <span id="partialTrimGranularity">periods</span></span>
+                    <span class="bp-radio-desc">Remove incomplete first/last <span class="partial-granularity-label">periods</span> from charts</span>
+                  </span>
+                </label>
+                <label class="bp-radio-label">
+                  <input type="radio" name="partialPeriodMode" value="highlight" class="bp-radio" />
+                  <span class="bp-radio-text">
+                    <span class="bp-radio-title">Highlight partial <span class="partial-granularity-label">periods</span></span>
+                    <span class="bp-radio-desc">Show all data with partial <span class="partial-granularity-label">periods</span> visually differentiated</span>
+                  </span>
+                </label>
+              </div>
+              <div id="partialPeriodInfo" class="bp-info-box hidden">
+                <span class="bp-info-icon">i</span>
+                <span id="partialPeriodInfoText">Partial periods detected: none</span>
+              </div>
+            </div>
           </div>
         </details>
 
-        <!-- CONCURRENCY GROUP -->
-        <div class="bp-group">
-          <div class="bp-group-title">Concurrency</div>
+        <!-- API BACKPRESSURE OVERRIDES (collapsed by default) -->
+        <details class="bp-section">
+          <summary class="bp-section-toggle">
+            <span>API Backpressure Overrides</span>
+            <span class="bp-section-chevron"></span>
+          </summary>
+          <div class="bp-section-content">
+            <!-- PRESETS (collapsed by default) -->
+            <details class="bp-presets-section">
+              <summary class="bp-presets-toggle">
+                <span>Testing Presets</span>
+                <span class="bp-presets-chevron"></span>
+              </summary>
+              <div class="bp-presets-content">
+                <table class="bp-presets-table">
+                  <thead>
+                    <tr>
+                      <th>Preset</th>
+                      <th>Description</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="bpPresetsBody">
+                    <!-- Populated by JS -->
+                  </tbody>
+                </table>
+              </div>
+            </details>
+
+            <!-- CONCURRENCY GROUP -->
+            <div class="bp-group">
+              <div class="bp-group-title">Concurrency</div>
 
           <div class="bp-control">
             <div class="bp-control-header">
@@ -390,11 +441,13 @@
             <div class="bp-default" data-default-for="bpPartialUpdateInterval">Default: 1000</div>
           </div>
         </div>
+          </div><!-- /.bp-section-content -->
+        </details><!-- /.bp-section API Backpressure Overrides -->
       </div>
     </aside>
 
     <!-- DRAWER TOGGLE BUTTON -->
-    <button id="bpDrawerToggle" class="bp-drawer-toggle" type="button" title="Open Advanced Backpressure Overrides">
+    <button id="bpDrawerToggle" class="bp-drawer-toggle" type="button" title="Open Advanced Settings">
       <span class="bp-drawer-toggle-icon"></span>
       <span class="bp-drawer-toggle-label">Advanced</span>
     </button>

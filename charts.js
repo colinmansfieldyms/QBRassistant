@@ -1,4 +1,5 @@
 import { downloadText } from './export.js?v=2025.01.07.0';
+import { applyPartialPeriodHandling } from './analysis.js?v=2025.01.07.0';
 
 /**
  * Chart.js rendering + export PNG + provide chart datasets for CSV export.
@@ -50,10 +51,75 @@ function buildConfidenceTooltip(dataQuality) {
   return lines.join('\n');
 }
 
-function chartConfigFromKind(kind, chartData, title) {
+function chartConfigFromKind(kind, chartData, title, partialPeriodMode = 'include') {
+  const partialInfo = chartData?.partialPeriodInfo;
+  const isHighlightMode = partialPeriodMode === 'highlight' && partialInfo?.highlightFirst || partialInfo?.highlightLast;
+
+  // Deep clone datasets to avoid mutating original data
+  let processedData = chartData;
+  if (kind === 'line' && isHighlightMode) {
+    processedData = {
+      ...chartData,
+      datasets: chartData.datasets.map(ds => {
+        const newDs = { ...ds };
+
+        // Create segment styling function for dashed lines on partial periods
+        if (partialInfo?.highlightFirst || partialInfo?.highlightLast) {
+          newDs.segment = {
+            borderDash: ctx => {
+              const idx = ctx.p0DataIndex;
+              const lastIdx = ctx.chart.data.labels.length - 1;
+              // Dashed line for segments touching partial periods
+              if (partialInfo.highlightFirst && idx === 0) return [6, 3];
+              if (partialInfo.highlightLast && idx === lastIdx - 1) return [6, 3];
+              return undefined;
+            }
+          };
+
+          // Create pointStyle function for hollow points on partial periods
+          const originalPointRadius = newDs.pointRadius || 4;
+          newDs.pointRadius = ctx => {
+            const idx = ctx.dataIndex;
+            const lastIdx = ctx.chart.data.labels.length - 1;
+            if ((partialInfo.highlightFirst && idx === 0) ||
+                (partialInfo.highlightLast && idx === lastIdx)) {
+              return originalPointRadius + 2; // Slightly larger for partial
+            }
+            return originalPointRadius;
+          };
+
+          // Use hollow points for partial periods
+          newDs.pointStyle = ctx => {
+            const idx = ctx.dataIndex;
+            const lastIdx = ctx.chart.data.labels.length - 1;
+            if ((partialInfo.highlightFirst && idx === 0) ||
+                (partialInfo.highlightLast && idx === lastIdx)) {
+              return 'circle'; // Will be styled differently via pointBackgroundColor
+            }
+            return 'circle';
+          };
+
+          // Hollow background for partial period points
+          const originalBgColor = newDs.backgroundColor || newDs.borderColor || '#3b82f6';
+          newDs.pointBackgroundColor = ctx => {
+            const idx = ctx.dataIndex;
+            const lastIdx = ctx.chart.data.labels.length - 1;
+            if ((partialInfo.highlightFirst && idx === 0) ||
+                (partialInfo.highlightLast && idx === lastIdx)) {
+              return 'rgba(255, 255, 255, 0.8)'; // Hollow (white fill)
+            }
+            return originalBgColor;
+          };
+        }
+
+        return newDs;
+      })
+    };
+  }
+
   const base = {
     type: kind === 'pie' ? 'pie' : (kind === 'bar' ? 'bar' : 'line'),
-    data: chartData,
+    data: processedData,
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -122,7 +188,7 @@ function createChartModal() {
 
 let chartModal = null;
 
-function openChartFullscreen(def, chartData, report, onWarning) {
+function openChartFullscreen(def, chartData, report, onWarning, partialPeriodMode = 'include') {
   if (!chartModal) {
     chartModal = createChartModal();
 
@@ -153,7 +219,7 @@ function openChartFullscreen(def, chartData, report, onWarning) {
   }
 
   // Create fullscreen chart with better label visibility
-  const cfg = chartConfigFromKind(def.kind, chartData, def.title);
+  const cfg = chartConfigFromKind(def.kind, chartData, def.title, partialPeriodMode);
 
   // Override config for fullscreen to show all labels
   if (cfg.options.scales && cfg.options.scales.x) {
@@ -199,6 +265,8 @@ export function renderReportResult({
   result,
   timezone,
   dateRange,
+  partialPeriodInfo,
+  partialPeriodMode = 'include',
   onWarning,
   chartRegistry,
 }) {
@@ -254,17 +322,27 @@ export function renderReportResult({
   const handles = [];
 
   for (const def of (result.charts || [])) {
+    // Apply partial period handling for line charts (time series) FIRST
+    // so that actions can use the processed data
+    let chartData = def.data;
+    if (def.kind === 'line' && partialPeriodInfo?.hasPartialPeriods) {
+      const processed = applyPartialPeriodHandling(def.data, partialPeriodInfo, partialPeriodMode);
+      chartData = processed;
+    }
+
     const chartCard = el('div', { class: 'chart-card' });
     const canvas = el('canvas', { width: 800, height: 360 });
     const wrap = el('div', { class: 'canvas-wrap', style: 'height:360px;' }, [canvas]);
 
+    // Capture chartData in closure for fullscreen
+    const chartDataForFullscreen = chartData;
     const actions = el('div', { class: 'chart-actions' }, [
       el('button', {
         class: 'btn btn-ghost',
         type: 'button',
         onClick: () => {
           try {
-            openChartFullscreen(def, def.data, report, onWarning);
+            openChartFullscreen(def, chartDataForFullscreen, report, onWarning, partialPeriodMode);
           } catch (e) {
             onWarning?.(`Fullscreen failed: ${e?.message || String(e)}`);
           }
@@ -309,7 +387,7 @@ export function renderReportResult({
     chartsBlock.appendChild(chartCard);
 
     // Render chart
-    const cfg = chartConfigFromKind(def.kind, def.data, def.title);
+    const cfg = chartConfigFromKind(def.kind, chartData, def.title, partialPeriodMode);
     const chart = new window.Chart(canvas.getContext('2d'), cfg);
     handles.push({ id: def.id, chart, def, canvas });
   }

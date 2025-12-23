@@ -2275,3 +2275,259 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     disclaimer: 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.',
   };
 }
+
+// ========== PARTIAL PERIOD DETECTION ==========
+
+/**
+ * Infer the granularity from time labels (weeks, months, days).
+ * @param {string[]} labels - Array of time labels
+ * @returns {'week'|'month'|'day'|'unknown'}
+ */
+export function inferGranularityFromLabels(labels) {
+  if (!labels || labels.length === 0) return 'unknown';
+
+  const sample = labels[0];
+
+  // Week format: "2024-W01" or "2024-W52"
+  if (/^\d{4}-W\d{1,2}$/.test(sample)) return 'week';
+
+  // Month format: "2024-01" or "Jan 2024" or "2024-Jan"
+  if (/^\d{4}-\d{2}$/.test(sample)) return 'month';
+  if (/^[A-Za-z]{3}\s+\d{4}$/.test(sample)) return 'month';
+  if (/^\d{4}-[A-Za-z]{3}$/.test(sample)) return 'month';
+
+  // Day format: "2024-01-15" or "01/15/2024"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(sample)) return 'day';
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(sample)) return 'day';
+
+  return 'unknown';
+}
+
+/**
+ * Get human-readable granularity label (plural).
+ * @param {'week'|'month'|'day'|'unknown'} granularity
+ * @returns {string}
+ */
+export function getGranularityLabel(granularity) {
+  switch (granularity) {
+    case 'week': return 'weeks';
+    case 'month': return 'months';
+    case 'day': return 'days';
+    default: return 'periods';
+  }
+}
+
+/**
+ * Detect partial periods for a single data series using median-based threshold.
+ * A period is considered "partial" if its value is < 50% of the median of interior values.
+ *
+ * @param {string[]} labels - Time labels
+ * @param {number[]} values - Data values corresponding to labels
+ * @returns {{firstPartial: boolean, lastPartial: boolean, firstLabel: string|null, lastLabel: string|null}}
+ */
+export function detectPartialPeriodsForSeries(labels, values) {
+  const result = {
+    firstPartial: false,
+    lastPartial: false,
+    firstLabel: labels.length > 0 ? labels[0] : null,
+    lastLabel: labels.length > 0 ? labels[labels.length - 1] : null,
+  };
+
+  if (!labels || !values || labels.length < 3) {
+    // Not enough data points to determine partial periods
+    return result;
+  }
+
+  // Get interior values (excluding first and last)
+  const interiorValues = values.slice(1, -1).filter(v => Number.isFinite(v) && v > 0);
+
+  if (interiorValues.length === 0) {
+    return result;
+  }
+
+  // Calculate median of interior values
+  const sorted = [...interiorValues].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+
+  // Threshold: 50% of median
+  const threshold = median * 0.5;
+
+  // Check first and last values
+  const firstVal = values[0];
+  const lastVal = values[values.length - 1];
+
+  if (Number.isFinite(firstVal) && firstVal < threshold) {
+    result.firstPartial = true;
+  }
+
+  if (Number.isFinite(lastVal) && lastVal < threshold) {
+    result.lastPartial = true;
+  }
+
+  return result;
+}
+
+/**
+ * Detect partial periods globally across all chart datasets from all results.
+ * This ensures consistent trimming across all charts.
+ *
+ * @param {Object[]} allResults - Array of analysis results (from different reports)
+ * @returns {{
+ *   hasPartialPeriods: boolean,
+ *   granularity: 'week'|'month'|'day'|'unknown',
+ *   granularityLabel: string,
+ *   firstPartial: {detected: boolean, label: string|null},
+ *   lastPartial: {detected: boolean, label: string|null},
+ *   detectedIn: string[]
+ * }}
+ */
+export function detectGlobalPartialPeriods(allResults) {
+  const global = {
+    hasPartialPeriods: false,
+    granularity: 'unknown',
+    granularityLabel: 'periods',
+    firstPartial: { detected: false, label: null },
+    lastPartial: { detected: false, label: null },
+    detectedIn: [], // Which charts/reports detected partial periods
+  };
+
+  if (!allResults || allResults.length === 0) {
+    return global;
+  }
+
+  // Collect all time-series charts from all results
+  const timeSeriesData = [];
+
+  for (const result of allResults) {
+    if (!result.charts) continue;
+
+    for (const chart of result.charts) {
+      // Only process line charts (time series)
+      if (chart.kind !== 'line') continue;
+      if (!chart.data?.labels || !chart.data?.datasets) continue;
+
+      const labels = chart.data.labels;
+
+      // Infer granularity from this chart's labels
+      const chartGranularity = inferGranularityFromLabels(labels);
+      if (chartGranularity !== 'unknown' && global.granularity === 'unknown') {
+        global.granularity = chartGranularity;
+        global.granularityLabel = getGranularityLabel(chartGranularity);
+      }
+
+      // Check each dataset in this chart
+      for (const dataset of chart.data.datasets) {
+        if (!dataset.data || dataset.data.length < 3) continue;
+
+        const detection = detectPartialPeriodsForSeries(labels, dataset.data);
+
+        timeSeriesData.push({
+          chartId: chart.id,
+          chartTitle: chart.title,
+          report: result.report,
+          labels,
+          detection,
+        });
+
+        // Update global detection
+        if (detection.firstPartial) {
+          global.firstPartial.detected = true;
+          if (!global.firstPartial.label) {
+            global.firstPartial.label = detection.firstLabel;
+          }
+          global.detectedIn.push(`${chart.title} (first)`);
+        }
+
+        if (detection.lastPartial) {
+          global.lastPartial.detected = true;
+          if (!global.lastPartial.label) {
+            global.lastPartial.label = detection.lastLabel;
+          }
+          global.detectedIn.push(`${chart.title} (last)`);
+        }
+      }
+    }
+  }
+
+  global.hasPartialPeriods = global.firstPartial.detected || global.lastPartial.detected;
+
+  return global;
+}
+
+/**
+ * Apply partial period trimming/marking to chart data.
+ * Returns a new chart data object with trimmed or marked data.
+ *
+ * @param {Object} chartData - Original chart data {labels, datasets}
+ * @param {Object} globalPartialInfo - Result from detectGlobalPartialPeriods
+ * @param {'include'|'trim'|'highlight'} mode - How to handle partial periods
+ * @returns {Object} Modified chart data with partialPeriodInfo metadata
+ */
+export function applyPartialPeriodHandling(chartData, globalPartialInfo, mode = 'include') {
+  if (!chartData?.labels || !chartData?.datasets) {
+    return chartData;
+  }
+
+  const result = {
+    labels: [...chartData.labels],
+    datasets: chartData.datasets.map(ds => ({
+      ...ds,
+      data: [...ds.data],
+    })),
+    partialPeriodInfo: {
+      mode,
+      trimmedFirst: false,
+      trimmedLast: false,
+      highlightFirst: false,
+      highlightLast: false,
+      originalLength: chartData.labels.length,
+    },
+  };
+
+  if (!globalPartialInfo.hasPartialPeriods || mode === 'include') {
+    return result;
+  }
+
+  const { firstPartial, lastPartial } = globalPartialInfo;
+
+  if (mode === 'trim') {
+    // Remove partial periods from the data
+    let startIdx = 0;
+    let endIdx = result.labels.length;
+
+    if (firstPartial.detected && result.labels[0] === firstPartial.label) {
+      startIdx = 1;
+      result.partialPeriodInfo.trimmedFirst = true;
+    }
+
+    if (lastPartial.detected && result.labels[result.labels.length - 1] === lastPartial.label) {
+      endIdx = result.labels.length - 1;
+      result.partialPeriodInfo.trimmedLast = true;
+    }
+
+    result.labels = result.labels.slice(startIdx, endIdx);
+    result.datasets = result.datasets.map(ds => ({
+      ...ds,
+      data: ds.data.slice(startIdx, endIdx),
+    }));
+
+  } else if (mode === 'highlight') {
+    // Mark partial periods for visual differentiation (dashed lines, hollow points)
+    // The actual styling is handled in charts.js; here we just add metadata
+
+    if (firstPartial.detected && result.labels[0] === firstPartial.label) {
+      result.partialPeriodInfo.highlightFirst = true;
+      result.partialPeriodInfo.firstIndex = 0;
+    }
+
+    if (lastPartial.detected && result.labels[result.labels.length - 1] === lastPartial.label) {
+      result.partialPeriodInfo.highlightLast = true;
+      result.partialPeriodInfo.lastIndex = result.labels.length - 1;
+    }
+  }
+
+  return result;
+}

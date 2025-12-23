@@ -1,5 +1,5 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
-import { createAnalyzers, normalizeRowStrict } from './analysis.js?v=2025.01.07.0';
+import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods } from './analysis.js?v=2025.01.07.0';
 import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
@@ -106,6 +106,12 @@ const UI = {
   bpForceTier: document.querySelector('#bpForceTier'),
   bpBatchSize: document.querySelector('#bpBatchSize'),
   bpPartialUpdateInterval: document.querySelector('#bpPartialUpdateInterval'),
+  // Partial period handling
+  partialPeriodRadios: document.querySelectorAll('input[name="partialPeriodMode"]'),
+  partialPeriodInfo: document.querySelector('#partialPeriodInfo'),
+  partialPeriodInfoText: document.querySelector('#partialPeriodInfoText'),
+  partialGranularityLabels: document.querySelectorAll('.partial-granularity-label'),
+  partialTrimGranularity: document.querySelector('#partialTrimGranularity'),
 };
 
 const state = {
@@ -128,6 +134,8 @@ const state = {
   etaTracker: null, // ETA tracking instance
   csvImportState: null, // CSV import state manager
   csvProgress: {}, // CSV processing progress
+  partialPeriodMode: 'include', // 'include' | 'trim' | 'highlight'
+  partialPeriodInfo: null, // Global partial period detection result
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -303,6 +311,7 @@ function resetAll() {
   state.progress = {};
   state.results = {};
   state.etaTracker = null;
+  state.partialPeriodInfo = null;
   resetPerfStats();
   resetWorkerState();
   flushProgressRender();
@@ -893,6 +902,9 @@ function renderAllResults() {
   destroyAllCharts(state.chartRegistry);
   state.chartRegistry.clear();
 
+  // Detect partial periods across all results (must happen before rendering)
+  detectAndStorePartialPeriods();
+
   const inputs = state.inputs;
   const reports = Object.keys(state.results);
 
@@ -960,6 +972,8 @@ function renderAllResults() {
       result,
       timezone: inputs.timezone,
       dateRange: { startDate: inputs.startDate, endDate: inputs.endDate },
+      partialPeriodInfo: state.partialPeriodInfo,
+      partialPeriodMode: state.partialPeriodMode,
       onDownloadChartPng: ({ filename, dataUrl }) => {
         // handled in charts.js button wiring; keeping hook for future
       },
@@ -1119,6 +1133,7 @@ async function runAssessment() {
   state.chartRegistry.clear();
   state.results = {};
   state.progress = {};
+  state.partialPeriodInfo = null;
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
   state.resultsRenderThrottleMs = computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT);
@@ -1427,6 +1442,7 @@ async function runCSVAssessment() {
   state.results = {};
   state.progress = {};
   state.csvProgress = {};
+  state.partialPeriodInfo = null;
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
 
@@ -1923,6 +1939,67 @@ function initBackpressureDrawer() {
 
   // Initialize all controls from current config (defaults)
   syncAllBpControlsFromConfig();
+
+  // Initialize partial period handling
+  initPartialPeriodHandling();
+}
+
+// ---------- Partial Period Handling ----------
+
+function updatePartialPeriodUI() {
+  const info = state.partialPeriodInfo;
+
+  // Update granularity labels throughout the UI
+  const granularityLabel = info?.granularityLabel || 'periods';
+  UI.partialGranularityLabels?.forEach(el => {
+    el.textContent = granularityLabel;
+  });
+  if (UI.partialTrimGranularity) {
+    UI.partialTrimGranularity.textContent = granularityLabel;
+  }
+
+  // Update info box with detection status
+  if (UI.partialPeriodInfo && UI.partialPeriodInfoText) {
+    if (info?.hasPartialPeriods) {
+      const parts = [];
+      if (info.firstPartial.detected) {
+        parts.push(`first ${info.granularity}: ${info.firstPartial.label}`);
+      }
+      if (info.lastPartial.detected) {
+        parts.push(`last ${info.granularity}: ${info.lastPartial.label}`);
+      }
+      UI.partialPeriodInfoText.textContent = `Partial ${granularityLabel} detected: ${parts.join(', ')}`;
+      UI.partialPeriodInfo.classList.remove('hidden');
+    } else {
+      UI.partialPeriodInfo.classList.add('hidden');
+    }
+  }
+}
+
+function detectAndStorePartialPeriods() {
+  // Run global detection on all current results
+  const allResults = Object.values(state.results);
+  state.partialPeriodInfo = detectGlobalPartialPeriods(allResults);
+  updatePartialPeriodUI();
+}
+
+function onPartialPeriodModeChange(mode) {
+  state.partialPeriodMode = mode;
+  // Re-render all results with new mode
+  if (Object.keys(state.results).length > 0) {
+    scheduleResultsRender();
+  }
+}
+
+function initPartialPeriodHandling() {
+  // Set up radio button listeners
+  UI.partialPeriodRadios?.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        onPartialPeriodModeChange(e.target.value);
+      }
+    });
+  });
 }
 
 // ---------- Init ----------

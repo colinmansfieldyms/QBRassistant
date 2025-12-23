@@ -708,6 +708,147 @@ canvas{ max-width:100%; }
   white-space: nowrap;
 }
 
+/* Section toggle (Data Handling, API Backpressure Overrides) */
+.bp-section {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.bp-section:last-child {
+  margin-bottom: 0;
+}
+
+.bp-section-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background: linear-gradient(to bottom, #fafbfc, #f5f6f8);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: var(--text);
+  user-select: none;
+  border-bottom: 1px solid transparent;
+}
+
+.bp-section[open] .bp-section-toggle {
+  border-bottom-color: var(--border);
+}
+
+.bp-section-toggle:hover {
+  background: linear-gradient(to bottom, #f5f6f8, #f0f1f3);
+}
+
+.bp-section-chevron {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--text);
+  transition: transform 0.2s ease;
+  opacity: 0.6;
+}
+
+.bp-section[open] .bp-section-chevron {
+  transform: rotate(180deg);
+}
+
+.bp-section-content {
+  padding: 14px;
+  background: var(--bg);
+}
+
+/* Radio button group for partial period handling */
+.bp-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bp-radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: var(--bg);
+}
+
+.bp-radio-label:hover {
+  border-color: var(--accent);
+  background: #f8fafc;
+}
+
+.bp-radio-label:has(.bp-radio:checked) {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.bp-radio {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.bp-radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bp-radio-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.bp-radio-desc {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+/* Info box for partial period detection status */
+.bp-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.bp-info-box.hidden {
+  display: none;
+}
+
+.bp-info-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: white;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-style: italic;
+}
+
 /* Control groups */
 .bp-group {
   margin-bottom: 16px;
