@@ -476,11 +476,41 @@ function renderFindings(findings, recs, roi, meta) {
 
       if (est.money_impact_per_driver_day !== null && est.money_impact_per_driver_day !== 0) {
         const moneyColor = est.money_impact_per_driver_day > 0 ? 'var(--green)' : 'var(--yellow)';
-        const moneySign = est.money_impact_per_driver_day > 0 ? '+' : '';
+        const moneySign = est.money_impact_per_driver_day > 0 ? '+' : '-';
+        const moneyLabel = est.money_impact_per_driver_day > 0 ? 'Efficiency Gain/Driver/Day' : 'Capacity Gap/Driver/Day';
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
-          el('div', { class: 'muted small' }, ['Labor Impact/Driver/Day']),
+          el('div', { class: 'muted small' }, [moneyLabel]),
           el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${moneyColor};` }, [`${moneySign}$${Math.abs(est.money_impact_per_driver_day).toFixed(2)}`])
         ]));
+      }
+
+      // Add staffing analysis metrics if available
+      const staffing = roi.staffingAnalysis;
+      if (staffing) {
+        if (staffing.totalUniqueDrivers && staffing.driversNeededAtTarget) {
+          const delta = staffing.staffingDelta;
+          const deltaColor = Math.abs(delta) <= staffing.driversNeededAtTarget * 0.2 ? 'var(--green)' : 'var(--yellow)';
+          const deltaSign = delta > 0 ? '+' : '';
+          metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+            el('div', { class: 'muted small' }, ['Drivers (Actual vs Needed)']),
+            el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${deltaColor};` }, [`${staffing.totalUniqueDrivers} vs ${staffing.driversNeededAtTarget} (${deltaSign}${delta})`])
+          ]));
+        }
+
+        if (staffing.topDriverAvgPerDay && staffing.topDriverName) {
+          const topVsTarget = staffing.topDriverAvgPerDay >= est.target_moves_per_driver_per_day ? 'var(--green)' : 'inherit';
+          metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+            el('div', { class: 'muted small' }, ['Top Performer Avg/Day']),
+            el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${topVsTarget};` }, [`${staffing.topDriverAvgPerDay} moves`])
+          ]));
+        }
+
+        if (staffing.driversNeededIfAllLikeTop) {
+          metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+            el('div', { class: 'muted small' }, ['If All Like Top Performer']),
+            el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [`Need ~${staffing.driversNeededIfAllLikeTop} drivers`])
+          ]));
+        }
       }
 
       if (metricsGrid.childNodes.length > 0) {

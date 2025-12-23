@@ -1678,6 +1678,13 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
         metrics: {
           movesTotal: this.movesTotal,
           avgMovesPerDriverPerDay: deriveMovesPerDriverPerDay(this.movesByDay, this.activeDriversByDay),
+          // Additional data for driver efficiency analysis
+          topDrivers: topDrivers, // top 10 drivers by moves
+          movesByDriver: this.movesByDriver, // all driver move counts
+          movesByDay: this.movesByDay, // moves per day
+          activeDriversByDay: this.activeDriversByDay, // drivers per day
+          totalDays: this.movesByDay.map.size,
+          totalUniqueDrivers: this.movesByDriver.map.size,
         },
         assumptions: meta.assumptions
       }),
@@ -2025,7 +2032,7 @@ function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
 function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   const a = assumptions || {};
 
-  // Only require labor rate and target moves for driver ROI
+  // Only require target moves for driver ROI
   const enabled = Number.isFinite(a.target_moves_per_driver_per_day);
 
   if (!enabled) return null;
@@ -2037,17 +2044,25 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   // Get actual metrics
   const avg = metrics.avgMovesPerDriverPerDay;
   const totalMoves = metrics.movesTotal || 0;
+  const topDrivers = metrics.topDrivers || [];
+  const movesByDriver = metrics.movesByDriver;
+  const movesByDay = metrics.movesByDay;
+  const activeDriversByDay = metrics.activeDriversByDay;
+  const totalDays = metrics.totalDays || 0;
+  const totalUniqueDrivers = metrics.totalUniqueDrivers || 0;
 
   // If we don't have enough data
   if (!Number.isFinite(avg) && totalMoves === 0) {
     return {
-      label: 'Driver Performance Analysis',
+      label: 'Driver Performance & Staffing Analysis',
       assumptionsUsed: {
         labor_fully_loaded_rate_per_hour: laborRate,
         target_moves_per_driver_per_day: target,
         driver_day_hours: driverDayHours,
       },
       estimate: null,
+      insights: [],
+      staffingAnalysis: null,
       disclaimer: 'Insufficient data to estimate driver performance (missing driver/day aggregation).',
     };
   }
@@ -2065,46 +2080,151 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   if (Number.isFinite(avg)) {
     if (avg >= target) {
       // Drivers exceeding target - calculate efficiency gain
-      // If getting more moves done, the "saved time" is the extra capacity
-      timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60); // Minutes "gained"
+      timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60);
       moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
     } else {
       // Below target - show the gap
       const gapHours = (gap / target) * driverDayHours;
-      timeSavedPerDriverDay = -round1(gapHours * 60); // Negative = time lost
+      timeSavedPerDriverDay = -round1(gapHours * 60);
       moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
     }
 
-    // FTE equivalent: How many FTEs worth of work based on moves
-    // If target is 50 moves/day, and we did 5000 total moves, that's 100 driver-days
-    // This helps contextualize the total workload
     if (totalMoves > 0) {
-      const driverDaysEquivalent = round1(totalMoves / target);
-      fteEquivalent = driverDaysEquivalent;
+      fteEquivalent = round1(totalMoves / target);
     }
   }
 
-  // Build human-readable insights
+  // ========== DRIVER EFFICIENCY ANALYSIS ==========
+  const staffingAnalysis = {};
   const insights = [];
 
+  // 1. Overall performance insight
   if (Number.isFinite(performancePct)) {
     if (performancePct >= 100) {
       insights.push(`✓ Drivers averaging ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
-      if (surplus > 0) {
-        insights.push(`✓ Exceeding target by ~${round1(surplus)} moves/driver/day`);
-      }
     } else {
       insights.push(`⚠ Drivers at ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
-      insights.push(`⚠ Gap of ~${round1(gap)} moves/driver/day to reach target`);
     }
   }
 
-  if (totalMoves > 0 && Number.isFinite(fteEquivalent)) {
-    insights.push(`Total moves: ${totalMoves.toLocaleString()} (~${fteEquivalent} driver-days at target rate)`);
+  // 2. Total workload context
+  if (totalMoves > 0 && totalDays > 0) {
+    const avgMovesPerDay = round1(totalMoves / totalDays);
+    staffingAnalysis.avgMovesPerDay = avgMovesPerDay;
+    staffingAnalysis.totalDays = totalDays;
+    staffingAnalysis.totalMoves = totalMoves;
+
+    // How many drivers would be needed at target rate?
+    const driversNeededAtTarget = round1(avgMovesPerDay / target);
+    staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
+
+    insights.push(`📊 Average workload: ${avgMovesPerDay} moves/day over ${totalDays} days`);
+    insights.push(`👥 At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
+  }
+
+  // 3. Analyze top performers vs average
+  if (topDrivers.length > 0 && totalDays > 0 && movesByDriver) {
+    const topDriver = topDrivers[0];
+    const topDriverMovesPerDay = round1(topDriver.value / totalDays);
+    staffingAnalysis.topDriverName = topDriver.key;
+    staffingAnalysis.topDriverTotalMoves = topDriver.value;
+    staffingAnalysis.topDriverAvgPerDay = topDriverMovesPerDay;
+
+    // Compare top performer to average
+    if (Number.isFinite(avg) && topDriverMovesPerDay > avg) {
+      const topVsAvgRatio = round1(topDriverMovesPerDay / avg);
+      staffingAnalysis.topVsAvgRatio = topVsAvgRatio;
+
+      if (topDriverMovesPerDay >= target) {
+        insights.push(`⭐ Top performer "${topDriver.key}" averages ${topDriverMovesPerDay} moves/day (${Math.round((topDriverMovesPerDay/target)*100)}% of target)`);
+      } else {
+        insights.push(`⭐ Top performer "${topDriver.key}" averages ${topDriverMovesPerDay} moves/day`);
+      }
+    }
+
+    // Calculate: if all drivers performed like top driver, how many would you need?
+    if (totalMoves > 0 && topDriverMovesPerDay > 0) {
+      const driversNeededIfAllLikeTop = round1((totalMoves / totalDays) / topDriverMovesPerDay);
+      staffingAnalysis.driversNeededIfAllLikeTop = driversNeededIfAllLikeTop;
+
+      if (totalUniqueDrivers > driversNeededIfAllLikeTop) {
+        const excessDrivers = round1(totalUniqueDrivers - driversNeededIfAllLikeTop);
+        insights.push(`💡 If all drivers performed like top performer, you'd need ~${driversNeededIfAllLikeTop} vs ${totalUniqueDrivers} unique drivers (${excessDrivers} fewer)`);
+      }
+    }
+  }
+
+  // 4. Analyze daily productivity correlation with driver count
+  if (movesByDay && activeDriversByDay && movesByDay.map.size >= 3) {
+    const dailyData = [];
+    for (const [day, moves] of movesByDay.map.entries()) {
+      const driverCount = activeDriversByDay.get(day)?.estimate() || 0;
+      if (driverCount > 0) {
+        dailyData.push({
+          day,
+          moves,
+          drivers: driverCount,
+          movesPerDriver: round1(moves / driverCount)
+        });
+      }
+    }
+
+    if (dailyData.length >= 3) {
+      // Sort by driver count to compare low vs high staffing days
+      dailyData.sort((a, b) => a.drivers - b.drivers);
+
+      const lowStaffDays = dailyData.slice(0, Math.ceil(dailyData.length / 3));
+      const highStaffDays = dailyData.slice(-Math.ceil(dailyData.length / 3));
+
+      const avgProductivityLowStaff = round1(lowStaffDays.reduce((s, d) => s + d.movesPerDriver, 0) / lowStaffDays.length);
+      const avgProductivityHighStaff = round1(highStaffDays.reduce((s, d) => s + d.movesPerDriver, 0) / highStaffDays.length);
+      const avgDriversLowStaff = round1(lowStaffDays.reduce((s, d) => s + d.drivers, 0) / lowStaffDays.length);
+      const avgDriversHighStaff = round1(highStaffDays.reduce((s, d) => s + d.drivers, 0) / highStaffDays.length);
+
+      staffingAnalysis.productivityByStaffing = {
+        lowStaffDays: {
+          avgDrivers: avgDriversLowStaff,
+          avgMovesPerDriver: avgProductivityLowStaff,
+          sampleSize: lowStaffDays.length
+        },
+        highStaffDays: {
+          avgDrivers: avgDriversHighStaff,
+          avgMovesPerDriver: avgProductivityHighStaff,
+          sampleSize: highStaffDays.length
+        }
+      };
+
+      // Insight about productivity vs staffing levels
+      if (avgProductivityLowStaff > avgProductivityHighStaff * 1.1) {
+        const pctMore = Math.round(((avgProductivityLowStaff / avgProductivityHighStaff) - 1) * 100);
+        insights.push(`📈 Days with fewer drivers (~${avgDriversLowStaff}) are ${pctMore}% MORE productive per driver (${avgProductivityLowStaff} vs ${avgProductivityHighStaff} moves/driver)`);
+        insights.push(`💰 Consider: Too many drivers may mean not enough moves to go around`);
+      } else if (avgProductivityHighStaff > avgProductivityLowStaff * 1.1) {
+        const pctMore = Math.round(((avgProductivityHighStaff / avgProductivityLowStaff) - 1) * 100);
+        insights.push(`📈 Days with more drivers (~${avgDriversHighStaff}) are ${pctMore}% MORE productive per driver (${avgProductivityHighStaff} vs ${avgProductivityLowStaff} moves/driver)`);
+      } else {
+        insights.push(`📊 Productivity per driver is consistent across staffing levels (~${avgProductivityLowStaff}-${avgProductivityHighStaff} moves/driver)`);
+      }
+    }
+  }
+
+  // 5. Staffing recommendation
+  if (staffingAnalysis.driversNeededAtTarget && totalUniqueDrivers > 0) {
+    const needed = staffingAnalysis.driversNeededAtTarget;
+    const current = totalUniqueDrivers;
+
+    staffingAnalysis.staffingDelta = round1(current - needed);
+    staffingAnalysis.totalUniqueDrivers = current;
+
+    if (current > needed * 1.3) {
+      insights.push(`⚠ Potential overstaffing: ${current} unique drivers vs ~${needed} needed at target rate`);
+    } else if (current < needed * 0.8) {
+      insights.push(`⚠ Potential understaffing: ${current} unique drivers vs ~${needed} needed at target rate`);
+    }
   }
 
   return {
-    label: 'Driver Performance Analysis',
+    label: 'Driver Performance & Staffing Analysis',
     assumptionsUsed: {
       labor_fully_loaded_rate_per_hour: laborRate,
       target_moves_per_driver_per_day: target,
@@ -2121,7 +2241,8 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
       time_impact_minutes_per_driver_day: timeSavedPerDriverDay,
       money_impact_per_driver_day: moneySavedPerDriverDay,
     },
+    staffingAnalysis,
     insights,
-    disclaimer: 'Estimates based on target moves assumption. Time/money impacts are per driver per day. Actual results vary by site conditions.',
+    disclaimer: 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.',
   };
 }
