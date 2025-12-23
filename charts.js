@@ -487,13 +487,13 @@ function renderFindings(findings, recs, roi, meta) {
       // Add staffing analysis metrics if available
       const staffing = roi.staffingAnalysis;
       if (staffing) {
-        if (staffing.totalUniqueDrivers && staffing.driversNeededAtTarget) {
+        if (staffing.avgDriversPerDay && staffing.driversNeededAtTarget) {
           const delta = staffing.staffingDelta;
           const deltaColor = Math.abs(delta) <= staffing.driversNeededAtTarget * 0.2 ? 'var(--green)' : 'var(--yellow)';
           const deltaSign = delta > 0 ? '+' : '';
           metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
-            el('div', { class: 'muted small' }, ['Drivers (Actual vs Needed)']),
-            el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${deltaColor};` }, [`${staffing.totalUniqueDrivers} vs ${staffing.driversNeededAtTarget} (${deltaSign}${delta})`])
+            el('div', { class: 'muted small' }, ['Avg Drivers/Day vs Needed']),
+            el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${deltaColor};` }, [`${staffing.avgDriversPerDay} vs ${staffing.driversNeededAtTarget} (${deltaSign}${delta})`])
           ]));
         }
 
@@ -508,7 +508,7 @@ function renderFindings(findings, recs, roi, meta) {
         if (staffing.driversNeededIfAllLikeTop) {
           metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
             el('div', { class: 'muted small' }, ['If All Like Top Performer']),
-            el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [`Need ~${staffing.driversNeededIfAllLikeTop} drivers`])
+            el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [`Need ~${staffing.driversNeededIfAllLikeTop}/day`])
           ]));
         }
       }
