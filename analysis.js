@@ -1005,9 +1005,10 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       daily: this.dailyPrevented
     });
 
-    // Use the coarser of the two granularities for the combined chart
+    // Use the finer of the two granularities for the combined chart
+    // This ensures short data ranges (e.g., 1 week) use daily/weekly instead of falling back to monthly
     const granularityOrder = { month: 0, week: 1, day: 2 };
-    const useGranularity = granularityOrder[detentionGranularity.granularity] <= granularityOrder[preventedGranularity.granularity]
+    const useGranularity = granularityOrder[detentionGranularity.granularity] >= granularityOrder[preventedGranularity.granularity]
       ? detentionGranularity : preventedGranularity;
 
     const detentionData = useGranularity.granularity === 'day' ? this.dailyDetention
@@ -1282,9 +1283,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       daily: this.processByDay
     });
 
-    // Use the coarser of the two for the combined chart
+    // Use the finer of the two granularities for the combined chart
+    // This ensures short data ranges (e.g., 1 week) use daily/weekly instead of falling back to monthly
     const granularityOrder = { month: 0, week: 1, day: 2 };
-    const useGranularity = granularityOrder[dwellGranularity.granularity] <= granularityOrder[processGranularity.granularity]
+    const useGranularity = granularityOrder[dwellGranularity.granularity] >= granularityOrder[processGranularity.granularity]
       ? dwellGranularity : processGranularity;
 
     const dwellData = useGranularity.granularity === 'day' ? this.dwellByDay
@@ -1805,12 +1807,16 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const topCarriers = this.lostByCarrier.top(8);
     const topEvents = this.eventTypes.top(10);
 
-    // Pick week vs month series (simple heuristic)
-    const rangeDays = roughRangeDays(meta.startDate, meta.endDate);
-    const useWeek = rangeDays <= 120;
+    // Pick best granularity for lost events chart (daily -> weekly -> monthly)
+    const lostGranularity = pickBestGranularity({
+      monthly: this.byMonth,
+      weekly: this.byWeek,
+      daily: this.byDay
+    });
 
-    const series = useWeek ? counterToSeries(this.byWeek) : counterToSeries(this.byMonth);
-    const seriesLabel = useWeek ? 'week' : 'month';
+    const series = counterToSeries(lostGranularity.data);
+    const seriesLabel = lostGranularity.granularity;
+    const chartGranularityLabel = lostGranularity.label;
 
     return {
       report: 'trailer_history',
@@ -1831,8 +1837,8 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       },
       charts: [
         {
-          id: 'lost_events_over_time',
-          title: `Lost events per ${seriesLabel}`,
+          id: `lost_events_${chartGranularityLabel}`,
+          title: `Lost events (${chartGranularityLabel})`,
           kind: 'line',
           description: `Counts grouped by ${seriesLabel} (timezone-adjusted grouping).`,
           data: {
@@ -1936,29 +1942,29 @@ function counterToSeries(counterMap) {
  * Picks the best granularity (monthly/weekly/daily) based on data density.
  * Prefers finer granularity when there's enough data points.
  * @param {object} options - { monthly, weekly, daily } - CounterMap or Map objects
- * @param {number} minPoints - Minimum data points for a granularity to be valid (default 2)
+ * @param {number} minPoints - Minimum data points for a granularity to be valid (default 1)
  * @returns {object} { data, granularity, label } where granularity is 'month'|'week'|'day'
  */
-function pickBestGranularity({ monthly, weekly, daily }, minPoints = 2) {
+function pickBestGranularity({ monthly, weekly, daily }, minPoints = 1) {
   // Check daily first (finest granularity)
+  // Use daily if we have data and it's not too cluttered (≤60 days)
   if (daily) {
     const dailySize = daily.map?.size ?? daily.size ?? 0;
     if (dailySize >= minPoints && dailySize <= 60) {
-      // Use daily for up to ~2 months of data
       return { data: daily, granularity: 'day', label: 'daily' };
     }
   }
 
-  // Check weekly
+  // Check weekly - use if daily is too cluttered or not available
+  // Use weekly if we have data and it's not too cluttered (≤26 weeks)
   if (weekly) {
     const weeklySize = weekly.map?.size ?? weekly.size ?? 0;
     if (weeklySize >= minPoints && weeklySize <= 26) {
-      // Use weekly for up to ~6 months of data
       return { data: weekly, granularity: 'week', label: 'weekly' };
     }
   }
 
-  // Default to monthly
+  // Default to monthly for long time ranges or when finer granularity is unavailable
   if (monthly) {
     return { data: monthly, granularity: 'month', label: 'monthly' };
   }
@@ -1968,29 +1974,22 @@ function pickBestGranularity({ monthly, weekly, daily }, minPoints = 2) {
 
 /**
  * Picks the best granularity for quantile series (Maps with P2Quantile estimators).
+ * Prefers finer granularity when data supports it.
  */
-function pickBestQuantileGranularity({ monthly, weekly, daily }, minPoints = 2) {
-  // Check daily first
+function pickBestQuantileGranularity({ monthly, weekly, daily }, minPoints = 1) {
+  // Check daily first (finest granularity)
+  // Use daily if we have data and it's not too cluttered (≤60 days)
   if (daily && daily.size >= minPoints && daily.size <= 60) {
     return { data: daily, granularity: 'day', label: 'daily' };
   }
 
-  // Check weekly
+  // Check weekly - use if daily is too cluttered or not available
   if (weekly && weekly.size >= minPoints && weekly.size <= 26) {
     return { data: weekly, granularity: 'week', label: 'weekly' };
   }
 
-  // Default to monthly
+  // Default to monthly for long time ranges or when finer granularity is unavailable
   return { data: monthly, granularity: 'month', label: 'monthly' };
-}
-
-function roughRangeDays(startDate, endDate) {
-  const DateTime = getDateTime();
-  if (!startDate || !endDate) return 999;
-  const a = DateTime.fromISO(startDate, { zone: 'utc' });
-  const b = DateTime.fromISO(endDate, { zone: 'utc' });
-  if (!a.isValid || !b.isValid) return 999;
-  return Math.max(0, Math.round(b.diff(a, 'days').days));
 }
 
 function deriveMovesPerDriverPerDay(movesByDay, activeDriversByDay) {
