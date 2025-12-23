@@ -329,6 +329,199 @@ function scoreToBadge(score) {
   return { label: 'Low', color: 'red' };
 }
 
+// ---------- Confidence tooltip and trend analysis helpers ----------
+
+/**
+ * Generate tooltip text explaining confidence score factors per report type.
+ */
+function generateTooltipText(report, factors) {
+  const lines = [];
+
+  // Score
+  lines.push(`Score: ${factors.score ?? '?'}/100`);
+
+  // Parse success rate
+  const total = (factors.parseOk ?? 0) + (factors.parseFails ?? 0);
+  if (total > 0) {
+    const parseRate = Math.round((factors.parseOk / total) * 100);
+    lines.push(`Parse success: ${parseRate}% (${factors.parseOk}/${total})`);
+  }
+
+  // Report-specific factors
+  switch (report) {
+    case 'current_inventory':
+      if (factors.stale30Pct !== undefined) {
+        lines.push(`Stale records (>30d): ${factors.stale30Pct}%`);
+      }
+      if (factors.placeholderRate !== undefined && factors.placeholderRate > 0) {
+        lines.push(`Placeholder SCAC: ${factors.placeholderRate}%`);
+      }
+      break;
+
+    case 'detention_history':
+      if (factors.coveragePct !== undefined) {
+        lines.push(`Event coverage: ${factors.coveragePct}%`);
+      }
+      break;
+
+    case 'dockdoor_history':
+      if (factors.dwellCoveragePct !== undefined) {
+        lines.push(`Dwell coverage: ${factors.dwellCoveragePct}%`);
+      }
+      if (factors.processCoveragePct !== undefined) {
+        lines.push(`Process coverage: ${factors.processCoveragePct}%`);
+      }
+      break;
+
+    case 'driver_history':
+      if (factors.compliancePct !== undefined) {
+        lines.push(`Timing compliance: ${factors.compliancePct}%`);
+      }
+      break;
+
+    case 'trailer_history':
+      // Simple parse-based score, no extra factors
+      break;
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Extract time-series data from various data structures.
+ * Returns { labels: string[], values: number[] } sorted chronologically.
+ */
+function extractTimeSeries(data, options = {}) {
+  const { valueExtractor = null } = options;
+
+  if (!data) return null;
+
+  let labels, values;
+
+  // CounterMap (has .map property)
+  if (data.map instanceof Map) {
+    labels = Array.from(data.map.keys()).sort();
+    values = labels.map(k => data.map.get(k) || 0);
+  }
+  // Plain Map (e.g., P2Quantile estimators)
+  else if (data instanceof Map) {
+    labels = Array.from(data.keys()).sort();
+    if (valueExtractor) {
+      values = labels.map(k => valueExtractor(data.get(k)));
+    } else {
+      values = labels.map(k => {
+        const v = data.get(k);
+        // Try common quantile accessor patterns
+        if (v?.median?.value) return v.median.value();
+        if (typeof v === 'number') return v;
+        return null;
+      });
+    }
+  }
+  // Pre-computed series { labels: [], median: [], p90: [] }
+  else if (Array.isArray(data.labels) && Array.isArray(data.median)) {
+    labels = data.labels;
+    values = data.median;
+  }
+  else {
+    return null;
+  }
+
+  // Filter out invalid values
+  const validPairs = labels
+    .map((l, i) => ({ label: l, value: values[i] }))
+    .filter(p => Number.isFinite(p.value));
+
+  return {
+    labels: validPairs.map(p => p.label),
+    values: validPairs.map(p => p.value)
+  };
+}
+
+/**
+ * Compute trend analysis comparing two consecutive periods.
+ * Supports adaptive granularity: monthly -> weekly -> daily.
+ */
+function computeTrendAnalysis(dataByGranularity, metricName, options = {}) {
+  const {
+    significantChangePct = 15,
+    valueExtractor = null
+  } = options;
+
+  // dataByGranularity can be: { monthly, weekly, daily } or a single data source
+  const granularities = [
+    { key: 'monthly', label: 'month-over-month', data: dataByGranularity.monthly || dataByGranularity },
+    { key: 'weekly', label: 'week-over-week', data: dataByGranularity.weekly },
+    { key: 'daily', label: 'day-over-day', data: dataByGranularity.daily }
+  ];
+
+  for (const { key, label, data } of granularities) {
+    if (!data) continue;
+
+    const series = extractTimeSeries(data, { valueExtractor });
+    if (!series || series.labels.length < 2) continue;
+
+    // Compare last two periods
+    const n = series.labels.length;
+    const current = { label: series.labels[n - 1], value: series.values[n - 1] };
+    const previous = { label: series.labels[n - 2], value: series.values[n - 2] };
+
+    if (!Number.isFinite(previous.value) || previous.value === 0) continue;
+
+    const changePct = ((current.value - previous.value) / Math.abs(previous.value)) * 100;
+    const direction = changePct > 0 ? 'increased' : 'decreased';
+    const absChange = Math.abs(changePct);
+
+    return {
+      current,
+      previous,
+      changePct: Math.round(changePct * 10) / 10,
+      direction,
+      isSignificant: absChange >= significantChangePct,
+      metricName,
+      granularity: key,
+      granularityLabel: label
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Format a trend analysis result into a finding object.
+ */
+function formatTrendFinding(trend, options = {}) {
+  const {
+    increaseLevel = 'yellow',
+    decreaseLevel = 'green',
+    unit = '',
+    invertLevels = false,  // true when decrease is bad (e.g., coverage dropping)
+    roundValues = true
+  } = options;
+
+  if (!trend) return null;
+
+  const absChange = Math.abs(trend.changePct);
+  const level = trend.direction === 'increased'
+    ? (invertLevels ? decreaseLevel : increaseLevel)
+    : (invertLevels ? increaseLevel : decreaseLevel);
+
+  const formatVal = (v) => {
+    if (!Number.isFinite(v)) return '?';
+    const val = roundValues ? Math.round(v * 10) / 10 : v;
+    return `${val}${unit}`;
+  };
+
+  const currentVal = formatVal(trend.current.value);
+  const prevVal = formatVal(trend.previous.value);
+
+  return {
+    level,
+    text: `${trend.metricName} ${trend.direction} ${absChange}% (${prevVal} → ${currentVal}) ${trend.granularityLabel}.`,
+    confidence: 'medium'
+  };
+}
+
 function monthKey(dt, timezone) {
   return dt.setZone(timezone).toFormat('yyyy-LL');
 }
@@ -455,38 +648,56 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
 
     const missingDriverRate = this.liveLoads ? pct(this.liveLoadMissingDriverContact, this.liveLoads) : null;
 
-    // Findings thresholds (MVP heuristics)
+    const stale30 = pctUpdated('30d+');
+
+    // Data quality findings (move to tooltip)
+    const dataQualityFindings = [];
+    if (stale30 >= 10) {
+      dataQualityFindings.push({
+        level: stale30 >= 25 ? 'red' : 'yellow',
+        text: `${stale30}% of records older than 30 days.`
+      });
+    }
+    if (placeholderRate >= 10) {
+      dataQualityFindings.push({ level: 'yellow', text: `Placeholder SCAC rate: ${placeholderRate}%.` });
+    }
+    if (missingDriverRate !== null && missingDriverRate >= 30) {
+      dataQualityFindings.push({ level: 'yellow', text: `Live loads missing driver contact: ${missingDriverRate}%.` });
+    }
+
+    // Business findings (keep in Findings section)
     const findings = [];
     const recs = [];
 
-    // Updated recency
-    const stale30 = pctUpdated('30d+');
-    if (stale30 >= 25) {
-      findings.push({ level: 'red', text: `${stale30}% of inventory records are older than 30 days (updated_at).`, confidence: 'high' });
-      recs.push('Review update workflows and integrations to ensure inventory stays current (goal: majority updated within 7–30 days).');
-    } else if (stale30 >= 10) {
+    // Inventory health summary (business insight, not data quality)
+    if (stale30 < 10) {
+      findings.push({ level: 'green', text: 'Inventory recency looks healthy (low share older than 30 days).', confidence: 'high' });
+    } else if (stale30 >= 25) {
+      findings.push({ level: 'red', text: `${stale30}% of inventory records are older than 30 days - may indicate stale or abandoned assets.`, confidence: 'high' });
+      recs.push('Review update workflows and integrations to ensure inventory stays current.');
+    } else {
       findings.push({ level: 'yellow', text: `${stale30}% of inventory records are older than 30 days.`, confidence: 'medium' });
       recs.push('Spot-check stale records and confirm whether they represent inactive assets or missed updates.');
-    } else {
-      findings.push({ level: 'green', text: 'Inventory recency looks healthy (low share older than 30 days).', confidence: 'high' });
     }
 
-    // SCAC placeholders
-    if (placeholderRate >= 10) {
-      findings.push({ level: 'yellow', text: `Placeholder/unknown SCAC rate is ${placeholderRate}%.`, confidence: 'high' });
-      recs.push('Enforce SCAC validation and/or integrate carrier master data to reduce UNKNOWN/XXXX records.');
-    } else {
-      findings.push({ level: 'green', text: `SCAC data quality looks solid (placeholder rate ${placeholderRate}%).`, confidence: 'high' });
-    }
-
-    // Live load driver contact presence
-    if (missingDriverRate !== null) {
-      if (missingDriverRate >= 30) {
-        findings.push({ level: 'yellow', text: `Live loads missing driver contact presence: ${missingDriverRate}%. (No numbers shown)`, confidence: 'medium' });
-        recs.push('If texting is expected, confirm driver contact capture/permissions and train gate/dispatch to populate contact fields.');
-      } else {
-        findings.push({ level: 'green', text: `Live loads missing driver contact presence is low (${missingDriverRate}%).`, confidence: 'medium' });
+    // Outbound/inbound ratio (business insight)
+    if (outboundInboundRatio !== null) {
+      if (outboundInboundRatio > 2) {
+        findings.push({ level: 'yellow', text: `Outbound-heavy inventory ratio (${outboundInboundRatio.toFixed(1)}:1 outbound to inbound).`, confidence: 'medium' });
+        recs.push('Review if outbound staging is backing up or if inbound flow is constrained.');
+      } else if (outboundInboundRatio < 0.5) {
+        findings.push({ level: 'yellow', text: `Inbound-heavy inventory ratio (${(1/outboundInboundRatio).toFixed(1)}:1 inbound to outbound).`, confidence: 'medium' });
       }
+    }
+
+    // SCAC recommendations
+    if (placeholderRate >= 10) {
+      recs.push('Enforce SCAC validation and/or integrate carrier master data to reduce UNKNOWN/XXXX records.');
+    }
+
+    // Driver contact recommendations
+    if (missingDriverRate !== null && missingDriverRate >= 30) {
+      recs.push('If texting is expected, confirm driver contact capture/permissions and train gate/dispatch to populate contact fields.');
     }
 
     const dq = Math.round(
@@ -495,6 +706,15 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     );
     const badge = scoreToBadge(dq);
 
+    // Generate tooltip text for confidence badge
+    const tooltipText = generateTooltipText('current_inventory', {
+      score: dq,
+      parseOk: this.parseOk,
+      parseFails: this.parseFails,
+      stale30Pct: stale30,
+      placeholderRate
+    });
+
     // Charts (2+)
     const moveTypeTop = this.moveType.toObjectSorted();
     const updatedSeries = Object.entries(this.updatedBuckets).map(([bucket, count]) => ({ bucket, count }));
@@ -502,7 +722,15 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'current_inventory',
       meta,
-      dataQuality: { score: dq, ...badge, parseOk: this.parseOk, parseFails: this.parseFails, totalRows: this.totalRows },
+      dataQuality: {
+        score: dq,
+        ...badge,
+        parseOk: this.parseOk,
+        parseFails: this.parseFails,
+        totalRows: this.totalRows,
+        tooltipText,
+        dataQualityFindings
+      },
       metrics: {
         total_trailers: trailers,
         updated_last_24h_pct: pctUpdated('0–1d'),
@@ -562,8 +790,13 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.live = 0;
     this.drop = 0;
 
+    // Multi-granularity time series for trend analysis
     this.monthlyDetention = new CounterMap();
+    this.weeklyDetention = new CounterMap();
+    this.dailyDetention = new CounterMap();
     this.monthlyPrevented = new CounterMap();
+    this.weeklyPrevented = new CounterMap();
+    this.dailyPrevented = new CounterMap();
     this.topScac = new CounterMap();
   }
 
@@ -593,8 +826,18 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
 
     if (eventDt) {
       const mk = monthKey(eventDt, this.timezone);
-      if (det) this.monthlyDetention.inc(mk);
-      if (pre && !det) this.monthlyPrevented.inc(mk);
+      const wk = weekKey(eventDt, this.timezone);
+      const dk = dayKey(eventDt, this.timezone);
+      if (det) {
+        this.monthlyDetention.inc(mk);
+        this.weeklyDetention.inc(wk);
+        this.dailyDetention.inc(dk);
+      }
+      if (pre && !det) {
+        this.monthlyPrevented.inc(mk);
+        this.weeklyPrevented.inc(wk);
+        this.dailyPrevented.inc(dk);
+      }
     }
   }
 
@@ -602,21 +845,62 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     const findings = [];
     const recs = [];
 
-    // If zero detention ever
+    // Data quality findings (move to tooltip)
+    const dataQualityFindings = [];
     if (this.detention === 0 && this.preDetention === 0) {
-      findings.push({ level: 'yellow', text: 'No detention signals found. This could mean operations are healthy OR the module/config isn’t in use.', confidence: 'medium' });
+      dataQualityFindings.push({ level: 'yellow', text: 'No detention signals found - module may not be configured.' });
       recs.push('Recommend a PM/Admin audit: confirm detention configuration, triggers, and report usage.');
-    } else if (this.detention === 0 && this.preDetention > 0) {
-      findings.push({ level: 'green', text: `Detected ${this.prevented} prevented detention events (pre_detention set, detention_start missing).`, confidence: 'medium' });
-      recs.push('Validate the “prevented detention” workflow and ensure carriers/sites align on definitions and timestamps.');
-    } else {
-      findings.push({ level: 'green', text: `Detention detected: ${this.detention} events; prevented: ${this.prevented}.`, confidence: 'high' });
     }
 
+    // Trend analysis: Detention events
+    const detentionTrend = computeTrendAnalysis(
+      { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
+      'Detention events',
+      { significantChangePct: 20 }
+    );
+    if (detentionTrend) {
+      if (detentionTrend.isSignificant) {
+        const finding = formatTrendFinding(detentionTrend, {
+          increaseLevel: 'yellow',  // More detention is concerning
+          decreaseLevel: 'green'
+        });
+        if (finding) findings.push(finding);
+        if (detentionTrend.direction === 'increased') {
+          recs.push('Detention trending up - investigate carrier performance and dock scheduling.');
+        }
+      } else {
+        findings.push({
+          level: 'green',
+          text: `Detention events stable at ~${Math.round(detentionTrend.current.value)} ${detentionTrend.granularityLabel}.`,
+          confidence: 'medium'
+        });
+      }
+    }
+
+    // Trend analysis: Prevented detention
+    const preventedTrend = computeTrendAnalysis(
+      { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
+      'Prevented detention',
+      { significantChangePct: 20 }
+    );
+    if (preventedTrend?.isSignificant) {
+      const finding = formatTrendFinding(preventedTrend, {
+        increaseLevel: 'green',   // More prevented is good
+        decreaseLevel: 'yellow'
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // Summary finding when no trends available but data exists
+    if (!detentionTrend && !preventedTrend && (this.detention > 0 || this.preDetention > 0)) {
+      findings.push({ level: 'green', text: `Detention: ${this.detention} events, Prevented: ${this.prevented}.`, confidence: 'high' });
+    }
+
+    // Live/drop split (business finding)
     const liveDrop = (this.live + this.drop) ? Math.round((this.live / (this.live + this.drop)) * 1000) / 10 : null;
     if (liveDrop !== null && liveDrop > 80) {
-      findings.push({ level: 'yellow', text: `Detention history is heavily live-load skewed (~${liveDrop}% live).`, confidence: 'medium' });
-      recs.push('If drops are common, confirm drop workflow timestamps are being captured; otherwise this might be expected.');
+      findings.push({ level: 'yellow', text: `Detention heavily live-load skewed (~${liveDrop}% live).`, confidence: 'medium' });
+      recs.push('If drops are common, confirm drop workflow timestamps are being captured.');
     }
 
     const dqBase = this.dataQualityScore();
@@ -624,13 +908,30 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     const dq = Math.round(0.6 * dqBase + 0.4 * coverage);
     const badge = scoreToBadge(dq);
 
+    // Generate tooltip text for confidence badge
+    const tooltipText = generateTooltipText('detention_history', {
+      score: dq,
+      parseOk: this.parseOk,
+      parseFails: this.parseFails,
+      coveragePct: coverage
+    });
+
     // Charts
     const seriesMonths = mergeMonthSeries(this.monthlyDetention, this.monthlyPrevented);
 
     return {
       report: 'detention_history',
       meta,
-      dataQuality: { score: dq, ...badge, parseOk: this.parseOk, parseFails: this.parseFails, totalRows: this.totalRows, coveragePct: coverage },
+      dataQuality: {
+        score: dq,
+        ...badge,
+        parseOk: this.parseOk,
+        parseFails: this.parseFails,
+        totalRows: this.totalRows,
+        coveragePct: coverage,
+        tooltipText,
+        dataQualityFindings
+      },
       metrics: {
         pre_detention_count: this.preDetention,
         detention_count: this.detention,
@@ -697,9 +998,13 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     this.dwellCoverage = { ok: 0, total: 0 };
     this.processCoverage = { ok: 0, total: 0 };
 
-    // month -> P2 estimators
+    // Multi-granularity time series for trend analysis (monthly -> weekly -> daily fallback)
     this.dwellByMonth = new Map();   // key -> { median, p90 }
-    this.processByMonth = new Map(); // key -> { median, p90 }
+    this.dwellByWeek = new Map();
+    this.dwellByDay = new Map();
+    this.processByMonth = new Map();
+    this.processByWeek = new Map();
+    this.processByDay = new Map();
 
     this.processedBy = new CounterMap();
     this.moveRequestedBy = new CounterMap();
@@ -734,10 +1039,13 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       this.dwellCoverage.ok++; this.parseOk++;
       const mins = dwellEnd.diff(dwellStart, 'minutes').minutes;
       if (Number.isFinite(mins) && mins >= 0) {
+        // Track at multiple granularities for trend analysis fallback
         const mk = monthKey(dwellStart, this.timezone);
-        const est = this.getEstimators(this.dwellByMonth, mk);
-        est.median.add(mins);
-        est.p90.add(mins);
+        const wk = weekKey(dwellStart, this.timezone);
+        const dk = dayKey(dwellStart, this.timezone);
+        this.getEstimators(this.dwellByMonth, mk).median.add(mins);
+        this.getEstimators(this.dwellByWeek, wk).median.add(mins);
+        this.getEstimators(this.dwellByDay, dk).median.add(mins);
       }
     }
     this.dwellCoverage.total++;
@@ -746,10 +1054,13 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       this.processCoverage.ok++; this.parseOk++;
       const mins = procEnd.diff(procStart, 'minutes').minutes;
       if (Number.isFinite(mins) && mins >= 0) {
+        // Track at multiple granularities for trend analysis fallback
         const mk = monthKey(procStart, this.timezone);
-        const est = this.getEstimators(this.processByMonth, mk);
-        est.median.add(mins);
-        est.p90.add(mins);
+        const wk = weekKey(procStart, this.timezone);
+        const dk = dayKey(procStart, this.timezone);
+        this.getEstimators(this.processByMonth, mk).median.add(mins);
+        this.getEstimators(this.processByWeek, wk).median.add(mins);
+        this.getEstimators(this.processByDay, dk).median.add(mins);
       }
     }
     this.processCoverage.total++;
@@ -772,21 +1083,65 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const dwellCoveragePct = this.dwellCoverage.total ? Math.round((this.dwellCoverage.ok / this.dwellCoverage.total) * 1000) / 10 : 0;
     const processCoveragePct = this.processCoverage.total ? Math.round((this.processCoverage.ok / this.processCoverage.total) * 1000) / 10 : 0;
 
+    // Data quality findings (move to tooltip, not shown in Findings section)
+    const dataQualityFindings = [];
     if (dwellCoveragePct < 60) {
-      findings.push({ level: 'yellow', text: `Dwell time coverage is low (${dwellCoveragePct}%).`, confidence: 'medium' });
+      dataQualityFindings.push({ level: 'yellow', text: `Dwell time data: ${dwellCoveragePct}% of records have complete start/end timestamps.` });
       recs.push('Confirm dwell start/end timestamps are being recorded consistently (workflow + integrations).');
-    } else {
-      findings.push({ level: 'green', text: `Dwell time coverage looks usable (${dwellCoveragePct}%).`, confidence: 'high' });
     }
-
     if (processCoveragePct < 60) {
-      findings.push({ level: 'yellow', text: `Process time coverage is low (${processCoveragePct}%).`, confidence: 'medium' });
+      dataQualityFindings.push({ level: 'yellow', text: `Process time data: ${processCoveragePct}% of records have complete start/end timestamps.` });
       recs.push('Confirm process start/end timestamps are being recorded consistently (dock door module usage).');
-    } else {
-      findings.push({ level: 'green', text: `Process time coverage looks usable (${processCoveragePct}%).`, confidence: 'high' });
     }
 
-    // Adoption concern: move_requested_by dominated by admins
+    // Trend analysis: Dwell time (monthly -> weekly -> daily fallback)
+    const dwellTrend = computeTrendAnalysis(
+      { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
+      'Median dwell time',
+      { significantChangePct: 15 }
+    );
+    if (dwellTrend) {
+      if (dwellTrend.isSignificant) {
+        const finding = formatTrendFinding(dwellTrend, {
+          unit: ' min',
+          increaseLevel: 'yellow',  // Longer dwell is concerning
+          decreaseLevel: 'green'    // Shorter dwell is good
+        });
+        if (finding) findings.push(finding);
+      } else {
+        // Report stable trend as well
+        findings.push({
+          level: 'green',
+          text: `Median dwell time stable at ~${Math.round(dwellTrend.current.value)} min ${dwellTrend.granularityLabel}.`,
+          confidence: 'medium'
+        });
+      }
+    }
+
+    // Trend analysis: Process time (monthly -> weekly -> daily fallback)
+    const processTrend = computeTrendAnalysis(
+      { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
+      'Median process time',
+      { significantChangePct: 15 }
+    );
+    if (processTrend) {
+      if (processTrend.isSignificant) {
+        const finding = formatTrendFinding(processTrend, {
+          unit: ' min',
+          increaseLevel: 'yellow',
+          decreaseLevel: 'green'
+        });
+        if (finding) findings.push(finding);
+      } else {
+        findings.push({
+          level: 'green',
+          text: `Median process time stable at ~${Math.round(processTrend.current.value)} min ${processTrend.granularityLabel}.`,
+          confidence: 'medium'
+        });
+      }
+    }
+
+    // Adoption concern: move_requested_by dominated by admins (business finding, keep)
     const topReq = this.moveRequestedBy.top(5);
     const totalReq = Array.from(this.moveRequestedBy.map.values()).reduce((a, b) => a + b, 0);
     const adminLike = topReq
@@ -803,6 +1158,15 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const dq = Math.round(0.5 * dqBase + 0.25 * dwellCoveragePct + 0.25 * processCoveragePct);
     const badge = scoreToBadge(dq);
 
+    // Generate tooltip text for confidence badge
+    const tooltipText = generateTooltipText('dockdoor_history', {
+      score: dq,
+      parseOk: this.parseOk,
+      parseFails: this.parseFails,
+      dwellCoveragePct,
+      processCoveragePct
+    });
+
     const dwellSeries = quantileSeriesFromMap(this.dwellByMonth);
     const processSeries = quantileSeriesFromMap(this.processByMonth);
 
@@ -811,7 +1175,17 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'dockdoor_history',
       meta,
-      dataQuality: { score: dq, ...badge, parseOk: this.parseOk, parseFails: this.parseFails, totalRows: this.totalRows, dwellCoveragePct, processCoveragePct },
+      dataQuality: {
+        score: dq,
+        ...badge,
+        parseOk: this.parseOk,
+        parseFails: this.parseFails,
+        totalRows: this.totalRows,
+        dwellCoveragePct,
+        processCoveragePct,
+        tooltipText,
+        dataQualityFindings
+      },
       metrics: {
         dwell_coverage_pct: dwellCoveragePct,
         process_coverage_pct: processCoveragePct,
@@ -1016,33 +1390,78 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       this.warn(`driver_history: Processed ${this.totalRows} rows but no valid timestamps were parsed. Chart "Active drivers & moves (weekly)" will be empty. Parse stats: ${this.parseOk} OK, ${this.parseFails} failed.`);
     }
 
+    // Data quality findings (move to tooltip)
+    const dataQualityFindings = [];
+    if (compliancePct !== null && compliancePct < 30) {
+      dataQualityFindings.push({ level: 'yellow', text: `Low compliance signal: ${compliancePct}% within ≤2 minutes.` });
+    }
+
     const findings = [];
     const recs = [];
 
-    if (compliancePct !== null) {
-      if (compliancePct < 30) {
-        findings.push({ level: 'yellow', text: `Compliance signal is low (${compliancePct}% within ≤2 minutes). Timing-based KPIs may be low-confidence.`, confidence: 'medium' });
-        recs.push('Recommend retraining on driver workflow (accept/start/complete), and validate device connectivity + timestamp capture.');
+    // Trend analysis: Weekly moves
+    const movesTrend = computeTrendAnalysis(
+      { weekly: this.movesByWeek, daily: this.movesByDay },
+      'Weekly moves',
+      { significantChangePct: 15 }
+    );
+    if (movesTrend) {
+      if (movesTrend.isSignificant) {
+        const finding = formatTrendFinding(movesTrend, {
+          increaseLevel: 'green',   // More moves is generally good (activity)
+          decreaseLevel: 'yellow'
+        });
+        if (finding) findings.push(finding);
       } else {
-        findings.push({ level: 'green', text: `Compliance signal: ${compliancePct}% within ≤2 minutes.`, confidence: 'medium' });
+        findings.push({
+          level: 'green',
+          text: `Move volume stable at ~${Math.round(movesTrend.current.value)} ${movesTrend.granularityLabel}.`,
+          confidence: 'medium'
+        });
       }
     }
 
+    // Queue time finding (business insight)
     const queueMed = this.queueMedian.value();
     const queueP90 = this.queueP90.value();
-    if (Number.isFinite(queueMed) && queueMed > 10) {
-      findings.push({ level: 'yellow', text: `Median queue time is ~${Math.round(queueMed)} minutes (p90 ~${Math.round(queueP90 || 0)}).`, confidence: 'medium' });
-      recs.push('Investigate bottlenecks (gate, dispatch, dock availability). Queue time is a classic “hidden tax.”');
+    if (Number.isFinite(queueMed)) {
+      if (queueMed > 10) {
+        findings.push({ level: 'yellow', text: `Median queue time is ~${Math.round(queueMed)} min (p90 ~${Math.round(queueP90 || 0)} min).`, confidence: 'medium' });
+        recs.push('Investigate bottlenecks (gate, dispatch, dock availability). Queue time is a classic "hidden tax."');
+      } else {
+        findings.push({ level: 'green', text: `Queue time healthy: median ~${Math.round(queueMed)} min.`, confidence: 'medium' });
+      }
+    }
+
+    // Compliance recommendation (linked to data quality issue)
+    if (compliancePct !== null && compliancePct < 30) {
+      recs.push('Recommend retraining on driver workflow (accept/start/complete), and validate device connectivity + timestamp capture.');
     }
 
     const dqBase = this.dataQualityScore();
     const dq = Math.round(0.55 * dqBase + 0.45 * (this.complianceTotal ? 100 : 70));
     const badge = scoreToBadge(dq);
 
+    // Generate tooltip text for confidence badge
+    const tooltipText = generateTooltipText('driver_history', {
+      score: dq,
+      parseOk: this.parseOk,
+      parseFails: this.parseFails,
+      compliancePct
+    });
+
     return {
       report: 'driver_history',
       meta,
-      dataQuality: { score: dq, ...badge, parseOk: this.parseOk, parseFails: this.parseFails, totalRows: this.totalRows },
+      dataQuality: {
+        score: dq,
+        ...badge,
+        parseOk: this.parseOk,
+        parseFails: this.parseFails,
+        totalRows: this.totalRows,
+        tooltipText,
+        dataQualityFindings
+      },
       metrics: {
         moves_total: this.movesTotal,
         compliance_pct: compliancePct,
@@ -1111,8 +1530,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     this.lostByCarrier = new CounterMap();
     this.eventTypes = new CounterMap();
 
+    // Multi-granularity time series for trend analysis (monthly -> weekly -> daily fallback)
     this.byWeek = new CounterMap();
     this.byMonth = new CounterMap();
+    this.byDay = new CounterMap();
   }
 
   ingest({ row }) {
@@ -1135,6 +1556,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       if (dt) {
         this.byWeek.inc(weekKey(dt, this.timezone));
         this.byMonth.inc(monthKey(dt, this.timezone));
+        this.byDay.inc(dayKey(dt, this.timezone));
       }
     }
   }
@@ -1143,16 +1565,57 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const findings = [];
     const recs = [];
 
+    // Data quality findings (move to tooltip)
+    const dataQualityFindings = [];
     if (this.lostCount === 0) {
-      findings.push({ level: 'green', text: 'No “Trailer marked lost” events found in the selected range.', confidence: 'medium' });
+      dataQualityFindings.push({ level: 'green', text: 'No "Trailer marked lost" events found.' });
       recs.push('If lost events are expected but missing, confirm event strings and report configuration match local processes.');
-    } else if (this.lostCount > 10) {
-      findings.push({ level: 'yellow', text: `Detected ${this.lostCount} “Trailer marked lost” events. This is a classic chaos signal.`, confidence: 'high' });
-      recs.push('Investigate top carriers and process handoffs causing location drift; tighten scan/check-in and yard check frequency.');
+    }
+
+    // Trend analysis: Lost events (monthly -> weekly -> daily fallback)
+    const lostTrend = computeTrendAnalysis(
+      { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
+      'Lost trailer events',
+      { significantChangePct: 25 }
+    );
+    if (lostTrend) {
+      if (lostTrend.isSignificant) {
+        const finding = formatTrendFinding(lostTrend, {
+          increaseLevel: 'red',     // More lost is bad
+          decreaseLevel: 'green'
+        });
+        if (finding) findings.push(finding);
+        if (lostTrend.direction === 'increased') {
+          recs.push('Lost events trending up - investigate carrier handoffs and scan compliance.');
+        }
+      } else if (this.lostCount > 0) {
+        findings.push({
+          level: 'yellow',
+          text: `Lost events stable at ~${Math.round(lostTrend.current.value)} ${lostTrend.granularityLabel}.`,
+          confidence: 'medium'
+        });
+      }
+    }
+
+    // Volume finding when no trend available but events exist
+    if (!lostTrend && this.lostCount > 0) {
+      if (this.lostCount > 10) {
+        findings.push({ level: 'yellow', text: `Detected ${this.lostCount} "Trailer marked lost" events - potential chaos signal.`, confidence: 'high' });
+        recs.push('Investigate top carriers and process handoffs causing location drift; tighten scan/check-in and yard check frequency.');
+      } else {
+        findings.push({ level: 'green', text: `${this.lostCount} "Trailer marked lost" events detected.`, confidence: 'high' });
+      }
     }
 
     const dq = this.dataQualityScore();
     const badge = scoreToBadge(dq);
+
+    // Generate tooltip text for confidence badge
+    const tooltipText = generateTooltipText('trailer_history', {
+      score: dq,
+      parseOk: this.parseOk,
+      parseFails: this.parseFails
+    });
 
     const topCarriers = this.lostByCarrier.top(8);
     const topEvents = this.eventTypes.top(10);
@@ -1167,7 +1630,15 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'trailer_history',
       meta,
-      dataQuality: { score: dq, ...badge, parseOk: this.parseOk, parseFails: this.parseFails, totalRows: this.totalRows },
+      dataQuality: {
+        score: dq,
+        ...badge,
+        parseOk: this.parseOk,
+        parseFails: this.parseFails,
+        totalRows: this.totalRows,
+        tooltipText,
+        dataQualityFindings
+      },
       metrics: {
         lost_events_count: this.lostCount,
         top_carriers_for_lost: topCarriers,

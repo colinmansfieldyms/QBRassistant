@@ -16,6 +16,40 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+/**
+ * Build tooltip text for confidence badge from dataQuality object.
+ * Combines the main tooltip text with any data quality findings.
+ */
+function buildConfidenceTooltip(dataQuality) {
+  if (!dataQuality) return 'Data quality information unavailable';
+
+  const lines = [];
+
+  // Primary tooltip text from analyzer (explains score factors)
+  if (dataQuality.tooltipText) {
+    lines.push(dataQuality.tooltipText);
+  } else {
+    // Fallback: generate basic tooltip
+    lines.push(`Score: ${dataQuality.score ?? '?'}/100`);
+    const total = (dataQuality.parseOk ?? 0) + (dataQuality.parseFails ?? 0);
+    if (total > 0) {
+      lines.push(`Parse success: ${dataQuality.parseOk}/${total}`);
+    }
+  }
+
+  // Add data quality findings as bullet points
+  if (dataQuality.dataQualityFindings?.length > 0) {
+    lines.push('');
+    lines.push('Data quality notes:');
+    for (const f of dataQuality.dataQualityFindings) {
+      const icon = f.level === 'green' ? '✓' : (f.level === 'red' ? '✗' : '⚠');
+      lines.push(`${icon} ${f.text}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function chartConfigFromKind(kind, chartData, title) {
   const base = {
     type: kind === 'pie' ? 'pie' : (kind === 'bar' ? 'bar' : 'line'),
@@ -170,7 +204,10 @@ export function renderReportResult({
 }) {
   const card = el('div', { class: 'report-card' });
 
-  const badge = el('span', { class: `badge ${result?.dataQuality?.color || 'yellow'}` }, [
+  const badge = el('span', {
+    class: `badge badge-tooltip ${result?.dataQuality?.color || 'yellow'}`,
+    'data-tooltip': buildConfidenceTooltip(result?.dataQuality)
+  }, [
     `${result?.dataQuality?.label || 'Medium'} confidence`
   ]);
 
