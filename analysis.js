@@ -557,6 +557,35 @@ class BaseAnalyzer {
     this.parseOk = 0;
 
     this.warnings = [];
+
+    // Track date range from ingested data (for CSV mode)
+    this.earliestDate = null; // DateTime object
+    this.latestDate = null;   // DateTime object
+  }
+
+  /**
+   * Track a date for date range inference.
+   * Call this with any valid DateTime during ingest.
+   */
+  trackDate(dt) {
+    if (!dt || !dt.isValid) return;
+    if (!this.earliestDate || dt < this.earliestDate) {
+      this.earliestDate = dt;
+    }
+    if (!this.latestDate || dt > this.latestDate) {
+      this.latestDate = dt;
+    }
+  }
+
+  /**
+   * Get the inferred date range as ISO date strings.
+   */
+  getInferredDateRange() {
+    return {
+      startDate: this.earliestDate?.toISODate() || null,
+      endDate: this.latestDate?.toISODate() || null,
+      isInferred: true,
+    };
   }
 
   warn(msg) {
@@ -620,6 +649,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     });
     if (dt) {
       this.parseOk++;
+      this.trackDate(dt); // Track for date range inference
       const now = DateTime.now().setZone(this.timezone);
       const ageHours = now.diff(dt.setZone(this.timezone), 'hours').hours;
       if (!Number.isFinite(ageHours)) this.updatedBuckets.unknown++;
@@ -797,6 +827,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'current_inventory',
       meta,
+      inferredDateRange: this.getInferredDateRange(),
       dataQuality: {
         score: dq,
         ...badge,
@@ -859,8 +890,8 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // For trend grouping, pick a best event time
     const eventDt = det || pre;
 
-    if (pre) { this.preDetention++; this.parseOk++; }
-    if (det) { this.detention++; this.parseOk++; }
+    if (pre) { this.preDetention++; this.parseOk++; this.trackDate(pre); }
+    if (det) { this.detention++; this.parseOk++; this.trackDate(det); }
     if (pre && !det) this.prevented++;
 
     const live = normalizeBoolish(row.live_load) ?? (row.live_load == 1);
@@ -962,12 +993,36 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       coveragePct: coverage
     });
 
-    // Charts
-    const seriesMonths = mergeMonthSeries(this.monthlyDetention, this.monthlyPrevented);
+    // Charts - pick best granularity dynamically
+    const detentionGranularity = pickBestGranularity({
+      monthly: this.monthlyDetention,
+      weekly: this.weeklyDetention,
+      daily: this.dailyDetention
+    });
+    const preventedGranularity = pickBestGranularity({
+      monthly: this.monthlyPrevented,
+      weekly: this.weeklyPrevented,
+      daily: this.dailyPrevented
+    });
+
+    // Use the coarser of the two granularities for the combined chart
+    const granularityOrder = { month: 0, week: 1, day: 2 };
+    const useGranularity = granularityOrder[detentionGranularity.granularity] <= granularityOrder[preventedGranularity.granularity]
+      ? detentionGranularity : preventedGranularity;
+
+    const detentionData = useGranularity.granularity === 'day' ? this.dailyDetention
+      : useGranularity.granularity === 'week' ? this.weeklyDetention : this.monthlyDetention;
+    const preventedData = useGranularity.granularity === 'day' ? this.dailyPrevented
+      : useGranularity.granularity === 'week' ? this.weeklyPrevented : this.monthlyPrevented;
+
+    const seriesMerged = mergeMonthSeries(detentionData, preventedData);
+    const timeLabel = useGranularity.granularity;
+    const chartTitle = `Detention vs prevented detention (${useGranularity.label})`;
 
     return {
       report: 'detention_history',
       meta,
+      inferredDateRange: this.getInferredDateRange(),
       dataQuality: {
         score: dq,
         ...badge,
@@ -987,23 +1042,23 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       },
       charts: [
         {
-          id: 'detention_vs_prevented_monthly',
-          title: 'Detention vs prevented detention (monthly)',
+          id: `detention_vs_prevented_${useGranularity.label}`,
+          title: chartTitle,
           kind: 'line',
-          description: `Monthly counts (timezone-adjusted grouping: ${meta.timezone}).`,
+          description: `${useGranularity.label.charAt(0).toUpperCase() + useGranularity.label.slice(1)} counts (timezone-adjusted grouping: ${meta.timezone}).`,
           data: {
-            labels: seriesMonths.labels,
+            labels: seriesMerged.labels,
             datasets: [
-              { label: 'Detention', data: seriesMonths.detention },
-              { label: 'Prevented detention', data: seriesMonths.prevented },
+              { label: 'Detention', data: seriesMerged.detention },
+              { label: 'Prevented detention', data: seriesMerged.prevented },
             ]
           },
           csv: {
-            columns: ['month', 'detention_count', 'prevented_detention_count', 'timezone'],
-            rows: seriesMonths.labels.map((m, i) => ({
-              month: m,
-              detention_count: seriesMonths.detention[i],
-              prevented_detention_count: seriesMonths.prevented[i],
+            columns: [timeLabel, 'detention_count', 'prevented_detention_count', 'timezone'],
+            rows: seriesMerged.labels.map((m, i) => ({
+              [timeLabel]: m,
+              detention_count: seriesMerged.detention[i],
+              prevented_detention_count: seriesMerged.prevented[i],
               timezone: meta.timezone
             })),
           }
@@ -1083,6 +1138,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
 
     if (dwellStart && dwellEnd) {
       this.dwellCoverage.ok++; this.parseOk++;
+      this.trackDate(dwellStart); // Track for date range inference
+      this.trackDate(dwellEnd);
       const mins = dwellEnd.diff(dwellStart, 'minutes').minutes;
       if (Number.isFinite(mins) && mins >= 0) {
         // Track at multiple granularities for trend analysis fallback
@@ -1213,14 +1270,54 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       processCoveragePct
     });
 
-    const dwellSeries = quantileSeriesFromMap(this.dwellByMonth);
-    const processSeries = quantileSeriesFromMap(this.processByMonth);
+    // Pick best granularity for dwell/process charts
+    const dwellGranularity = pickBestQuantileGranularity({
+      monthly: this.dwellByMonth,
+      weekly: this.dwellByWeek,
+      daily: this.dwellByDay
+    });
+    const processGranularity = pickBestQuantileGranularity({
+      monthly: this.processByMonth,
+      weekly: this.processByWeek,
+      daily: this.processByDay
+    });
+
+    // Use the coarser of the two for the combined chart
+    const granularityOrder = { month: 0, week: 1, day: 2 };
+    const useGranularity = granularityOrder[dwellGranularity.granularity] <= granularityOrder[processGranularity.granularity]
+      ? dwellGranularity : processGranularity;
+
+    const dwellData = useGranularity.granularity === 'day' ? this.dwellByDay
+      : useGranularity.granularity === 'week' ? this.dwellByWeek : this.dwellByMonth;
+    const processData = useGranularity.granularity === 'day' ? this.processByDay
+      : useGranularity.granularity === 'week' ? this.processByWeek : this.processByMonth;
+
+    const dwellSeries = quantileSeriesFromMap(dwellData);
+    const processSeries = quantileSeriesFromMap(processData);
+    const timeLabel = useGranularity.granularity;
+    const chartGranularityLabel = useGranularity.label;
 
     const requesterTop = this.moveRequestedBy.top(8);
+    const processorTop = this.processedBy.top(8);
+
+    // Determine which leaderboard to show based on data availability
+    // In CSV mode, we typically have processed_by but not move_requested_by
+    const hasProcessedBy = processorTop.length > 0 && processorTop.reduce((a, b) => a + b.value, 0) > 0;
+    const hasRequestedBy = requesterTop.length > 0 && requesterTop.reduce((a, b) => a + b.value, 0) > 0;
+
+    // Choose the leaderboard with more data, preferring processed_by if equal
+    const useProcessedByChart = hasProcessedBy && (!hasRequestedBy || this.processedBy.map.size >= this.moveRequestedBy.map.size);
+    const leaderboardTop = useProcessedByChart ? processorTop : requesterTop;
+    const leaderboardTitle = useProcessedByChart ? 'Top Processed By counts' : 'Top move_requested_by counts';
+    const leaderboardField = useProcessedByChart ? 'processed_by' : 'move_requested_by';
+    const leaderboardDesc = useProcessedByChart
+      ? 'Helps track who is processing dock door events.'
+      : 'Helps infer module adoption (admin vs others).';
 
     return {
       report: 'dockdoor_history',
       meta,
+      inferredDateRange: this.getInferredDateRange(),
       dataQuality: {
         score: dq,
         ...badge,
@@ -1243,10 +1340,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       },
       charts: [
         {
-          id: 'dwell_process_medians_monthly',
-          title: 'Median dwell & process times (monthly)',
+          id: `dwell_process_medians_${chartGranularityLabel}`,
+          title: `Median dwell & process times (${chartGranularityLabel})`,
           kind: 'line',
-          description: 'Median minutes per month (streaming quantile estimation).',
+          description: `Median minutes per ${timeLabel} (streaming quantile estimation).`,
           data: {
             labels: unionSorted(dwellSeries.labels, processSeries.labels),
             datasets: [
@@ -1255,9 +1352,9 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
             ]
           },
           csv: {
-            columns: ['month', 'dwell_median_min', 'process_median_min', 'timezone'],
+            columns: [timeLabel, 'dwell_median_min', 'process_median_min', 'timezone'],
             rows: unionSorted(dwellSeries.labels, processSeries.labels).map((m, i) => ({
-              month: m,
+              [timeLabel]: m,
               dwell_median_min: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), dwellSeries.labels, dwellSeries.median)[i],
               process_median_min: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), processSeries.labels, processSeries.median)[i],
               timezone: meta.timezone
@@ -1265,17 +1362,17 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
           }
         },
         {
-          id: 'top_move_requested_by',
-          title: 'Top move_requested_by counts',
+          id: useProcessedByChart ? 'top_processed_by' : 'top_move_requested_by',
+          title: leaderboardTitle,
           kind: 'bar',
-          description: 'Helps infer module adoption (admin vs others).',
+          description: leaderboardDesc,
           data: {
-            labels: requesterTop.map(x => x.key),
-            datasets: [{ label: 'Requests', data: requesterTop.map(x => x.value) }]
+            labels: leaderboardTop.map(x => x.key),
+            datasets: [{ label: useProcessedByChart ? 'Events' : 'Requests', data: leaderboardTop.map(x => x.value) }]
           },
           csv: {
-            columns: ['move_requested_by', 'count'],
-            rows: requesterTop.map(x => ({ move_requested_by: x.key, count: x.value }))
+            columns: [leaderboardField, 'count'],
+            rows: leaderboardTop.map(x => ({ [leaderboardField]: x.key, count: x.value }))
           }
         }
       ],
@@ -1376,6 +1473,7 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     const eventDt = complete || start || accept;
     if (eventDt) {
       this.parseOk++;
+      this.trackDate(eventDt); // Track for date range inference
     } else if (!eventDt && (completeRaw || startRaw || acceptRaw)) {
       // We have timestamp data but failed to parse it - warn once per analyzer
       if (this.totalRows === 1) {
@@ -1422,9 +1520,27 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
   finalize(meta) {
     const compliancePct = this.complianceTotal ? Math.round((this.complianceOk / this.complianceTotal) * 1000) / 10 : null;
 
-    const weekLabels = Array.from(this.activeDriversByWeek.keys()).sort();
-    const movesWeek = weekLabels.map(w => this.movesByWeek.map.get(w) || 0);
-    const activeWeek = weekLabels.map(w => this.activeDriversByWeek.get(w)?.estimate() || 0);
+    // Pick best granularity for driver activity chart
+    const movesGranularity = pickBestGranularity({
+      weekly: this.movesByWeek,
+      daily: this.movesByDay
+    });
+
+    // Get labels and data based on chosen granularity
+    let timeLabels, movesData, activeData, timeLabel, chartGranularityLabel;
+    if (movesGranularity.granularity === 'day') {
+      timeLabels = Array.from(this.activeDriversByDay.keys()).sort();
+      movesData = timeLabels.map(d => this.movesByDay.map.get(d) || 0);
+      activeData = timeLabels.map(d => this.activeDriversByDay.get(d)?.estimate() || 0);
+      timeLabel = 'day';
+      chartGranularityLabel = 'daily';
+    } else {
+      timeLabels = Array.from(this.activeDriversByWeek.keys()).sort();
+      movesData = timeLabels.map(w => this.movesByWeek.map.get(w) || 0);
+      activeData = timeLabels.map(w => this.activeDriversByWeek.get(w)?.estimate() || 0);
+      timeLabel = 'week';
+      chartGranularityLabel = 'weekly';
+    }
 
     const topDrivers = this.movesByDriver.top(10);
 
@@ -1432,8 +1548,8 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     if (this.totalRows > 0 && this.movesByDriver.map.size === 0) {
       this.warn(`driver_history: Processed ${this.totalRows} rows but found no driver identifiers. Chart "Top drivers by moves" will be empty.`);
     }
-    if (this.totalRows > 0 && weekLabels.length === 0) {
-      this.warn(`driver_history: Processed ${this.totalRows} rows but no valid timestamps were parsed. Chart "Active drivers & moves (weekly)" will be empty. Parse stats: ${this.parseOk} OK, ${this.parseFails} failed.`);
+    if (this.totalRows > 0 && timeLabels.length === 0) {
+      this.warn(`driver_history: Processed ${this.totalRows} rows but no valid timestamps were parsed. Chart "Active drivers & moves" will be empty. Parse stats: ${this.parseOk} OK, ${this.parseFails} failed.`);
     }
 
     // Data quality findings (move to tooltip)
@@ -1499,6 +1615,7 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'driver_history',
       meta,
+      inferredDateRange: this.getInferredDateRange(),
       dataQuality: {
         score: dq,
         ...badge,
@@ -1532,23 +1649,23 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
           }
         },
         {
-          id: 'active_drivers_and_moves_by_week',
-          title: 'Active drivers & moves (weekly)',
+          id: `active_drivers_and_moves_${chartGranularityLabel}`,
+          title: `Active drivers & moves (${chartGranularityLabel})`,
           kind: 'line',
-          description: 'Weekly trend using approximate distinct counting (no raw driver lists stored).',
+          description: `${chartGranularityLabel.charAt(0).toUpperCase() + chartGranularityLabel.slice(1)} trend using approximate distinct counting (no raw driver lists stored).`,
           data: {
-            labels: weekLabels,
+            labels: timeLabels,
             datasets: [
-              { label: 'Active drivers (approx)', data: activeWeek },
-              { label: 'Moves', data: movesWeek }
+              { label: 'Active drivers (approx)', data: activeData },
+              { label: 'Moves', data: movesData }
             ]
           },
           csv: {
-            columns: ['week', 'active_drivers_approx', 'moves', 'timezone'],
-            rows: weekLabels.map((w, i) => ({
-              week: w,
-              active_drivers_approx: activeWeek[i],
-              moves: movesWeek[i],
+            columns: [timeLabel, 'active_drivers_approx', 'moves', 'timezone'],
+            rows: timeLabels.map((t, i) => ({
+              [timeLabel]: t,
+              active_drivers_approx: activeData[i],
+              moves: movesData[i],
               timezone: meta.timezone
             }))
           }
@@ -1591,7 +1708,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const dt = parseTimestamp(firstPresent(row, ['event_time', 'created_at', 'timestamp', 'event_timestamp']), {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
     });
-    if (dt) this.parseOk++;
+    if (dt) {
+      this.parseOk++;
+      this.trackDate(dt); // Track for date range inference
+    }
 
     const carrier = row.scac ?? row.carrier_scac ?? row.scac_code ?? row.carrier;
 
@@ -1676,6 +1796,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     return {
       report: 'trailer_history',
       meta,
+      inferredDateRange: this.getInferredDateRange(),
       dataQuality: {
         score: dq,
         ...badge,
@@ -1792,6 +1913,58 @@ function counterToSeries(counterMap) {
   return { labels, values: labels.map(l => counterMap.map.get(l) || 0) };
 }
 
+/**
+ * Picks the best granularity (monthly/weekly/daily) based on data density.
+ * Prefers finer granularity when there's enough data points.
+ * @param {object} options - { monthly, weekly, daily } - CounterMap or Map objects
+ * @param {number} minPoints - Minimum data points for a granularity to be valid (default 2)
+ * @returns {object} { data, granularity, label } where granularity is 'month'|'week'|'day'
+ */
+function pickBestGranularity({ monthly, weekly, daily }, minPoints = 2) {
+  // Check daily first (finest granularity)
+  if (daily) {
+    const dailySize = daily.map?.size ?? daily.size ?? 0;
+    if (dailySize >= minPoints && dailySize <= 60) {
+      // Use daily for up to ~2 months of data
+      return { data: daily, granularity: 'day', label: 'daily' };
+    }
+  }
+
+  // Check weekly
+  if (weekly) {
+    const weeklySize = weekly.map?.size ?? weekly.size ?? 0;
+    if (weeklySize >= minPoints && weeklySize <= 26) {
+      // Use weekly for up to ~6 months of data
+      return { data: weekly, granularity: 'week', label: 'weekly' };
+    }
+  }
+
+  // Default to monthly
+  if (monthly) {
+    return { data: monthly, granularity: 'month', label: 'monthly' };
+  }
+
+  return { data: null, granularity: 'month', label: 'monthly' };
+}
+
+/**
+ * Picks the best granularity for quantile series (Maps with P2Quantile estimators).
+ */
+function pickBestQuantileGranularity({ monthly, weekly, daily }, minPoints = 2) {
+  // Check daily first
+  if (daily && daily.size >= minPoints && daily.size <= 60) {
+    return { data: daily, granularity: 'day', label: 'daily' };
+  }
+
+  // Check weekly
+  if (weekly && weekly.size >= minPoints && weekly.size <= 26) {
+    return { data: weekly, granularity: 'week', label: 'weekly' };
+  }
+
+  // Default to monthly
+  return { data: monthly, granularity: 'month', label: 'monthly' };
+}
+
 function roughRangeDays(startDate, endDate) {
   const DateTime = getDateTime();
   if (!startDate || !endDate) return 999;
@@ -1851,46 +2024,104 @@ function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
 
 function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   const a = assumptions || {};
-  const enabled =
-    Number.isFinite(a.detention_cost_per_hour) &&
-    Number.isFinite(a.labor_fully_loaded_rate_per_hour) &&
-    Number.isFinite(a.target_moves_per_driver_per_day);
+
+  // Only require labor rate and target moves for driver ROI
+  const enabled = Number.isFinite(a.target_moves_per_driver_per_day);
 
   if (!enabled) return null;
 
-  // MVP: very light-touch labor ROI proxy:
-  // If avg moves/driver/day is below target, show “capacity gap” value per day.
-  const avg = metrics.avgMovesPerDriverPerDay;
-  if (!Number.isFinite(avg)) return {
-    label: 'Labor efficiency estimate',
-    assumptionsUsed: {
-      labor_fully_loaded_rate_per_hour: a.labor_fully_loaded_rate_per_hour,
-      target_moves_per_driver_per_day: a.target_moves_per_driver_per_day,
-    },
-    estimate: null,
-    disclaimer: 'Insufficient data to estimate labor impact (missing driver/day aggregation).',
-  };
-
   const target = a.target_moves_per_driver_per_day;
-  const gap = Math.max(0, target - avg);
+  const laborRate = a.labor_fully_loaded_rate_per_hour || 42; // Default $42/hr
+  const driverDayHours = 8;
 
-  // Assume 1 driver-day “cost” ~ 8 hours labor (placeholder). This is a *big* assumption.
-  const estHours = (gap / target) * 8;
-  const estValue = estHours * a.labor_fully_loaded_rate_per_hour;
+  // Get actual metrics
+  const avg = metrics.avgMovesPerDriverPerDay;
+  const totalMoves = metrics.movesTotal || 0;
+
+  // If we don't have enough data
+  if (!Number.isFinite(avg) && totalMoves === 0) {
+    return {
+      label: 'Driver Performance Analysis',
+      assumptionsUsed: {
+        labor_fully_loaded_rate_per_hour: laborRate,
+        target_moves_per_driver_per_day: target,
+        driver_day_hours: driverDayHours,
+      },
+      estimate: null,
+      disclaimer: 'Insufficient data to estimate driver performance (missing driver/day aggregation).',
+    };
+  }
+
+  // Calculate performance vs target
+  const performancePct = Number.isFinite(avg) ? Math.round((avg / target) * 100) : null;
+  const gap = Number.isFinite(avg) ? Math.max(0, target - avg) : null;
+  const surplus = Number.isFinite(avg) ? Math.max(0, avg - target) : null;
+
+  // Time/money calculations
+  let timeSavedPerDriverDay = null;
+  let moneySavedPerDriverDay = null;
+  let fteEquivalent = null;
+
+  if (Number.isFinite(avg)) {
+    if (avg >= target) {
+      // Drivers exceeding target - calculate efficiency gain
+      // If getting more moves done, the "saved time" is the extra capacity
+      timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60); // Minutes "gained"
+      moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
+    } else {
+      // Below target - show the gap
+      const gapHours = (gap / target) * driverDayHours;
+      timeSavedPerDriverDay = -round1(gapHours * 60); // Negative = time lost
+      moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
+    }
+
+    // FTE equivalent: How many FTEs worth of work based on moves
+    // If target is 50 moves/day, and we did 5000 total moves, that's 100 driver-days
+    // This helps contextualize the total workload
+    if (totalMoves > 0) {
+      const driverDaysEquivalent = round1(totalMoves / target);
+      fteEquivalent = driverDaysEquivalent;
+    }
+  }
+
+  // Build human-readable insights
+  const insights = [];
+
+  if (Number.isFinite(performancePct)) {
+    if (performancePct >= 100) {
+      insights.push(`✓ Drivers averaging ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
+      if (surplus > 0) {
+        insights.push(`✓ Exceeding target by ~${round1(surplus)} moves/driver/day`);
+      }
+    } else {
+      insights.push(`⚠ Drivers at ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
+      insights.push(`⚠ Gap of ~${round1(gap)} moves/driver/day to reach target`);
+    }
+  }
+
+  if (totalMoves > 0 && Number.isFinite(fteEquivalent)) {
+    insights.push(`Total moves: ${totalMoves.toLocaleString()} (~${fteEquivalent} driver-days at target rate)`);
+  }
 
   return {
-    label: 'Labor capacity estimate',
+    label: 'Driver Performance Analysis',
     assumptionsUsed: {
-      labor_fully_loaded_rate_per_hour: a.labor_fully_loaded_rate_per_hour,
+      labor_fully_loaded_rate_per_hour: laborRate,
       target_moves_per_driver_per_day: target,
-      driver_day_hours: 8,
+      driver_day_hours: driverDayHours,
     },
     estimate: {
-      avg_moves_per_driver_per_day: avg,
+      avg_moves_per_driver_per_day: Number.isFinite(avg) ? round1(avg) : null,
       target_moves_per_driver_per_day: target,
-      estimated_hours_gap_per_driver_day: round1(estHours),
-      estimated_value_per_driver_day: Math.round(estValue * 100) / 100,
+      performance_vs_target_pct: performancePct,
+      gap_moves_per_day: gap !== null ? round1(gap) : null,
+      surplus_moves_per_day: surplus !== null && surplus > 0 ? round1(surplus) : null,
+      total_moves: totalMoves || null,
+      driver_days_equivalent: fteEquivalent,
+      time_impact_minutes_per_driver_day: timeSavedPerDriverDay,
+      money_impact_per_driver_day: moneySavedPerDriverDay,
     },
-    disclaimer: 'Estimate only. Uses a simplified “capacity gap” model. Replace with site-specific staffing and shift assumptions.',
+    insights,
+    disclaimer: 'Estimates based on target moves assumption. Time/money impacts are per driver per day. Actual results vary by site conditions.',
   };
 }

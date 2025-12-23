@@ -86,6 +86,8 @@ const UI = {
   csvFileInput: document.querySelector('#csvFileInput'),
   csvFileList: document.querySelector('#csvFileList'),
   csvValidationMessages: document.querySelector('#csvValidationMessages'),
+  // Reports fieldset (hidden in CSV mode)
+  reportsFieldset: document.querySelector('#reportsFieldset'),
   // Backpressure drawer elements
   bpDrawer: document.querySelector('#backpressureDrawer'),
   bpDrawerToggle: document.querySelector('#bpDrawerToggle'),
@@ -853,6 +855,39 @@ function resetWorkerState() {
 }
 
 // ---------- Results rendering ----------
+
+/**
+ * Formats date range for display, including inferred/assumed labels for CSV mode.
+ */
+function formatDateRangeDisplay(inputs) {
+  if (!inputs) return '—';
+
+  const start = inputs.startDate;
+  const end = inputs.endDate;
+
+  // Handle "(from CSV)" placeholder - shouldn't happen after processing
+  if (start === '(from CSV)' || end === '(from CSV)') {
+    return '(from CSV)';
+  }
+
+  // Build the date range string
+  let dateStr;
+  if (inputs.isSingleDateSnapshot) {
+    dateStr = escapeHtml(start);
+  } else {
+    dateStr = `${escapeHtml(start)} → ${escapeHtml(end)}`;
+  }
+
+  // Add qualifier for CSV mode
+  if (inputs.dateRangeAssumed) {
+    dateStr += ' <span class="muted small">(assumed)</span>';
+  } else if (inputs.dateRangeInferred) {
+    dateStr += ' <span class="muted small">(inferred)</span>';
+  }
+
+  return dateStr;
+}
+
 function renderAllResults() {
   const renderStart = state.perf.enabled ? performance.now() : 0;
   destroyAllCharts(state.chartRegistry);
@@ -903,15 +938,11 @@ function renderAllResults() {
       </div>
       <div class="kpi">
         <div class="label">Date range</div>
-        <div class="value">${escapeHtml(inputs.startDate)} → ${escapeHtml(inputs.endDate)}</div>
+        <div class="value">${formatDateRangeDisplay(inputs)}</div>
         <div class="sub">Run started: ${escapeHtml(runAt)}</div>
       </div>
     </div>
 
-    <div class="muted small" style="margin-top:10px;">
-      Raw rows are not retained by default; charts and exports are based on aggregated series/tables only.
-      Fields containing <code>cell</code> or <code>phone</code> are scrubbed during normalization.
-    </div>
   `;
   root.appendChild(summary);
 
@@ -1446,7 +1477,10 @@ async function runCSVAssessment() {
       if (state.warnings.length < 50) addWarning(w);
     });
 
-    // Finalize analyzers
+    // Finalize analyzers and collect inferred date range
+    let inferredStart = null;
+    let inferredEnd = null;
+
     for (const report of inputs.reports) {
       const analyzer = analyzers[report];
       if (!analyzer) continue;
@@ -1460,6 +1494,40 @@ async function runCSVAssessment() {
         roiEnabled,
         csvMode: true,
       });
+
+      // Collect inferred date range from all reports
+      const inferred = state.results[report]?.inferredDateRange;
+      if (inferred?.startDate) {
+        if (!inferredStart || inferred.startDate < inferredStart) {
+          inferredStart = inferred.startDate;
+        }
+      }
+      if (inferred?.endDate) {
+        if (!inferredEnd || inferred.endDate > inferredEnd) {
+          inferredEnd = inferred.endDate;
+        }
+      }
+    }
+
+    // Update state.inputs with inferred date range for display
+    if (inferredStart || inferredEnd) {
+      // For current_inventory with no dates, fall back to today
+      const today = DateTime.now().setZone(inputs.timezone).toISODate();
+      state.inputs.startDate = inferredStart || today;
+      state.inputs.endDate = inferredEnd || today;
+      state.inputs.dateRangeInferred = true;
+
+      // If only one date is available (e.g., current_inventory snapshot), show as single date
+      if (state.inputs.startDate === state.inputs.endDate) {
+        state.inputs.isSingleDateSnapshot = true;
+      }
+    } else {
+      // Fallback to today for reports without date data (e.g., current_inventory)
+      const today = DateTime.now().setZone(inputs.timezone).toISODate();
+      state.inputs.startDate = today;
+      state.inputs.endDate = today;
+      state.inputs.dateRangeInferred = true;
+      state.inputs.dateRangeAssumed = true;
     }
 
     flushProgressRender();
@@ -1537,10 +1605,13 @@ function setDataSource(source) {
     UI.apiModeFields?.classList.remove('hidden');
     UI.csvModeFields?.classList.add('hidden');
     UI.dateRangeFields?.classList.remove('hidden');
+    UI.reportsFieldset?.classList.remove('hidden');
   } else {
     UI.apiModeFields?.classList.add('hidden');
     UI.csvModeFields?.classList.remove('hidden');
     UI.dateRangeFields?.classList.add('hidden');
+    // Hide Reports fieldset in CSV mode - reports are selected via file dropdowns
+    UI.reportsFieldset?.classList.add('hidden');
   }
 
   // Initialize CSV state if needed

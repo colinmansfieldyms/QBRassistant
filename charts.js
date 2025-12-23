@@ -292,7 +292,7 @@ export function renderReportResult({
             onWarning?.(`Chart CSV export failed: ${e?.message || String(e)}`);
           }
         }
-      }, ['Download chart data as CSV']),
+      }, ['⬇ CSV']),
     ]);
 
     const title = el('div', { class: 'chart-title' }, [
@@ -417,11 +417,79 @@ function renderFindings(findings, recs, roi, meta) {
     const box = el('div', { class: 'callout callout-info' });
     const est = roi.estimate;
     box.appendChild(el('div', { style: 'font-weight:900; color:var(--accent); margin-bottom:6px;' }, [roi.label]));
+
     if (est) {
-      box.appendChild(el('div', {}, [el('code', {}, [JSON.stringify(est, null, 2)])]));
+      // Display insights as a readable list if available
+      if (roi.insights && roi.insights.length > 0) {
+        const insightsList = el('ul', { class: 'list', style: 'margin: 8px 0;' });
+        for (const insight of roi.insights) {
+          insightsList.appendChild(el('li', { style: 'margin-bottom: 4px;' }, [insight]));
+        }
+        box.appendChild(insightsList);
+      }
+
+      // Display key metrics in a more readable format
+      const metricsGrid = el('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-top: 8px;' });
+
+      if (est.performance_vs_target_pct !== null) {
+        const color = est.performance_vs_target_pct >= 100 ? 'var(--green)' : 'var(--yellow)';
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Performance vs Target']),
+          el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${color};` }, [`${est.performance_vs_target_pct}%`])
+        ]));
+      }
+
+      if (est.avg_moves_per_driver_per_day !== null) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Avg Moves/Driver/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.avg_moves_per_driver_per_day)])
+        ]));
+      }
+
+      if (est.target_moves_per_driver_per_day !== null) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Target Moves/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.target_moves_per_driver_per_day)])
+        ]));
+      }
+
+      if (est.gap_moves_per_day !== null && est.gap_moves_per_day > 0) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Gap to Target']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--yellow);' }, [`-${est.gap_moves_per_day} moves/day`])
+        ]));
+      }
+
+      if (est.surplus_moves_per_day !== null && est.surplus_moves_per_day > 0) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Above Target']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--green);' }, [`+${est.surplus_moves_per_day} moves/day`])
+        ]));
+      }
+
+      if (est.driver_days_equivalent !== null) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Driver-Days (at target)']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.driver_days_equivalent)])
+        ]));
+      }
+
+      if (est.money_impact_per_driver_day !== null && est.money_impact_per_driver_day !== 0) {
+        const moneyColor = est.money_impact_per_driver_day > 0 ? 'var(--green)' : 'var(--yellow)';
+        const moneySign = est.money_impact_per_driver_day > 0 ? '+' : '';
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Labor Impact/Driver/Day']),
+          el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${moneyColor};` }, [`${moneySign}$${Math.abs(est.money_impact_per_driver_day).toFixed(2)}`])
+        ]));
+      }
+
+      if (metricsGrid.childNodes.length > 0) {
+        box.appendChild(metricsGrid);
+      }
     } else {
       box.appendChild(el('div', { class: 'muted' }, ['No estimate available from current data.']));
     }
+
     box.appendChild(el('div', { class: 'muted small', style: 'margin-top:8px;' }, [roi.disclaimer]));
     wrap.appendChild(box);
   }
