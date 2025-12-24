@@ -48,13 +48,13 @@ const pages = {
   dockdoor_history: {
     FAC1: [
       [
-        { dwell_start_time: '2025-11-01 10:00:00', dwell_end_time: '2025-11-01 11:20:00', process_start_time: '2025-11-01 10:10:00', process_end_time: '2025-11-01 11:00:00', processed_by: 'j.smith', move_requested_by: 'Admin' },
-        { dwell_start_time: '2025-12-01 08:00:00', dwell_end_time: '2025-12-01 09:05:00', process_start_time: '2025-12-01 08:10:00', process_end_time: '2025-12-01 08:55:00', processed_by: 'a.lee', move_requested_by: 'Admin' },
+        { location: 'Door 1', dwell_start_time: '2025-11-01 10:00:00', dwell_end_time: '2025-11-01 11:20:00', process_start_time: '2025-11-01 10:10:00', process_end_time: '2025-11-01 11:00:00', processed_by: 'j.smith', move_requested_by: 'Admin' },
+        { location: 'Door 2', dwell_start_time: '2025-12-01 08:00:00', dwell_end_time: '2025-12-01 09:05:00', process_start_time: '2025-12-01 08:10:00', process_end_time: '2025-12-01 08:55:00', processed_by: 'a.lee', move_requested_by: 'Admin' },
       ],
     ],
     FAC2: [
       [
-        { dwell_start_time: '2025-12-05 09:00:00', dwell_end_time: '2025-12-05 10:45:00', process_start_time: null, process_end_time: null, processed_by: 'a.lee', move_requested_by: 'ops.user' },
+        { location: 'Door A', dwell_start_time: '2025-12-05 09:00:00', dwell_end_time: '2025-12-05 10:45:00', process_start_time: null, process_end_time: null, processed_by: 'a.lee', move_requested_by: 'ops.user' },
       ]
     ]
   },

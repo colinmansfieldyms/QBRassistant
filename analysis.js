@@ -1414,7 +1414,7 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Track dock door turns for throughput ROI
-    const door = safeStr(firstPresent(row, ['door', 'door_name', 'dock_door', 'dock_door_name', 'door_id']));
+    const door = safeStr(firstPresent(row, ['door', 'door_name', 'dock_door', 'dock_door_name', 'door_id', 'location', 'location_name']));
     const eventDt = dwellStart || procStart;
     if (door && eventDt) {
       const dk = dayKey(eventDt, this.timezone);
