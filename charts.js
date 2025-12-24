@@ -433,6 +433,9 @@ function renderMetricsGrid(metrics) {
   }
 
   for (const [k, v] of entries) {
+    // Skip array values (like top_carriers_for_lost) - these are displayed elsewhere
+    if (Array.isArray(v)) continue;
+
     const label = k.replaceAll('_', ' ');
     const value = (v === null || v === undefined)
       ? '—'
@@ -512,7 +515,11 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
       // Display key metrics in a more readable format
       const metricsGrid = el('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-top: 8px;' });
 
-      if (est.performance_vs_target_pct !== null) {
+      // Helper to check for valid numeric values (not null, undefined, or NaN)
+      const isValidNum = v => v != null && Number.isFinite(v);
+
+      // Driver performance ROI metrics
+      if (isValidNum(est.performance_vs_target_pct)) {
         const color = est.performance_vs_target_pct >= 100 ? 'var(--green)' : 'var(--yellow)';
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Performance vs Target']),
@@ -520,48 +527,123 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
         ]));
       }
 
-      if (est.avg_moves_per_driver_per_day !== null) {
+      if (isValidNum(est.avg_moves_per_driver_per_day)) {
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Avg Moves/Driver/Day']),
           el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.avg_moves_per_driver_per_day)])
         ]));
       }
 
-      if (est.target_moves_per_driver_per_day !== null) {
+      if (isValidNum(est.target_moves_per_driver_per_day)) {
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Target Moves/Day']),
           el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.target_moves_per_driver_per_day)])
         ]));
       }
 
-      if (est.gap_moves_per_day !== null && est.gap_moves_per_day > 0) {
+      if (isValidNum(est.gap_moves_per_day) && est.gap_moves_per_day > 0) {
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Gap to Target']),
           el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--yellow);' }, [`-${est.gap_moves_per_day} moves/day`])
         ]));
       }
 
-      if (est.surplus_moves_per_day !== null && est.surplus_moves_per_day > 0) {
+      if (isValidNum(est.surplus_moves_per_day) && est.surplus_moves_per_day > 0) {
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Above Target']),
           el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--green);' }, [`+${est.surplus_moves_per_day} moves/day`])
         ]));
       }
 
-      if (est.driver_days_equivalent !== null) {
+      if (isValidNum(est.driver_days_equivalent)) {
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, ['Driver-Days (at target)']),
           el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.driver_days_equivalent)])
         ]));
       }
 
-      if (est.money_impact_per_driver_day !== null && est.money_impact_per_driver_day !== 0) {
+      if (isValidNum(est.money_impact_per_driver_day) && est.money_impact_per_driver_day !== 0) {
         const moneyColor = est.money_impact_per_driver_day > 0 ? 'var(--green)' : 'var(--yellow)';
         const moneySign = est.money_impact_per_driver_day > 0 ? '+' : '-';
         const moneyLabel = est.money_impact_per_driver_day > 0 ? 'Efficiency Gain/Driver/Day' : 'Capacity Gap/Driver/Day';
         metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
           el('div', { class: 'muted small' }, [moneyLabel]),
           el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${moneyColor};` }, [`${moneySign}$${Math.abs(est.money_impact_per_driver_day).toFixed(2)}`])
+        ]));
+      }
+
+      // Trailer History error rate ROI metrics
+      if (isValidNum(est.total_errors)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Total Errors']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.total_errors)])
+        ]));
+      }
+
+      if (isValidNum(est.error_rate_per_day)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Errors/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.error_rate_per_day)])
+        ]));
+      }
+
+      if (isValidNum(est.error_rate_trend_pct) && est.error_rate_trend_direction) {
+        const trendColor = est.error_rate_trend_pct <= 0 ? 'var(--green)' : 'var(--yellow)';
+        const trendSign = est.error_rate_trend_pct > 0 ? '+' : '';
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Error Trend']),
+          el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${trendColor};` }, [`${trendSign}${est.error_rate_trend_pct}% (${est.error_rate_trend_direction})`])
+        ]));
+      }
+
+      // Dock Door ROI metrics
+      if (isValidNum(est.avg_turns_per_door_per_day)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Avg Turns/Door/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.avg_turns_per_door_per_day)])
+        ]));
+      }
+
+      if (isValidNum(est.target_turns_per_door_per_day)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Target Turns/Door/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.target_turns_per_door_per_day)])
+        ]));
+      }
+
+      if (isValidNum(est.throughput_vs_target_pct)) {
+        const color = est.throughput_vs_target_pct >= 100 ? 'var(--green)' : 'var(--yellow)';
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Throughput vs Target']),
+          el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${color};` }, [`${est.throughput_vs_target_pct}%`])
+        ]));
+      }
+
+      if (isValidNum(est.gap_turns_per_day) && est.gap_turns_per_day > 0) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Gap to Target']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--yellow);' }, [`-${est.gap_turns_per_day} turns/door/day`])
+        ]));
+      }
+
+      if (isValidNum(est.surplus_turns_per_day) && est.surplus_turns_per_day > 0) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Above Target']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--green);' }, [`+${est.surplus_turns_per_day} turns/door/day`])
+        ]));
+      }
+
+      if (isValidNum(est.idle_door_hours_per_day)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Est. Idle Door-Hours/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em;' }, [String(est.idle_door_hours_per_day)])
+        ]));
+      }
+
+      if (isValidNum(est.cost_of_idle_per_day)) {
+        metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
+          el('div', { class: 'muted small' }, ['Est. Idle Cost/Day']),
+          el('div', { style: 'font-weight: 700; font-size: 1.2em; color: var(--yellow);' }, [`$${est.cost_of_idle_per_day}`])
         ]));
       }
 

@@ -1804,6 +1804,12 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     };
     this.errorsByPeriod = new CounterMap(); // day -> total errors
     this.daysWithData = new Set();
+
+    // Per-error-type time series for multi-line chart
+    this.lostByDay = new CounterMap();
+    this.yardCheckInsertByDay = new CounterMap();
+    this.spotEditedByDay = new CounterMap();
+    this.facilityEditedByDay = new CounterMap();
   }
 
   ingest({ row }) {
@@ -1829,10 +1835,12 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       this.errorCounts.trailer_marked_lost++;
       if (!isNil(carrier)) this.lostByCarrier.inc(carrier);
       if (dt) {
+        const dk = dayKey(dt, this.timezone);
         this.byWeek.inc(weekKey(dt, this.timezone));
         this.byMonth.inc(monthKey(dt, this.timezone));
-        this.byDay.inc(dayKey(dt, this.timezone));
-        this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+        this.byDay.inc(dk);
+        this.errorsByPeriod.inc(dk);
+        this.lostByDay.inc(dk);
       }
     }
 
@@ -1840,19 +1848,31 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const isYardCheckInsert = /yard\s*check\s*insert/i.test(event);
     if (isYardCheckInsert) {
       this.errorCounts.yard_check_insert++;
-      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+      if (dt) {
+        const dk = dayKey(dt, this.timezone);
+        this.errorsByPeriod.inc(dk);
+        this.yardCheckInsertByDay.inc(dk);
+      }
     }
 
     const isSpotEdited = /spot\s*edited/i.test(event);
     if (isSpotEdited) {
       this.errorCounts.spot_edited++;
-      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+      if (dt) {
+        const dk = dayKey(dt, this.timezone);
+        this.errorsByPeriod.inc(dk);
+        this.spotEditedByDay.inc(dk);
+      }
     }
 
     const isFacilityEdited = /facility\s*edited/i.test(event);
     if (isFacilityEdited) {
       this.errorCounts.facility_edited++;
-      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+      if (dt) {
+        const dk = dayKey(dt, this.timezone);
+        this.errorsByPeriod.inc(dk);
+        this.facilityEditedByDay.inc(dk);
+      }
     }
   }
 
@@ -1902,6 +1922,27 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Top carriers by lost events finding
+    const topCarriers = this.lostByCarrier.top(8);
+    const top3Carriers = topCarriers.slice(0, 3);
+    if (top3Carriers.length > 0 && this.lostCount > 0) {
+      const carrierDetails = top3Carriers.map(c => {
+        const pct = Math.round((c.value / this.lostCount) * 100);
+        return `${c.key}: ${c.value} (${pct}%)`;
+      }).join(', ');
+
+      const level = top3Carriers[0].value > 5 ? 'yellow' : 'green';
+      findings.push({
+        level,
+        text: `Top carriers by lost events: ${carrierDetails}. High lost counts may indicate parking issues or carriers not following gate instructions.`,
+        confidence: 'high'
+      });
+
+      if (top3Carriers[0].value > 10) {
+        recs.push(`Review gate procedures with carrier ${top3Carriers[0].key} - they account for ${Math.round((top3Carriers[0].value / this.lostCount) * 100)}% of lost trailer events.`);
+      }
+    }
+
     const dq = this.dataQualityScore();
     const badge = scoreToBadge(dq);
 
@@ -1912,19 +1953,30 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       parseFails: this.parseFails
     });
 
-    const topCarriers = this.lostByCarrier.top(8);
     const topEvents = this.eventTypes.top(10);
 
-    // Pick best granularity for lost events chart (daily -> weekly -> monthly)
-    const lostGranularity = pickBestGranularity({
-      monthly: this.byMonth,
-      weekly: this.byWeek,
-      daily: this.byDay
-    });
+    // Calculate total errors for the chart
+    const totalErrors = this.errorCounts.trailer_marked_lost +
+      this.errorCounts.yard_check_insert +
+      this.errorCounts.spot_edited +
+      this.errorCounts.facility_edited;
 
-    const series = counterToSeries(lostGranularity.data);
-    const seriesLabel = lostGranularity.granularity;
-    const chartGranularityLabel = lostGranularity.label;
+    // Build error events chart with all error types
+    // Get all unique days with any errors
+    const allDays = new Set([
+      ...this.lostByDay.map.keys(),
+      ...this.yardCheckInsertByDay.map.keys(),
+      ...this.spotEditedByDay.map.keys(),
+      ...this.facilityEditedByDay.map.keys(),
+    ]);
+    const sortedDays = Array.from(allDays).sort();
+
+    // Build datasets for each error type
+    const lostData = sortedDays.map(d => this.lostByDay.map.get(d) || 0);
+    const yardCheckData = sortedDays.map(d => this.yardCheckInsertByDay.map.get(d) || 0);
+    const spotEditedData = sortedDays.map(d => this.spotEditedByDay.map.get(d) || 0);
+    const facilityEditedData = sortedDays.map(d => this.facilityEditedByDay.map.get(d) || 0);
+    const totalData = sortedDays.map((d, i) => lostData[i] + yardCheckData[i] + spotEditedData[i] + facilityEditedData[i]);
 
     return {
       report: 'trailer_history',
@@ -1940,29 +1992,49 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         dataQualityFindings
       },
       metrics: {
-        lost_events_count: this.lostCount,
-        top_carriers_for_lost: topCarriers,
+        total_error_events: totalErrors,
+        trailer_marked_lost: this.errorCounts.trailer_marked_lost,
+        yard_check_insert: this.errorCounts.yard_check_insert,
+        spot_edited: this.errorCounts.spot_edited,
+        facility_edited: this.errorCounts.facility_edited,
       },
       charts: [
         {
-          id: `lost_events_${chartGranularityLabel}`,
-          title: `Lost events (${chartGranularityLabel})`,
+          id: 'error_events_daily',
+          title: 'Error Events (daily)',
           kind: 'line',
-          description: `Counts grouped by ${seriesLabel} (timezone-adjusted grouping).`,
+          description: 'Error-indicating events by type. Total errors shown as thick line.',
+          multiLineConfig: {
+            totalLineIndex: 4, // Index of the "Total errors" dataset
+          },
           data: {
-            labels: series.labels,
-            datasets: [{ label: 'Lost events', data: series.values }]
+            labels: sortedDays,
+            datasets: [
+              { label: 'Trailer marked lost', data: lostData },
+              { label: 'Yard check insert', data: yardCheckData },
+              { label: 'Spot edited', data: spotEditedData },
+              { label: 'Facility edited', data: facilityEditedData },
+              { label: 'Total errors', data: totalData, borderWidth: 3 },
+            ]
           },
           csv: {
-            columns: [seriesLabel, 'lost_events', 'timezone'],
-            rows: series.labels.map((k, i) => ({ [seriesLabel]: k, lost_events: series.values[i], timezone: meta.timezone }))
+            columns: ['day', 'trailer_marked_lost', 'yard_check_insert', 'spot_edited', 'facility_edited', 'total_errors', 'timezone'],
+            rows: sortedDays.map((d, i) => ({
+              day: d,
+              trailer_marked_lost: lostData[i],
+              yard_check_insert: yardCheckData[i],
+              spot_edited: spotEditedData[i],
+              facility_edited: facilityEditedData[i],
+              total_errors: totalData[i],
+              timezone: meta.timezone
+            }))
           }
         },
         {
           id: 'top_carriers_lost_events',
           title: 'Top carriers by lost events',
           kind: 'bar',
-          description: 'Carriers most associated with “lost” events.',
+          description: 'Carriers most associated with "lost" events.',
           data: {
             labels: topCarriers.map(x => x.key),
             datasets: [{ label: 'Lost events', data: topCarriers.map(x => x.value) }]
