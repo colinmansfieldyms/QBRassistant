@@ -42,6 +42,8 @@ To enable ROI calculations, provide any of these optional values:
 | Target turns per dock door per day | Benchmarking dock door throughput |
 | Cost per dock door hour | Calculating dock door idle time costs |
 
+**♻️ ROI button** - After running an assessment, you can adjust any ROI assumptions and click the refresh button to recalculate ROI values without re-fetching data. This allows quick "what-if" scenarios with different assumptions.
+
 ---
 
 ## Available reports

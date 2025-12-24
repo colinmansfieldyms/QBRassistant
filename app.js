@@ -842,10 +842,16 @@ function beginWorkerRun(config) {
   return { runId, finalizePromise: workerRuntime.finalizePromise };
 }
 
-function finalizeWorkerRun(runId) {
+function finalizeWorkerRun(runId, timeoutMs = 30000) {
   if (!runId || !workerRuntime.worker || !workerRuntime.finalizePromise) return Promise.reject(new Error('Worker not ready'));
   workerRuntime.worker.postMessage({ type: 'FINALIZE', runId });
-  return workerRuntime.finalizePromise;
+
+  // Add timeout to prevent hanging if worker doesn't respond
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Worker finalize timed out')), timeoutMs);
+  });
+
+  return Promise.race([workerRuntime.finalizePromise, timeoutPromise]);
 }
 
 function cancelWorkerRun(reason = 'cancelled') {
