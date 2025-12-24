@@ -465,10 +465,20 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
   } else {
     const ul = el('ul', { class: 'list' });
     for (const f of findings) {
+      // Build the confidence element - with tooltip if reason is available
+      const confidenceText = `(${f.confidence || 'medium'} confidence)`;
+      const confidenceEl = f.confidenceReason
+        ? el('span', {
+            class: 'muted small confidence-tooltip',
+            'data-tooltip': f.confidenceReason,
+            style: 'cursor: help; border-bottom: 1px dotted var(--muted);'
+          }, [confidenceText])
+        : el('span', { class: 'muted small' }, [confidenceText]);
+
       ul.appendChild(el('li', {}, [
         el('span', { class: `badge ${f.level}` }, [f.level.toUpperCase()]),
         document.createTextNode(` ${f.text} `),
-        el('span', { class: 'muted small' }, [`(${f.confidence || 'medium'} confidence)`]),
+        confidenceEl,
       ]));
     }
     wrap.appendChild(ul);
