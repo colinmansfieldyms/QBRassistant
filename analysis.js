@@ -2811,7 +2811,7 @@ function computeTrailerErrorRateAnalysis({ metrics }) {
 
   // Error types tracked
   const errorTypes = [
-    { key: 'trailer_marked_lost', label: 'Trailer marked lost', indicator: 'Gate check-out accuracy issues' },
+    { key: 'trailer_marked_lost', label: 'Trailer marked lost', indicator: 'Gate check-out accuracy issues or carrier parking issues upon check-in' },
     { key: 'yard_check_insert', label: 'Yard check insert', indicator: 'Gate check-in accuracy issues' },
     { key: 'spot_edited', label: 'Spot edited', indicator: 'Yard driver YMS usage issues' },
     { key: 'facility_edited', label: 'Facility edited', indicator: 'Shuttle/gate/campus operation issues' },
