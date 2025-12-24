@@ -1244,25 +1244,13 @@ canvas{ max-width:100%; }
   position: relative;
 }
 
-.bp-drawer-toggle-icon::before,
-.bp-drawer-toggle-icon::after {
+.bp-drawer-toggle-icon::before {
   content: '⛭';
   position: absolute;
   left: 0;
-  right: 0;
-  height: 2px;
-  background: white;
-  border-radius: 1px;
-}
-
-.bp-drawer-toggle-icon::before {
   top: 0;
-  width: 100%;
-}
-
-.bp-drawer-toggle-icon::after {
-  bottom: 0;
-  width: 70%;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .bp-drawer-toggle-label {
