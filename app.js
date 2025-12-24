@@ -1752,7 +1752,7 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
   state.results = recalculateROI(state.results, newAssumptions);
 
   // Re-render all reports with updated ROI
-  destroyAllCharts();
+  destroyAllCharts(state.chartRegistry);
   UI.resultsRoot.innerHTML = '';
   const partialPeriodMode = document.querySelector('input[name="partialPeriodMode"]:checked')?.value || 'include';
 
