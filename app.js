@@ -1,5 +1,5 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
-import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods } from './analysis.js?v=2025.01.07.0';
+import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI } from './analysis.js?v=2025.01.07.0';
 import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
@@ -74,6 +74,7 @@ const UI = {
   assumptionTargetMoves: document.querySelector('#assumptionTargetMoves'),
   assumptionTargetTurnsPerDoor: document.querySelector('#assumptionTargetTurnsPerDoor'),
   assumptionCostPerDockHour: document.querySelector('#assumptionCostPerDockHour'),
+  recalcRoiBtn: document.querySelector('#recalcRoiBtn'),
   workerToggle: document.querySelector('#workerToggle'),
   workerStatus: document.querySelector('#workerStatus'),
   perfPanel: document.querySelector('#perfPanel'),
@@ -373,6 +374,9 @@ function setRunningUI(running) {
   UI.mockModeToggle.disabled = running;
   UI.downloadSummaryBtn.disabled = running || Object.keys(state.results).length === 0;
   UI.printBtn.disabled = running || Object.keys(state.results).length === 0;
+  if (UI.recalcRoiBtn) {
+    UI.recalcRoiBtn.disabled = running || Object.keys(state.results).length === 0;
+  }
   if (UI.workerToggle) {
     UI.workerToggle.disabled = running || !workerRuntime.supported || !!workerRuntime.fallbackReason;
   }
@@ -1733,6 +1737,35 @@ UI.timezoneSelect.addEventListener('change', () => {
 
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
 UI.printBtn.addEventListener('click', doPrint);
+
+// Recalculate ROI with updated assumptions (without re-fetching data)
+UI.recalcRoiBtn?.addEventListener('click', () => {
+  if (Object.keys(state.results).length === 0) return;
+
+  const newAssumptions = readAssumptions();
+  state.results = recalculateROI(state.results, newAssumptions);
+
+  // Re-render all reports with updated ROI
+  destroyAllCharts();
+  UI.resultsRoot.innerHTML = '';
+  const partialPeriodMode = document.querySelector('input[name="partialPeriodMode"]:checked')?.value || 'include';
+
+  for (const report of Object.keys(state.results)) {
+    const result = state.results[report];
+    renderReportResult({
+      report,
+      result,
+      timezone: state.timezone,
+      dateRange: state.inputs?.dateRange || null,
+      onWarning: addWarning,
+      partialPeriodMode,
+    });
+  }
+
+  // Show a brief confirmation
+  showBanner('ROI recalculated with updated assumptions.', 'success');
+  setTimeout(clearBanner, 3000);
+});
 
 UI.workerToggle?.addEventListener('change', () => {
   workerRuntime.preferred = UI.workerToggle.checked;

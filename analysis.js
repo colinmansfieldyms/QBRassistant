@@ -3197,3 +3197,95 @@ export function applyPartialPeriodHandling(chartData, globalPartialInfo, mode = 
 
   return result;
 }
+
+/**
+ * Recalculates ROI for existing results with new assumptions.
+ * This allows updating ROI estimates without re-fetching/re-processing data.
+ *
+ * @param {Object} results - The existing state.results object (report -> result)
+ * @param {Object} assumptions - New assumptions to use for ROI calculations
+ * @returns {Object} Updated results with recalculated ROI
+ */
+export function recalculateROI(results, assumptions) {
+  const updated = {};
+
+  for (const [report, result] of Object.entries(results)) {
+    // Clone the result to avoid mutating state directly
+    const newResult = { ...result };
+    const meta = { ...(result.meta || {}), assumptions };
+
+    switch (report) {
+      case 'detention_history':
+        newResult.roi = computeDetentionROIIfEnabled({
+          meta,
+          metrics: { prevented: result.metrics?.prevented_detention_events || 0 },
+          assumptions,
+        });
+        newResult.detentionSpend = computeDetentionSpendIfEnabled({
+          metrics: {
+            totalDetentionHours: result.metrics?.total_detention_hours || 0,
+            detentionEventCount: result.metrics?.detention_events || 0,
+          },
+          assumptions,
+        });
+        break;
+
+      case 'dockdoor_history':
+        newResult.roi = computeDockDoorROIIfEnabled({
+          meta,
+          metrics: {
+            turnsPerDoorPerDay: result.metrics?.turnsPerDoorPerDay || result.metrics?.turns_per_door_per_day || 0,
+            uniqueDoors: result.metrics?.uniqueDoors || result.metrics?.unique_doors || 0,
+            totalTurns: result.metrics?.totalTurns || result.metrics?.total_turns || 0,
+            totalDays: result.metrics?.totalDays || result.metrics?.total_days || 0,
+          },
+          assumptions,
+        });
+        break;
+
+      case 'driver_history':
+        newResult.roi = computeLaborROIIfEnabled({
+          meta,
+          metrics: {
+            avgMovesPerDriverPerDay: result.metrics?.avg_moves_per_driver_per_day || 0,
+            movesTotal: result.metrics?.total_moves || 0,
+            topDrivers: result.extras?.top_drivers || [],
+            movesByDriver: result._internal?.movesByDriver || null,
+            movesByDay: result._internal?.movesByDay || null,
+            activeDriversByDay: result._internal?.activeDriversByDay || null,
+            daysWorkedByDriver: result._internal?.daysWorkedByDriver || null,
+            totalDays: result.metrics?.total_days || result.meta?.totalDays || 0,
+          },
+          assumptions,
+        });
+        break;
+
+      case 'trailer_history':
+        newResult.roi = computeTrailerErrorRateAnalysis({
+          meta,
+          metrics: {
+            errorCounts: result._internal?.errorCounts || {
+              trailer_marked_lost: result.metrics?.trailer_marked_lost_events || 0,
+              yard_check_insert: result.metrics?.yard_check_insert_events || 0,
+              spot_edited: result.metrics?.spot_edited_events || 0,
+              facility_edited: result.metrics?.facility_edited_events || 0,
+            },
+            errorsByPeriod: result._internal?.errorsByPeriod || new Map(),
+            totalRows: result.dataQuality?.totalRows || 0,
+            totalDays: result.metrics?.total_days || result.meta?.totalDays || 0,
+            granularity: result.meta?.granularity || 'week',
+          },
+          assumptions,
+        });
+        break;
+
+      // current_inventory doesn't have ROI
+      default:
+        break;
+    }
+
+    updated[report] = newResult;
+  }
+
+  return updated;
+}
