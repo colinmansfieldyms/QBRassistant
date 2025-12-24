@@ -875,6 +875,10 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.weeklyPrevented = new CounterMap();
     this.dailyPrevented = new CounterMap();
     this.topScac = new CounterMap();
+
+    // Detention spend tracking
+    this.detentionEventsWithDeparture = 0;
+    this.totalDetentionHours = 0;
   }
 
   ingest({ row }) {
@@ -914,6 +918,26 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         this.monthlyPrevented.inc(mk);
         this.weeklyPrevented.inc(wk);
         this.dailyPrevented.inc(dk);
+      }
+    }
+
+    // Track detention spend: detention_datetime to departure_datetime
+    // detention_date + detention_time -> detention_datetime
+    const detDate = row.detention_date ?? row.detention_start_date;
+    const detTime = row.detention_time ?? row.detention_start_time_local;
+    const depDate = row.departure_date ?? row.depart_date ?? row.out_date;
+    const depTime = row.departure_time ?? row.depart_time ?? row.out_time;
+
+    if (!isNil(detDate) && !isNil(detTime) && !isNil(depDate) && !isNil(depTime)) {
+      const detDt = parseTimestamp(`${detDate} ${detTime}`, { timezone: this.timezone, treatAsLocal: true });
+      const depDt = parseTimestamp(`${depDate} ${depTime}`, { timezone: this.timezone, treatAsLocal: true });
+
+      if (detDt && depDt && depDt > detDt) {
+        const hours = depDt.diff(detDt, 'hours').hours;
+        if (Number.isFinite(hours) && hours > 0) {
+          this.detentionEventsWithDeparture++;
+          this.totalDetentionHours += hours;
+        }
       }
     }
   }
@@ -1089,6 +1113,14 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       findings,
       recommendations: recs,
       roi: computeDetentionROIIfEnabled({ meta, metrics: { prevented: this.prevented }, assumptions: meta.assumptions }),
+      // Additional ROI for detention spend
+      detentionSpend: computeDetentionSpendIfEnabled({
+        metrics: {
+          detentionEvents: this.detentionEventsWithDeparture,
+          totalDetentionHours: this.totalDetentionHours,
+        },
+        assumptions: meta.assumptions,
+      }),
     };
   }
 }
@@ -1111,6 +1143,12 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     this.processedBy = new CounterMap();
     this.moveRequestedBy = new CounterMap();
     this.rowsWithRequester = 0;
+
+    // Dock door throughput tracking
+    this.turnsByDoorByDay = new Map(); // key: day -> Map<door, count>
+    this.uniqueDoors = new Set();
+    this.totalTurns = 0;
+    this.daysWithData = new Set();
   }
 
   getEstimators(map, key) {
@@ -1177,6 +1215,22 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     if (requestedBy) {
       this.moveRequestedBy.inc(requestedBy);
       this.rowsWithRequester++;
+    }
+
+    // Track dock door turns for throughput ROI
+    const door = safeStr(firstPresent(row, ['door', 'door_name', 'dock_door', 'dock_door_name', 'door_id']));
+    const eventDt = dwellStart || procStart;
+    if (door && eventDt) {
+      const dk = dayKey(eventDt, this.timezone);
+      this.uniqueDoors.add(door);
+      this.daysWithData.add(dk);
+      this.totalTurns++;
+
+      if (!this.turnsByDoorByDay.has(dk)) {
+        this.turnsByDoorByDay.set(dk, new Map());
+      }
+      const dayMap = this.turnsByDoorByDay.get(dk);
+      dayMap.set(door, (dayMap.get(door) || 0) + 1);
     }
   }
 
@@ -1380,13 +1434,35 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       ],
       findings,
       recommendations: recs,
-      roi: computeLaborROIIfEnabled({
+      roi: computeDockDoorROIIfEnabled({
         meta,
-        // crude proxy: if median dwell decreased? MVP: not enough to compute delta, so skip
-        metrics: { note: 'Dock door ROI model not included in MVP draft.' },
+        metrics: {
+          turnsPerDoorPerDay: this.calculateTurnsPerDoorPerDay(),
+          uniqueDoors: this.uniqueDoors.size,
+          totalTurns: this.totalTurns,
+          totalDays: this.daysWithData.size,
+        },
         assumptions: meta.assumptions
       }),
     };
+  }
+
+  // Calculate average turns per door per day
+  calculateTurnsPerDoorPerDay() {
+    if (this.daysWithData.size === 0 || this.uniqueDoors.size === 0) return 0;
+
+    // Sum up all turns per door per day, then average
+    let totalDoorDays = 0;
+    let totalTurnsCount = 0;
+
+    for (const [, doorMap] of this.turnsByDoorByDay) {
+      for (const [, turns] of doorMap) {
+        totalDoorDays++;
+        totalTurnsCount += turns;
+      }
+    }
+
+    return totalDoorDays > 0 ? totalTurnsCount / totalDoorDays : 0;
   }
 }
 
@@ -1718,6 +1794,16 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     this.byWeek = new CounterMap();
     this.byMonth = new CounterMap();
     this.byDay = new CounterMap();
+
+    // Error rate tracking for ROI analysis
+    this.errorCounts = {
+      trailer_marked_lost: 0,
+      yard_check_insert: 0,
+      spot_edited: 0,
+      facility_edited: 0,
+    };
+    this.errorsByPeriod = new CounterMap(); // day -> total errors
+    this.daysWithData = new Set();
   }
 
   ingest({ row }) {
@@ -1732,6 +1818,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     if (dt) {
       this.parseOk++;
       this.trackDate(dt); // Track for date range inference
+      this.daysWithData.add(dayKey(dt, this.timezone));
     }
 
     const carrier = row.scac ?? row.carrier_scac ?? row.scac_code ?? row.carrier;
@@ -1739,12 +1826,33 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const isLost = /marked\s+lost|trailer\s+marked\s+lost|\blost\b/i.test(event);
     if (isLost) {
       this.lostCount++;
+      this.errorCounts.trailer_marked_lost++;
       if (!isNil(carrier)) this.lostByCarrier.inc(carrier);
       if (dt) {
         this.byWeek.inc(weekKey(dt, this.timezone));
         this.byMonth.inc(monthKey(dt, this.timezone));
         this.byDay.inc(dayKey(dt, this.timezone));
+        this.errorsByPeriod.inc(dayKey(dt, this.timezone));
       }
+    }
+
+    // Track other error-indicating events
+    const isYardCheckInsert = /yard\s*check\s*insert/i.test(event);
+    if (isYardCheckInsert) {
+      this.errorCounts.yard_check_insert++;
+      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+    }
+
+    const isSpotEdited = /spot\s*edited/i.test(event);
+    if (isSpotEdited) {
+      this.errorCounts.spot_edited++;
+      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
+    }
+
+    const isFacilityEdited = /facility\s*edited/i.test(event);
+    if (isFacilityEdited) {
+      this.errorCounts.facility_edited++;
+      if (dt) this.errorsByPeriod.inc(dayKey(dt, this.timezone));
     }
   }
 
@@ -1867,11 +1975,27 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       ],
       findings,
       recommendations: recs,
-      roi: null,
+      roi: computeTrailerErrorRateAnalysis({
+        metrics: {
+          errorCounts: this.errorCounts,
+          errorsByPeriod: this.getErrorsByPeriodArray(),
+          totalRows: this.totalRows,
+          totalDays: this.daysWithData.size,
+          granularity: 'day',
+        },
+      }),
       extras: {
         event_type_top10: topEvents
       }
     };
+  }
+
+  // Convert errorsByPeriod CounterMap to sorted array for trend analysis
+  getErrorsByPeriodArray() {
+    const entries = Array.from(this.errorsByPeriod.map.entries())
+      .map(([period, count]) => ({ period, count }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+    return entries;
   }
 }
 
@@ -2272,6 +2396,223 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     staffingAnalysis,
     insights,
     disclaimer: 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.',
+  };
+}
+
+// ---------- Dock Door Throughput ROI ----------
+function computeDockDoorROIIfEnabled({ meta, metrics, assumptions }) {
+  const a = assumptions || {};
+  const enabled = Number.isFinite(a.target_turns_per_door_per_day) && Number.isFinite(a.cost_per_dock_door_hour);
+
+  if (!enabled) return null;
+
+  const target = a.target_turns_per_door_per_day;
+  const costPerHour = a.cost_per_dock_door_hour;
+  const hoursPerDay = 8; // Assume 8-hour operating day
+
+  // Get metrics from dock door analysis
+  const { turnsPerDoorPerDay, uniqueDoors, totalTurns, totalDays } = metrics;
+
+  if (!Number.isFinite(turnsPerDoorPerDay) || turnsPerDoorPerDay === 0) {
+    return {
+      label: 'Dock Door Throughput Analysis',
+      assumptionsUsed: {
+        target_turns_per_door_per_day: target,
+        cost_per_dock_door_hour: costPerHour,
+      },
+      estimate: null,
+      insights: ['Insufficient data to calculate dock door throughput ROI.'],
+      disclaimer: 'Unable to compute - dock door turn data not available.',
+    };
+  }
+
+  const insights = [];
+  const performancePct = Math.round((turnsPerDoorPerDay / target) * 100);
+  const gap = Math.max(0, target - turnsPerDoorPerDay);
+  const surplus = Math.max(0, turnsPerDoorPerDay - target);
+
+  // Cost analysis
+  const costPerTurn = (costPerHour * hoursPerDay) / target;
+  const dailyGapValue = gap * costPerTurn * (uniqueDoors || 1);
+  const dailySurplusValue = surplus * costPerTurn * (uniqueDoors || 1);
+
+  // Insights
+  insights.push(`Dock doors averaging ${round1(turnsPerDoorPerDay)} turns/day vs ${target} target (${performancePct}%)`);
+
+  if (totalTurns && totalDays) {
+    insights.push(`Total: ${totalTurns} turns over ${totalDays} days across ${uniqueDoors || '?'} doors`);
+  }
+
+  if (performancePct >= 100) {
+    insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
+    if (dailySurplusValue > 0) {
+      insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
+    }
+  } else {
+    insights.push(`Below target by ${round1(gap)} turns/door/day`);
+    if (dailyGapValue > 0) {
+      insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity`);
+    }
+  }
+
+  return {
+    label: 'Dock Door Throughput Analysis',
+    assumptionsUsed: {
+      target_turns_per_door_per_day: target,
+      cost_per_dock_door_hour: costPerHour,
+      hours_per_day: hoursPerDay,
+    },
+    estimate: {
+      avg_turns_per_door_per_day: round1(turnsPerDoorPerDay),
+      target_turns_per_door_per_day: target,
+      performance_vs_target_pct: performancePct,
+      gap_turns_per_day: gap > 0 ? round1(gap) : null,
+      surplus_turns_per_day: surplus > 0 ? round1(surplus) : null,
+      unique_doors: uniqueDoors,
+      total_turns: totalTurns,
+      total_days: totalDays,
+      daily_gap_value: gap > 0 ? round1(dailyGapValue) : null,
+      daily_surplus_value: surplus > 0 ? round1(dailySurplusValue) : null,
+    },
+    insights,
+    disclaimer: 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.',
+  };
+}
+
+// ---------- Trailer History Error Rate Analysis ----------
+function computeTrailerErrorRateAnalysis({ metrics }) {
+  const { errorCounts, errorsByPeriod, totalRows, totalDays, granularity } = metrics;
+
+  // Error types tracked
+  const errorTypes = [
+    { key: 'trailer_marked_lost', label: 'Trailer marked lost', indicator: 'Gate check-out accuracy issues' },
+    { key: 'yard_check_insert', label: 'Yard check insert', indicator: 'Gate check-in accuracy issues' },
+    { key: 'spot_edited', label: 'Spot edited', indicator: 'Yard driver YMS usage issues' },
+    { key: 'facility_edited', label: 'Facility edited', indicator: 'Shuttle/gate/campus operation issues' },
+  ];
+
+  const totalErrors = errorTypes.reduce((sum, t) => sum + (errorCounts[t.key] || 0), 0);
+
+  if (totalErrors === 0) {
+    return {
+      label: 'Error Rate Analysis',
+      assumptionsUsed: {},
+      estimate: {
+        total_errors: 0,
+        error_rate_trend: null,
+      },
+      insights: ['No error-indicating events detected in this period.'],
+      errorBreakdown: [],
+      disclaimer: 'Error events tracked: Trailer marked lost, Yard check insert, Spot edited, Facility edited.',
+    };
+  }
+
+  const insights = [];
+  insights.push(`Total error-indicating events: ${totalErrors}`);
+
+  // Calculate error rate trend if we have period data
+  let trendPct = null;
+  let trendDirection = null;
+  if (errorsByPeriod && errorsByPeriod.length >= 3) {
+    const firstHalf = errorsByPeriod.slice(0, Math.floor(errorsByPeriod.length / 2));
+    const secondHalf = errorsByPeriod.slice(Math.ceil(errorsByPeriod.length / 2));
+
+    const firstAvg = firstHalf.reduce((s, p) => s + p.count, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((s, p) => s + p.count, 0) / secondHalf.length;
+
+    if (firstAvg > 0) {
+      trendPct = Math.round(((secondAvg - firstAvg) / firstAvg) * 100);
+      trendDirection = trendPct > 0 ? 'increased' : (trendPct < 0 ? 'decreased' : 'stable');
+
+      if (Math.abs(trendPct) >= 10) {
+        insights.push(`Error rate ${trendDirection} by ${Math.abs(trendPct)}% over the analysis period`);
+      } else {
+        insights.push('Error rate relatively stable over the analysis period');
+      }
+    }
+  }
+
+  // Build error breakdown
+  const errorBreakdown = errorTypes
+    .filter(t => (errorCounts[t.key] || 0) > 0)
+    .map(t => ({
+      type: t.label,
+      count: errorCounts[t.key],
+      pctOfTotal: Math.round((errorCounts[t.key] / totalErrors) * 100),
+      indicator: t.indicator,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Top error insight
+  if (errorBreakdown.length > 0) {
+    const top = errorBreakdown[0];
+    insights.push(`Most common: "${top.type}" (${top.count} events, ${top.pctOfTotal}% of errors) - ${top.indicator}`);
+  }
+
+  return {
+    label: 'Error Rate Analysis',
+    assumptionsUsed: {},
+    estimate: {
+      total_errors: totalErrors,
+      total_rows: totalRows,
+      total_days: totalDays,
+      error_rate_per_day: totalDays > 0 ? round1(totalErrors / totalDays) : null,
+      error_rate_trend_pct: trendPct,
+      error_rate_trend_direction: trendDirection,
+    },
+    insights,
+    errorBreakdown,
+    disclaimer: 'Error events indicate operational accuracy issues. High "Facility edited" may be expected in campus operations without inter-facility gates.',
+  };
+}
+
+// ---------- Detention Spend Calculation ----------
+function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
+  const a = assumptions || {};
+  const costPerHour = a.detention_cost_per_hour;
+
+  if (!Number.isFinite(costPerHour)) {
+    return null;
+  }
+
+  const { detentionEvents, totalDetentionHours } = metrics;
+
+  // Build spend result
+  const detentionSpend = (totalDetentionHours || 0) * costPerHour;
+
+  const insights = [];
+
+  if (detentionEvents === 0 || totalDetentionHours === 0) {
+    insights.push('Detention spend this period: $0 (no trailers entered detention)');
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: { detention_cost_per_hour: costPerHour },
+      estimate: {
+        detention_events: 0,
+        total_detention_hours: 0,
+        detention_spend: 0,
+      },
+      insights,
+      zeroDetentionNote: true,
+      disclaimer: 'No detention events with departure timestamps found. This may mean no detention occurred, or detention rules are not configured in YMS.',
+    };
+  }
+
+  insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
+  insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
+
+  return {
+    label: 'Detention Spend Analysis',
+    assumptionsUsed: { detention_cost_per_hour: costPerHour },
+    estimate: {
+      detention_events: detentionEvents,
+      total_detention_hours: round1(totalDetentionHours),
+      detention_spend: Math.round(detentionSpend * 100) / 100,
+      avg_detention_hours: round1(totalDetentionHours / detentionEvents),
+    },
+    insights,
+    zeroDetentionNote: false,
+    disclaimer: 'Detention spend calculated from detention_datetime to departure_datetime. Does not include pre-detention time.',
   };
 }
 

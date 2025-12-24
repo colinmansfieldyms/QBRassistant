@@ -18,6 +18,18 @@ function el(tag, attrs = {}, children = []) {
 }
 
 /**
+ * Convert snake_case report name to Title Case for display
+ * e.g., "driver_history" -> "Driver History"
+ */
+function humanizeReportName(name) {
+  if (!name) return '';
+  return name
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
  * Build tooltip text for confidence badge from dataQuality object.
  * Combines the main tooltip text with any data quality findings.
  */
@@ -281,7 +293,7 @@ export function renderReportResult({
 
   const head = el('div', { class: 'report-head' }, [
     el('div', {}, [
-      el('h3', {}, [report]),
+      el('h3', {}, [humanizeReportName(report)]),
       el('div', { class: 'report-sub' }, [
         `Data quality score: `,
         el('b', {}, [String(result?.dataQuality?.score ?? '—')]),
@@ -305,17 +317,13 @@ export function renderReportResult({
             onWarning?.(`CSV export failed for ${report}: ${e?.message || String(e)}`);
           }
         }
-      }, ['Download aggregated report summary CSV'])
+      }, ['⬇ CSV'])
     ]),
     renderMetricsGrid(result.metrics || {})
   ]);
 
-  const findingsBlock = el('div', {}, [
-    el('div', { class: 'section-title' }, [
-      el('h2', {}, ['Findings & recommendations']),
-      el('span', { class: 'muted small' }, ['Heuristics-based flags; see confidence labels.'])
-    ]),
-    renderFindings(result.findings || [], result.recommendations || [], result.roi || null, result.meta || {})
+  const findingsBlock = el('div', { style: 'margin-top:16px;' }, [
+    renderFindings(result.findings || [], result.recommendations || [], result.roi || null, result.meta || {}, result.detentionSpend || null)
   ]);
 
   const chartsBlock = el('div', { class: 'chart-grid' });
@@ -358,7 +366,7 @@ export function renderReportResult({
             onWarning?.(`PNG export failed: ${e?.message || String(e)}`);
           }
         }
-      }, ['Download PNG']),
+      }, ['⬇ PNG']),
       el('button', {
         class: 'btn btn-ghost',
         type: 'button',
@@ -394,16 +402,11 @@ export function renderReportResult({
 
   chartRegistry.set(report, handles);
 
-  const twoCol = el('div', { class: 'two-col' }, [
-    metricsBlock,
-    el('div', {}, [
-      el('div', { class: 'section-title' }, [el('h2', {}, ['Charts'])]),
-      chartsBlock
-    ])
-  ]);
-
+  // New layout: metrics (full width) -> charts (full width) -> findings
   card.appendChild(head);
-  card.appendChild(twoCol);
+  card.appendChild(metricsBlock);
+  card.appendChild(el('div', { class: 'section-title', style: 'margin-top:16px;' }, [el('h2', {}, ['Charts'])]));
+  card.appendChild(chartsBlock);
   card.appendChild(findingsBlock);
 
   // Optional extras for trailer_history: top event strings (safe; no phone/cell fields exist after scrub)
@@ -445,7 +448,7 @@ function renderMetricsGrid(metrics) {
   return grid;
 }
 
-function renderFindings(findings, recs, roi, meta) {
+function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
   const wrap = el('div', { style: 'margin-top:10px;' });
 
   const fTitle = el('div', { class: 'section-title' }, [
@@ -600,6 +603,55 @@ function renderFindings(findings, recs, roi, meta) {
 
     box.appendChild(el('div', { class: 'muted small', style: 'margin-top:8px;' }, [roi.disclaimer]));
     wrap.appendChild(box);
+
+    // Render error breakdown table if present (Trailer History)
+    if (roi.errorBreakdown && roi.errorBreakdown.length > 0) {
+      const table = el('table', { style: 'width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 0.9em;' });
+      const thead = el('thead');
+      const headerRow = el('tr', { style: 'background: var(--bg-secondary);' });
+      headerRow.appendChild(el('th', { style: 'padding: 8px; text-align: left; border-bottom: 1px solid var(--border);' }, ['Error Type']));
+      headerRow.appendChild(el('th', { style: 'padding: 8px; text-align: right; border-bottom: 1px solid var(--border);' }, ['Count']));
+      headerRow.appendChild(el('th', { style: 'padding: 8px; text-align: right; border-bottom: 1px solid var(--border);' }, ['% of Total']));
+      headerRow.appendChild(el('th', { style: 'padding: 8px; text-align: left; border-bottom: 1px solid var(--border);' }, ['Indicates']));
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = el('tbody');
+      for (const err of roi.errorBreakdown) {
+        const row = el('tr');
+        row.appendChild(el('td', { style: 'padding: 8px; border-bottom: 1px solid var(--border);' }, [err.type]));
+        row.appendChild(el('td', { style: 'padding: 8px; text-align: right; border-bottom: 1px solid var(--border); font-weight: 600;' }, [String(err.count)]));
+        row.appendChild(el('td', { style: 'padding: 8px; text-align: right; border-bottom: 1px solid var(--border);' }, [`${err.pctOfTotal}%`]));
+        row.appendChild(el('td', { style: 'padding: 8px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 0.9em;' }, [err.indicator]));
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      box.appendChild(table);
+    }
+  }
+
+  // Render detention spend analysis if present
+  if (detentionSpend) {
+    const spendBox = el('div', { class: 'callout callout-info', style: 'margin-top: 12px;' });
+    spendBox.appendChild(el('div', { style: 'font-weight:900; color:var(--accent); margin-bottom:6px;' }, [detentionSpend.label]));
+
+    if (detentionSpend.insights && detentionSpend.insights.length > 0) {
+      const insightsList = el('ul', { class: 'list', style: 'margin: 8px 0;' });
+      for (const insight of detentionSpend.insights) {
+        insightsList.appendChild(el('li', { style: 'margin-bottom: 4px;' }, [insight]));
+      }
+      spendBox.appendChild(insightsList);
+    }
+
+    // Show finding if zero detention
+    if (detentionSpend.zeroDetentionNote) {
+      spendBox.appendChild(el('div', { class: 'muted small', style: 'margin-top: 8px; padding: 8px; background: rgba(181, 71, 8, 0.1); border-radius: 6px;' }, [
+        'PM Note: No detention events recorded. Verify detention rules are configured in YMS.'
+      ]));
+    }
+
+    spendBox.appendChild(el('div', { class: 'muted small', style: 'margin-top:8px;' }, [detentionSpend.disclaimer]));
+    wrap.appendChild(spendBox);
   }
 
   return wrap;

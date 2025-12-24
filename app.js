@@ -72,6 +72,8 @@ const UI = {
   assumptionDetention: document.querySelector('#assumptionDetention'),
   assumptionLabor: document.querySelector('#assumptionLabor'),
   assumptionTargetMoves: document.querySelector('#assumptionTargetMoves'),
+  assumptionTargetTurnsPerDoor: document.querySelector('#assumptionTargetTurnsPerDoor'),
+  assumptionCostPerDockHour: document.querySelector('#assumptionCostPerDockHour'),
   workerToggle: document.querySelector('#workerToggle'),
   workerStatus: document.querySelector('#workerStatus'),
   perfPanel: document.querySelector('#perfPanel'),
@@ -117,7 +119,7 @@ const UI = {
 const state = {
   running: false,
   mockMode: false,
-  dataSource: 'api', // 'api' or 'csv'
+  dataSource: 'csv', // 'api' or 'csv' - CSV is default
   token: null, // IMPORTANT: in-memory only
   abortController: null,
   runStartedAt: null,
@@ -1072,11 +1074,15 @@ function readAssumptions() {
   const detention = UI.assumptionDetention.value.trim();
   const labor = UI.assumptionLabor.value.trim();
   const targetMoves = UI.assumptionTargetMoves.value.trim();
+  const targetTurnsPerDoor = UI.assumptionTargetTurnsPerDoor?.value?.trim();
+  const costPerDockHour = UI.assumptionCostPerDockHour?.value?.trim();
 
   return {
     detention_cost_per_hour: detention ? Number(detention) : null,
     labor_fully_loaded_rate_per_hour: labor ? Number(labor) : null,
     target_moves_per_driver_per_day: targetMoves ? Number(targetMoves) : 50,
+    target_turns_per_door_per_day: targetTurnsPerDoor ? Number(targetTurnsPerDoor) : null,
+    cost_per_dock_door_hour: costPerDockHour ? Number(costPerDockHour) : null,
   };
 }
 
@@ -2040,6 +2046,9 @@ function initPartialPeriodHandling() {
 
   // Initialize backpressure override drawer
   initBackpressureDrawer();
+
+  // Initialize CSV mode as default (set up UI and state)
+  setDataSource('csv');
 
   clearBanner();
 })();
