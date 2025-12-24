@@ -1753,19 +1753,22 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
 
   // Re-render all reports with updated ROI
   destroyAllCharts(state.chartRegistry);
+  state.chartRegistry.clear();
   UI.resultsRoot.innerHTML = '';
   const partialPeriodMode = document.querySelector('input[name="partialPeriodMode"]:checked')?.value || 'include';
 
   for (const report of Object.keys(state.results)) {
     const result = state.results[report];
-    renderReportResult({
+    const card = renderReportResult({
       report,
       result,
       timezone: state.timezone,
       dateRange: state.inputs?.dateRange || null,
       onWarning: addWarning,
       partialPeriodMode,
+      chartRegistry: state.chartRegistry,
     });
+    UI.resultsRoot.appendChild(card);
   }
 
   // Show a brief confirmation
