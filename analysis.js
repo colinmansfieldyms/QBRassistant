@@ -2590,7 +2590,7 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     const driversNeededAtTarget = round1(avgMovesPerDay / target);
     staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
 
-    insights.push(`Average workload: ${avgMovesPerDay} moves/day over ${totalDays} days`);
+    insights.push(`Total facility workload: ${avgMovesPerDay} moves/day over ${totalDays} days`);
     insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
   }
 
@@ -3436,12 +3436,18 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     }
   }
 
-  // 2. Drivers needed at target (target-dependent - regenerate)
+  // 2. Total workload context (data-dependent - use stored values)
+  const avgMovesPerDay = staffingAnalysis?.avgMovesPerDay;
+  if (avgMovesPerDay && totalDays > 0) {
+    insights.push(`Total facility workload: ${avgMovesPerDay} moves/day over ${totalDays} days`);
+  }
+
+  // 3. Drivers needed at target (target-dependent - regenerate)
   if (driversNeededAtTarget && totalMoves > 0 && totalDays > 0) {
     insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
   }
 
-  // 3. Preserve top performer insights (not target-dependent, but update the target % if mentioned)
+  // 4. Preserve top performer insights (not target-dependent, but update the target % if mentioned)
   if (staffingAnalysis?.topDriverName && staffingAnalysis?.topDriverAvgPerDay) {
     const topDriverMovesPerDay = staffingAnalysis.topDriverAvgPerDay;
     const topDriverDaysWorked = staffingAnalysis.topDriverDaysWorked || 0;
@@ -3452,7 +3458,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     }
   }
 
-  // 4. Preserve "if all like top performer" insight (target-independent)
+  // 5. Preserve "if all like top performer" insight (target-independent)
   if (staffingAnalysis?.driversNeededIfAllLikeTop && avgDriversPerDay && staffingAnalysis?.topDriverAvgPerDay) {
     const driversNeededIfAllLikeTop = staffingAnalysis.driversNeededIfAllLikeTop;
     if (avgDriversPerDay > driversNeededIfAllLikeTop) {
@@ -3461,7 +3467,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     }
   }
 
-  // 5. Preserve productivity vs staffing insights (not target-dependent)
+  // 6. Preserve productivity vs staffing insights (not target-dependent)
   if (staffingAnalysis?.productivityByStaffing) {
     const { lowStaffDays, highStaffDays } = staffingAnalysis.productivityByStaffing;
     if (lowStaffDays && highStaffDays) {
@@ -3483,7 +3489,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     }
   }
 
-  // 6. Staffing recommendation (target-dependent - regenerate)
+  // 7. Staffing recommendation (target-dependent - regenerate)
   if (driversNeededAtTarget && avgDriversPerDay) {
     const needed = driversNeededAtTarget;
     const current = avgDriversPerDay;
