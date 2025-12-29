@@ -33,6 +33,8 @@ export const CSV_FIELD_MAPS = {
     'Arrival Time': 'csv_arrival_time',
     'Detention Date': 'csv_detention_date',
     'Detention Time': 'csv_detention_time',
+    'Departure Date': 'csv_departure_date',
+    'Departure Time': 'csv_departure_time',
     'Process Complete Date': 'csv_process_complete_date',
     'Process Complete Time': 'csv_process_complete_time',
     'Early/Late': 'csv_early_late',
@@ -313,6 +315,13 @@ function normalizeDetentionHistory(normalized, row) {
     normalized.detention_start_time = combineDateTimeColumns(
       normalized.csv_detention_date,
       normalized.csv_detention_time
+    );
+  }
+
+  if (normalized.csv_departure_date) {
+    normalized.departure_datetime = combineDateTimeColumns(
+      normalized.csv_departure_date,
+      normalized.csv_departure_time
     );
   }
 

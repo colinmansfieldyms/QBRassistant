@@ -1114,18 +1114,43 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
-    // Track detention spend: detention_datetime to departure_datetime
-    // detention_date + detention_time -> detention_datetime
-    const detDate = row.detention_date ?? row.detention_start_date;
-    const detTime = row.detention_time ?? row.detention_start_time_local;
-    const depDate = row.departure_date ?? row.depart_date ?? row.out_date;
-    const depTime = row.departure_time ?? row.depart_time ?? row.out_time;
+    // Track detention spend: detention time to departure time
+    // CSV has: "Detention Date", "Detention Time", "Departure Date", "Departure Time"
+    // API may have: detention_start_time, departure_datetime, etc.
 
-    if (!isNil(detDate) && !isNil(detTime) && !isNil(depDate) && !isNil(depTime)) {
-      const detDt = parseTimestamp(`${detDate} ${detTime}`, { timezone: this.timezone, treatAsLocal: true });
-      const depDt = parseTimestamp(`${depDate} ${depTime}`, { timezone: this.timezone, treatAsLocal: true });
+    // Get detention datetime - prefer already-parsed `det`, else try combining date+time columns
+    let detDt = det;
+    if (!detDt) {
+      const detDate = firstPresent(row, ['Detention Date', 'detention_date', 'detention_start_date']);
+      const detTime = firstPresent(row, ['Detention Time', 'detention_time', 'detention_start_time_local']);
+      if (!isNil(detDate) && !isNil(detTime)) {
+        detDt = parseTimestamp(`${detDate} ${detTime}`, { timezone: this.timezone, treatAsLocal: true });
+      }
+    }
 
-      if (detDt && depDt && depDt > detDt) {
+    if (detDt) {
+      // Try to find departure datetime
+      // First try combined timestamp columns
+      const depRaw = firstPresent(row, [
+        'departure_datetime', 'depart_datetime', 'yard_out_time',
+        'left_yard_time', 'checkout_time', 'actual_departure_time'
+      ]);
+
+      let depDt = null;
+      if (depRaw) {
+        depDt = parseTimestamp(depRaw, { timezone: this.timezone, assumeUTC: true });
+      }
+
+      // Fallback: try date + time separately (CSV format)
+      if (!depDt) {
+        const depDate = firstPresent(row, ['Departure Date', 'departure_date', 'depart_date', 'out_date']);
+        const depTime = firstPresent(row, ['Departure Time', 'departure_time', 'depart_time', 'out_time']);
+        if (!isNil(depDate) && !isNil(depTime)) {
+          depDt = parseTimestamp(`${depDate} ${depTime}`, { timezone: this.timezone, treatAsLocal: true });
+        }
+      }
+
+      if (depDt && depDt > detDt) {
         const hours = depDt.diff(detDt, 'hours').hours;
         if (Number.isFinite(hours) && hours > 0) {
           this.detentionEventsWithDeparture++;
@@ -1362,6 +1387,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         metrics: {
           detentionEvents: this.detentionEventsWithDeparture,
           totalDetentionHours: this.totalDetentionHours,
+          actualDetentionCount: this.detention,  // True count of detention events (for PM note)
         },
         assumptions: meta.assumptions,
       }),
@@ -3027,20 +3053,57 @@ function computeTrailerErrorRateAnalysis({ metrics }) {
 function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
   const a = assumptions || {};
   const costPerHour = a.detention_cost_per_hour;
+  const hasCostAssumption = Number.isFinite(costPerHour);
 
-  if (!Number.isFinite(costPerHour)) {
+  const { detentionEvents, totalDetentionHours, actualDetentionCount } = metrics;
+  const trueDetentionCount = actualDetentionCount ?? 0;
+
+  // PM Note should show when there are truly NO detention events at all
+  // This is independent of whether the cost assumption was provided
+  const showPMNote = trueDetentionCount === 0;
+
+  // If no cost assumption AND no detention events, still show the PM note
+  if (!hasCostAssumption && showPMNote) {
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: {},
+      estimate: {},
+      insights: [],
+      zeroDetentionNote: true,
+      disclaimer: 'Enter "Detention cost per hour" to calculate detention spend.',
+    };
+  }
+
+  // If no cost assumption but detention events exist, don't show the section at all
+  if (!hasCostAssumption) {
     return null;
   }
 
-  const { detentionEvents, totalDetentionHours } = metrics;
-
-  // Build spend result
-  const detentionSpend = (totalDetentionHours || 0) * costPerHour;
-
   const insights = [];
 
-  if (detentionEvents === 0 || totalDetentionHours === 0) {
-    insights.push('Detention spend this period: $0 (no trailers entered detention)');
+  // Detention events exist but none have departure times yet
+  // This means trailers are still on the yard, currently in detention
+  if (trueDetentionCount > 0 && (detentionEvents === 0 || totalDetentionHours === 0)) {
+    insights.push(`${trueDetentionCount} trailers currently in detention (no departures yet - spend accruing)`);
+    insights.push('Detention spend will be calculable once trailers depart and departure timestamps are recorded.');
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: { detention_cost_per_hour: costPerHour },
+      estimate: {
+        trailers_in_detention: trueDetentionCount,
+        completed_detention_events: 0,
+        total_detention_hours: 0,
+        detention_spend: 0,
+      },
+      insights,
+      zeroDetentionNote: false,
+      disclaimer: 'Trailers with detention start but no departure are still on the yard. Cost shown reflects completed detention events only.',
+    };
+  }
+
+  // No detention events at all
+  if (trueDetentionCount === 0) {
+    insights.push('Detention spend this period: $0 (no detention events recorded)');
     return {
       label: 'Detention Spend Analysis',
       assumptionsUsed: { detention_cost_per_hour: costPerHour },
@@ -3051,9 +3114,12 @@ function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
       },
       insights,
       zeroDetentionNote: true,
-      disclaimer: 'No detention events with departure timestamps found. This may mean no detention occurred, or detention rules are not configured in YMS.',
+      disclaimer: 'No detention events found in this data. Verify detention rules are configured in YMS.',
     };
   }
+
+  // Normal case: we have detention events and can calculate spend
+  const detentionSpend = (totalDetentionHours || 0) * costPerHour;
 
   insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
   insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
@@ -3679,20 +3745,61 @@ function recalcDetentionSpend(existingSpend, assumptions) {
 
   const a = assumptions || {};
   const costPerHour = a.detention_cost_per_hour;
+  const hasCostAssumption = Number.isFinite(costPerHour);
 
-  if (!Number.isFinite(costPerHour)) return null;
+  // Preserve the original zeroDetentionNote status (based on actual detention count)
+  const wasZeroDetention = existingSpend.zeroDetentionNote;
+
+  // If no cost assumption AND it was zero detention, keep showing PM note
+  if (!hasCostAssumption && wasZeroDetention) {
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: {},
+      estimate: {},
+      insights: [],
+      zeroDetentionNote: true,
+      disclaimer: 'Enter "Detention cost per hour" to calculate detention spend.',
+    };
+  }
+
+  // If no cost assumption but detention events existed, hide the section
+  if (!hasCostAssumption) {
+    return null;
+  }
 
   // Get values from the stored estimate
-  const detentionEvents = existingSpend.estimate?.detention_events || 0;
+  const detentionEvents = existingSpend.estimate?.detention_events ?? existingSpend.estimate?.detention_events_with_duration ?? 0;
   const totalDetentionHours = existingSpend.estimate?.total_detention_hours || 0;
+  const detentionEventsFound = existingSpend.estimate?.detention_events_found;  // New field for "events without duration"
 
   // Recalculate spend with new cost
   const detentionSpend = totalDetentionHours * costPerHour;
 
   const insights = [];
 
-  if (detentionEvents === 0 || totalDetentionHours === 0) {
-    insights.push('Detention spend this period: $0 (no trailers entered detention)');
+  // Case: detention events exist but none have departed yet (still on yard)
+  const trailersInDetention = existingSpend.estimate?.trailers_in_detention;
+  if (trailersInDetention && trailersInDetention > 0 && (detentionEvents === 0 || totalDetentionHours === 0)) {
+    insights.push(`${trailersInDetention} trailers currently in detention (no departures yet - spend accruing)`);
+    insights.push('Detention spend will be calculable once trailers depart and departure timestamps are recorded.');
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: { detention_cost_per_hour: costPerHour },
+      estimate: {
+        trailers_in_detention: trailersInDetention,
+        completed_detention_events: 0,
+        total_detention_hours: 0,
+        detention_spend: 0,
+      },
+      insights,
+      zeroDetentionNote: false,
+      disclaimer: 'Trailers with detention start but no departure are still on the yard. Cost shown reflects completed detention events only.',
+    };
+  }
+
+  // Case: truly no detention events
+  if (wasZeroDetention || (detentionEvents === 0 && totalDetentionHours === 0)) {
+    insights.push('Detention spend this period: $0 (no detention events recorded)');
     return {
       label: 'Detention Spend Analysis',
       assumptionsUsed: { detention_cost_per_hour: costPerHour },
@@ -3703,10 +3810,11 @@ function recalcDetentionSpend(existingSpend, assumptions) {
       },
       insights,
       zeroDetentionNote: true,
-      disclaimer: 'No detention events with departure timestamps found. This may mean no detention occurred, or detention rules are not configured in YMS.',
+      disclaimer: 'No detention events found in this data. Verify detention rules are configured in YMS.',
     };
   }
 
+  // Normal case: we have detention events with duration
   insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
   insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
 
