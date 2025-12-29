@@ -3220,13 +3220,8 @@ export function recalculateROI(results, assumptions) {
     switch (report) {
       case 'detention_history':
         newResult.roi = recalcDetentionROI(result.roi, result.metrics, assumptions);
-        newResult.detentionSpend = computeDetentionSpendIfEnabled({
-          metrics: {
-            totalDetentionHours: result.metrics?.total_detention_hours || 0,
-            detentionEventCount: result.metrics?.detention_events || 0,
-          },
-          assumptions,
-        });
+        // Recalculate detention spend using stored values from original computation
+        newResult.detentionSpend = recalcDetentionSpend(result.detentionSpend, assumptions);
         break;
 
       case 'dockdoor_history':
@@ -3258,6 +3253,7 @@ export function recalculateROI(results, assumptions) {
 
 /**
  * Recalculate detention ROI with new assumptions.
+ * Uses stored metrics and original ROI estimate values.
  */
 function recalcDetentionROI(existingRoi, metrics, assumptions) {
   if (!existingRoi) return null;
@@ -3267,34 +3263,38 @@ function recalcDetentionROI(existingRoi, metrics, assumptions) {
 
   if (!Number.isFinite(costPerHour)) return null;
 
-  const prevented = metrics?.prevented_detention_events || 0;
-  const hoursPerEvent = existingRoi.assumptionsUsed?.detention_hours_per_event || 2;
+  // Try multiple field names for prevented count (metrics uses prevented_detention_count, original ROI estimate uses prevented_detention_events)
+  const prevented = metrics?.prevented_detention_count
+    || existingRoi.estimate?.prevented_detention_events
+    || 0;
+  const hoursPerEvent = existingRoi.assumptionsUsed?.prevented_detention_hours_saved_each || 1;
 
   const preventedHours = prevented * hoursPerEvent;
   const savingsEstimate = preventedHours * costPerHour;
 
   return {
-    label: 'Detention Cost Savings (Estimates)',
+    label: 'Detention avoidance estimate',
     assumptionsUsed: {
       detention_cost_per_hour: costPerHour,
-      detention_hours_per_event: hoursPerEvent,
+      prevented_detention_hours_saved_each: hoursPerEvent,
     },
     estimate: {
-      preventedEvents: prevented,
-      preventedHours,
-      savingsEstimate: Math.round(savingsEstimate),
+      prevented_detention_events: prevented,
+      estimated_hours_saved: round1(preventedHours),
+      estimated_value: Math.round(savingsEstimate * 100) / 100,
     },
     insights: [
       `${prevented} detention events prevented`,
-      `~${preventedHours} detention hours avoided`,
+      `~${round1(preventedHours)} detention hours avoided`,
       `Estimated savings: $${Math.round(savingsEstimate).toLocaleString()} at $${costPerHour}/hr`,
     ],
-    disclaimer: 'Savings estimate based on user-provided cost assumptions. Actual savings depend on carrier contracts and detention rules.',
+    disclaimer: 'Estimate only. Assumes each prevented detention event corresponds to ~1 hour avoided. Replace with customer-specific model when available.',
   };
 }
 
 /**
  * Recalculate dock door ROI with new assumptions.
+ * Uses stored values from the original ROI estimate.
  */
 function recalcDockDoorROI(existingRoi, metrics, assumptions) {
   if (!existingRoi) return null;
@@ -3305,40 +3305,46 @@ function recalcDockDoorROI(existingRoi, metrics, assumptions) {
 
   if (!Number.isFinite(targetTurns)) return null;
 
-  const avgTurns = metrics?.turns_per_door_per_day || existingRoi.estimate?.avg_turns_per_door_per_day || 0;
-  const uniqueDoors = metrics?.unique_doors || existingRoi.estimate?.unique_doors || 0;
-  const totalDays = metrics?.total_days || existingRoi.estimate?.total_days || 1;
+  // Get values from original ROI estimate (metrics don't have turns data)
+  const avgTurns = existingRoi.estimate?.avg_turns_per_door_per_day || 0;
+  const uniqueDoors = existingRoi.estimate?.unique_doors || 0;
+  const totalDays = existingRoi.estimate?.total_days || 1;
+  const totalTurns = existingRoi.estimate?.total_turns;
 
   // Calculate performance vs target
   const throughputPct = avgTurns > 0 ? Math.round((avgTurns / targetTurns) * 100) : null;
   const gap = Math.max(0, targetTurns - avgTurns);
   const surplus = Math.max(0, avgTurns - targetTurns);
 
-  // Idle time estimation
-  let idleDoorHoursPerDay = null;
-  let costOfIdlePerDay = null;
-  const avgTurnDurationHrs = 1; // Assume ~1 hour per turn
-
-  if (gap > 0 && uniqueDoors > 0) {
-    // Hours of potential capacity not used per day
-    idleDoorHoursPerDay = round1(gap * avgTurnDurationHrs * uniqueDoors);
-    if (Number.isFinite(costPerDockHour)) {
-      costOfIdlePerDay = Math.round(idleDoorHoursPerDay * costPerDockHour);
-    }
-  }
+  // Cost calculations (matching original)
+  const hoursPerDay = 8;
+  const costPerTurn = Number.isFinite(costPerDockHour) ? (costPerDockHour * hoursPerDay) / targetTurns : null;
+  const dailyGapValue = costPerTurn ? round1(gap * costPerTurn * (uniqueDoors || 1)) : null;
+  const dailySurplusValue = costPerTurn ? round1(surplus * costPerTurn * (uniqueDoors || 1)) : null;
 
   const insights = [];
+
+  // 1. Performance vs target (always show if we have data)
   if (Number.isFinite(throughputPct)) {
-    insights.push(`Dock doors averaging ${throughputPct}% of target (${round1(avgTurns)} turns/door/day vs ${targetTurns} target)`);
+    insights.push(`Dock doors averaging ${round1(avgTurns)} turns/day vs ${targetTurns} target (${throughputPct}%)`);
   }
-  if (gap > 0) {
-    insights.push(`Gap to target: ${round1(gap)} turns/door/day`);
+
+  // 2. Totals summary (data-dependent, preserved from original)
+  if (totalTurns && totalDays) {
+    insights.push(`Total: ${totalTurns} turns over ${totalDays} days across ${uniqueDoors || '?'} doors`);
   }
-  if (surplus > 0) {
-    insights.push(`Above target by ${round1(surplus)} turns/door/day`);
-  }
-  if (idleDoorHoursPerDay && costOfIdlePerDay) {
-    insights.push(`Est. idle capacity: ${idleDoorHoursPerDay} door-hours/day ($${costOfIdlePerDay}/day at $${costPerDockHour}/hr)`);
+
+  // 3. Gap/surplus analysis (target-dependent)
+  if (throughputPct >= 100) {
+    insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
+    if (dailySurplusValue > 0) {
+      insights.push(`Efficiency value: ~$${dailySurplusValue}/day in additional throughput`);
+    }
+  } else if (gap > 0) {
+    insights.push(`Below target by ${round1(gap)} turns/door/day`);
+    if (dailyGapValue > 0) {
+      insights.push(`Opportunity cost: ~$${dailyGapValue}/day in unrealized capacity`);
+    }
   }
 
   return {
@@ -3346,20 +3352,22 @@ function recalcDockDoorROI(existingRoi, metrics, assumptions) {
     assumptionsUsed: {
       target_turns_per_door_per_day: targetTurns,
       cost_per_dock_door_hour: costPerDockHour || null,
+      hours_per_day: hoursPerDay,
     },
     estimate: {
       avg_turns_per_door_per_day: round1(avgTurns),
       target_turns_per_door_per_day: targetTurns,
-      throughput_vs_target_pct: throughputPct,
-      gap_turns_per_day: round1(gap),
-      surplus_turns_per_day: round1(surplus),
+      performance_vs_target_pct: throughputPct,
+      gap_turns_per_day: gap > 0 ? round1(gap) : null,
+      surplus_turns_per_day: surplus > 0 ? round1(surplus) : null,
       unique_doors: uniqueDoors,
+      total_turns: totalTurns,
       total_days: totalDays,
-      idle_door_hours_per_day: idleDoorHoursPerDay,
-      cost_of_idle_per_day: costOfIdlePerDay,
+      daily_gap_value: dailyGapValue,
+      daily_surplus_value: dailySurplusValue,
     },
     insights,
-    disclaimer: 'Throughput targets are customer-specific. Idle capacity estimates assume ~1 hour per door turn.',
+    disclaimer: 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.',
   };
 }
 
@@ -3380,6 +3388,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
   const avg = metrics?.avg_moves_per_driver_per_day || existingRoi.estimate?.avg_moves_per_driver_per_day || 0;
   const totalMoves = metrics?.moves_total || existingRoi.staffingAnalysis?.totalMoves || 0;
   const totalDays = existingRoi.staffingAnalysis?.totalDays || 1;
+  const avgDriversPerDay = existingRoi.staffingAnalysis?.avgDriversPerDay;
 
   // Calculate performance vs target
   const performancePct = Number.isFinite(avg) && avg > 0 ? Math.round((avg / target) * 100) : null;
@@ -3400,8 +3409,25 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
 
   const fteEquivalent = totalMoves > 0 ? round1(totalMoves / target) : null;
 
-  // Build insights
+  // Preserve existing staffing analysis but update target-dependent values
+  const staffingAnalysis = existingRoi.staffingAnalysis ? { ...existingRoi.staffingAnalysis } : null;
+  let driversNeededAtTarget = null;
+
+  if (staffingAnalysis && totalMoves > 0 && totalDays > 0) {
+    const avgMovesPerDay = round1(totalMoves / totalDays);
+    driversNeededAtTarget = round1(avgMovesPerDay / target);
+    staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
+
+    // Update staffing delta if we have avgDriversPerDay
+    if (staffingAnalysis.avgDriversPerDay) {
+      staffingAnalysis.staffingDelta = round1(staffingAnalysis.avgDriversPerDay - driversNeededAtTarget);
+    }
+  }
+
+  // Build insights - preserve non-target-dependent insights from original, regenerate target-dependent ones
   const insights = [];
+
+  // 1. Performance vs target (target-dependent - regenerate)
   if (Number.isFinite(performancePct)) {
     if (performancePct >= 100) {
       insights.push(`Drivers averaging ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
@@ -3410,21 +3436,62 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     }
   }
 
-  if (totalMoves > 0 && totalDays > 0) {
-    const avgMovesPerDay = round1(totalMoves / totalDays);
-    const driversNeededAtTarget = round1(avgMovesPerDay / target);
+  // 2. Drivers needed at target (target-dependent - regenerate)
+  if (driversNeededAtTarget && totalMoves > 0 && totalDays > 0) {
     insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
   }
 
-  // Preserve existing staffing analysis but update target-dependent values
-  const staffingAnalysis = existingRoi.staffingAnalysis ? { ...existingRoi.staffingAnalysis } : null;
-  if (staffingAnalysis && totalMoves > 0 && totalDays > 0) {
-    const avgMovesPerDay = round1(totalMoves / totalDays);
-    staffingAnalysis.driversNeededAtTarget = round1(avgMovesPerDay / target);
+  // 3. Preserve top performer insights (not target-dependent, but update the target % if mentioned)
+  if (staffingAnalysis?.topDriverName && staffingAnalysis?.topDriverAvgPerDay) {
+    const topDriverMovesPerDay = staffingAnalysis.topDriverAvgPerDay;
+    const topDriverDaysWorked = staffingAnalysis.topDriverDaysWorked || 0;
+    if (topDriverMovesPerDay >= target) {
+      insights.push(`Top performer "${staffingAnalysis.topDriverName}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked (${Math.round((topDriverMovesPerDay/target)*100)}% of target)`);
+    } else {
+      insights.push(`Top performer "${staffingAnalysis.topDriverName}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked`);
+    }
+  }
 
-    // Update staffing delta if we have avgDriversPerDay
-    if (staffingAnalysis.avgDriversPerDay) {
-      staffingAnalysis.staffingDelta = round1(staffingAnalysis.avgDriversPerDay - staffingAnalysis.driversNeededAtTarget);
+  // 4. Preserve "if all like top performer" insight (target-independent)
+  if (staffingAnalysis?.driversNeededIfAllLikeTop && avgDriversPerDay && staffingAnalysis?.topDriverAvgPerDay) {
+    const driversNeededIfAllLikeTop = staffingAnalysis.driversNeededIfAllLikeTop;
+    if (avgDriversPerDay > driversNeededIfAllLikeTop) {
+      const excessDrivers = round1(avgDriversPerDay - driversNeededIfAllLikeTop);
+      insights.push(`If all drivers performed like top performer, you'd need ~${driversNeededIfAllLikeTop}/day vs ~${avgDriversPerDay} avg drivers/day (${excessDrivers} fewer)`);
+    }
+  }
+
+  // 5. Preserve productivity vs staffing insights (not target-dependent)
+  if (staffingAnalysis?.productivityByStaffing) {
+    const { lowStaffDays, highStaffDays } = staffingAnalysis.productivityByStaffing;
+    if (lowStaffDays && highStaffDays) {
+      const avgProductivityLowStaff = lowStaffDays.avgMovesPerDriver;
+      const avgProductivityHighStaff = highStaffDays.avgMovesPerDriver;
+      const avgDriversLowStaff = lowStaffDays.avgDrivers;
+      const avgDriversHighStaff = highStaffDays.avgDrivers;
+
+      if (avgProductivityLowStaff > avgProductivityHighStaff * 1.1) {
+        const pctMore = Math.round(((avgProductivityLowStaff / avgProductivityHighStaff) - 1) * 100);
+        insights.push(`Days with fewer drivers (~${avgDriversLowStaff}) are ${pctMore}% MORE productive per driver (${avgProductivityLowStaff} vs ${avgProductivityHighStaff} moves/driver)`);
+        insights.push(`Consider: Too many drivers may mean not enough moves to go around`);
+      } else if (avgProductivityHighStaff > avgProductivityLowStaff * 1.1) {
+        const pctMore = Math.round(((avgProductivityHighStaff / avgProductivityLowStaff) - 1) * 100);
+        insights.push(`Days with more drivers (~${avgDriversHighStaff}) are ${pctMore}% MORE productive per driver (${avgProductivityHighStaff} vs ${avgProductivityLowStaff} moves/driver)`);
+      } else {
+        insights.push(`Productivity per driver is consistent across staffing levels (~${avgProductivityLowStaff}-${avgProductivityHighStaff} moves/driver)`);
+      }
+    }
+  }
+
+  // 6. Staffing recommendation (target-dependent - regenerate)
+  if (driversNeededAtTarget && avgDriversPerDay) {
+    const needed = driversNeededAtTarget;
+    const current = avgDriversPerDay;
+
+    if (current > needed * 1.3) {
+      insights.push(`Potential overstaffing: ~${current} drivers/day avg vs ~${needed} needed at target rate`);
+    } else if (current < needed * 0.8) {
+      insights.push(`Potential understaffing: ~${current} drivers/day avg vs ~${needed} needed at target rate`);
     }
   }
 
@@ -3447,5 +3514,60 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     insights,
     staffingAnalysis,
     disclaimer: 'Performance metrics based on average moves per driver per day. Individual driver performance may vary. Target rates should be calibrated to your operation.',
+  };
+}
+
+/**
+ * Recalculate detention spend with new assumptions.
+ * Uses the stored metrics from the original computation.
+ */
+function recalcDetentionSpend(existingSpend, assumptions) {
+  if (!existingSpend) return null;
+
+  const a = assumptions || {};
+  const costPerHour = a.detention_cost_per_hour;
+
+  if (!Number.isFinite(costPerHour)) return null;
+
+  // Get values from the stored estimate
+  const detentionEvents = existingSpend.estimate?.detention_events || 0;
+  const totalDetentionHours = existingSpend.estimate?.total_detention_hours || 0;
+
+  // Recalculate spend with new cost
+  const detentionSpend = totalDetentionHours * costPerHour;
+
+  const insights = [];
+
+  if (detentionEvents === 0 || totalDetentionHours === 0) {
+    insights.push('Detention spend this period: $0 (no trailers entered detention)');
+    return {
+      label: 'Detention Spend Analysis',
+      assumptionsUsed: { detention_cost_per_hour: costPerHour },
+      estimate: {
+        detention_events: 0,
+        total_detention_hours: 0,
+        detention_spend: 0,
+      },
+      insights,
+      zeroDetentionNote: true,
+      disclaimer: 'No detention events with departure timestamps found. This may mean no detention occurred, or detention rules are not configured in YMS.',
+    };
+  }
+
+  insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
+  insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
+
+  return {
+    label: 'Detention Spend Analysis',
+    assumptionsUsed: { detention_cost_per_hour: costPerHour },
+    estimate: {
+      detention_events: detentionEvents,
+      total_detention_hours: round1(totalDetentionHours),
+      detention_spend: Math.round(detentionSpend * 100) / 100,
+      avg_detention_hours: round1(totalDetentionHours / detentionEvents),
+    },
+    insights,
+    zeroDetentionNote: false,
+    disclaimer: 'Detention spend calculated from detention_datetime to departure_datetime. Does not include pre-detention time.',
   };
 }
