@@ -1766,6 +1766,7 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
       dateRange: state.inputs?.dateRange || null,
       onWarning: addWarning,
       partialPeriodMode,
+      partialPeriodInfo: state.partialPeriodInfo,
       chartRegistry: state.chartRegistry,
     });
     UI.resultsRoot.appendChild(card);

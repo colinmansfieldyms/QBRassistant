@@ -1345,6 +1345,14 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     this.uniqueDoors = new Set();
     this.totalTurns = 0;
     this.daysWithData = new Set();
+
+    // Multi-granularity throughput tracking for time series chart
+    this.turnsByDay = new CounterMap();   // day -> total turns
+    this.turnsByWeek = new CounterMap();  // week -> total turns
+    this.turnsByMonth = new CounterMap(); // month -> total turns
+    this.doorsByDay = new Map();   // day -> Set<door>
+    this.doorsByWeek = new Map();  // week -> Set<door>
+    this.doorsByMonth = new Map(); // month -> Set<door>
   }
 
   getEstimators(map, key) {
@@ -1418,6 +1426,9 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const eventDt = dwellStart || procStart;
     if (door && eventDt) {
       const dk = dayKey(eventDt, this.timezone);
+      const wk = weekKey(eventDt, this.timezone);
+      const mk = monthKey(eventDt, this.timezone);
+
       this.uniqueDoors.add(door);
       this.daysWithData.add(dk);
       this.totalTurns++;
@@ -1427,6 +1438,19 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       }
       const dayMap = this.turnsByDoorByDay.get(dk);
       dayMap.set(door, (dayMap.get(door) || 0) + 1);
+
+      // Track turns at all granularities for time series chart
+      this.turnsByDay.inc(dk);
+      this.turnsByWeek.inc(wk);
+      this.turnsByMonth.inc(mk);
+
+      // Track unique doors per period for utilization chart
+      if (!this.doorsByDay.has(dk)) this.doorsByDay.set(dk, new Set());
+      this.doorsByDay.get(dk).add(door);
+      if (!this.doorsByWeek.has(wk)) this.doorsByWeek.set(wk, new Set());
+      this.doorsByWeek.get(wk).add(door);
+      if (!this.doorsByMonth.has(mk)) this.doorsByMonth.set(mk, new Set());
+      this.doorsByMonth.get(mk).add(door);
     }
   }
 
@@ -1584,6 +1608,27 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       ? 'Helps track who is processing dock door events.'
       : 'Helps infer module adoption (admin vs others).';
 
+    // Pick best granularity for door turns/utilization chart
+    const turnsGranularity = pickBestGranularity({
+      monthly: this.turnsByMonth,
+      weekly: this.turnsByWeek,
+      daily: this.turnsByDay
+    });
+
+    // Build turns time series data
+    const turnsData = turnsGranularity.data;
+    const turnsTimeLabel = turnsGranularity.granularity;
+    const turnsChartGranularityLabel = turnsGranularity.label;
+
+    // Get the appropriate doors data for the same granularity
+    const doorsData = turnsTimeLabel === 'day' ? this.doorsByDay
+      : turnsTimeLabel === 'week' ? this.doorsByWeek : this.doorsByMonth;
+
+    // Build sorted labels from turns data
+    const turnsLabels = turnsData ? [...turnsData.map.keys()].sort() : [];
+    const turnsCounts = turnsLabels.map(k => turnsData.map.get(k) || 0);
+    const doorsCounts = turnsLabels.map(k => doorsData.get(k)?.size || 0);
+
     return {
       report: 'dockdoor_history',
       meta,
@@ -1644,7 +1689,30 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
             columns: [leaderboardField, 'count'],
             rows: leaderboardTop.map(x => ({ [leaderboardField]: x.key, count: x.value }))
           }
-        }
+        },
+        // Door turns & utilization time series (only if we have data)
+        ...(turnsLabels.length > 0 ? [{
+          id: `door_turns_utilization_${turnsChartGranularityLabel}`,
+          title: `Door turns & utilization (${turnsChartGranularityLabel})`,
+          kind: 'line',
+          description: `Number of door turns and unique doors utilized per ${turnsTimeLabel}.`,
+          data: {
+            labels: turnsLabels,
+            datasets: [
+              { label: 'Door turns', data: turnsCounts },
+              { label: 'Doors utilized', data: doorsCounts }
+            ]
+          },
+          csv: {
+            columns: [turnsTimeLabel, 'door_turns', 'doors_utilized', 'timezone'],
+            rows: turnsLabels.map((label, i) => ({
+              [turnsTimeLabel]: label,
+              door_turns: turnsCounts[i],
+              doors_utilized: doorsCounts[i],
+              timezone: meta.timezone
+            }))
+          }
+        }] : [])
       ],
       findings,
       recommendations: recs,
@@ -2728,17 +2796,14 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
 // ---------- Dock Door Throughput ROI ----------
 function computeDockDoorROIIfEnabled({ meta, metrics, assumptions }) {
   const a = assumptions || {};
-  const enabled = Number.isFinite(a.target_turns_per_door_per_day) && Number.isFinite(a.cost_per_dock_door_hour);
-
-  if (!enabled) return null;
-
-  const target = a.target_turns_per_door_per_day;
-  const costPerHour = a.cost_per_dock_door_hour;
+  const target = Number.isFinite(a.target_turns_per_door_per_day) ? a.target_turns_per_door_per_day : null;
+  const costPerHour = Number.isFinite(a.cost_per_dock_door_hour) ? a.cost_per_dock_door_hour : null;
   const hoursPerDay = 8; // Assume 8-hour operating day
 
   // Get metrics from dock door analysis
   const { turnsPerDoorPerDay, uniqueDoors, totalTurns, totalDays } = metrics;
 
+  // Always show analysis if we have turn data (no assumptions required for basic insights)
   if (!Number.isFinite(turnsPerDoorPerDay) || turnsPerDoorPerDay === 0) {
     return {
       label: 'Dock Door Throughput Analysis',
@@ -2747,37 +2812,64 @@ function computeDockDoorROIIfEnabled({ meta, metrics, assumptions }) {
         cost_per_dock_door_hour: costPerHour,
       },
       estimate: null,
-      insights: ['Insufficient data to calculate dock door throughput ROI.'],
+      insights: ['Insufficient data to calculate dock door throughput analysis.'],
       disclaimer: 'Unable to compute - dock door turn data not available.',
     };
   }
 
   const insights = [];
-  const performancePct = Math.round((turnsPerDoorPerDay / target) * 100);
-  const gap = Math.max(0, target - turnsPerDoorPerDay);
-  const surplus = Math.max(0, turnsPerDoorPerDay - target);
 
-  // Cost analysis
-  const costPerTurn = (costPerHour * hoursPerDay) / target;
-  const dailyGapValue = gap * costPerTurn * (uniqueDoors || 1);
-  const dailySurplusValue = surplus * costPerTurn * (uniqueDoors || 1);
+  // Always show: average turns per door per day (no assumptions needed)
+  insights.push(`Dock doors averaging ${round1(turnsPerDoorPerDay)} turns/door/day`);
 
-  // Insights
-  insights.push(`Dock doors averaging ${round1(turnsPerDoorPerDay)} turns/day vs ${target} target (${performancePct}%)`);
-
+  // Always show: totals summary (no assumptions needed)
   if (totalTurns && totalDays) {
     insights.push(`Total: ${totalTurns} turns over ${totalDays} days across ${uniqueDoors || '?'} doors`);
   }
 
-  if (performancePct >= 100) {
-    insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
-    if (dailySurplusValue > 0) {
-      insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
+  // Build estimate object - always include base metrics
+  const estimate = {
+    avg_turns_per_door_per_day: round1(turnsPerDoorPerDay),
+    unique_doors: uniqueDoors,
+    total_turns: totalTurns,
+    total_days: totalDays,
+  };
+
+  // Target-dependent insights (only if target is provided)
+  if (target !== null) {
+    const performancePct = Math.round((turnsPerDoorPerDay / target) * 100);
+    const gap = Math.max(0, target - turnsPerDoorPerDay);
+    const surplus = Math.max(0, turnsPerDoorPerDay - target);
+
+    // Update first insight to include target comparison
+    insights[0] = `Dock doors averaging ${round1(turnsPerDoorPerDay)} turns/day vs ${target} target (${performancePct}%)`;
+
+    estimate.target_turns_per_door_per_day = target;
+    estimate.performance_vs_target_pct = performancePct;
+    estimate.gap_turns_per_day = gap > 0 ? round1(gap) : null;
+    estimate.surplus_turns_per_day = surplus > 0 ? round1(surplus) : null;
+
+    // Gap/surplus insight (requires target)
+    if (performancePct >= 100) {
+      insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
+    } else {
+      insights.push(`Below target by ${round1(gap)} turns/door/day`);
     }
-  } else {
-    insights.push(`Below target by ${round1(gap)} turns/door/day`);
-    if (dailyGapValue > 0) {
-      insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity`);
+
+    // Cost-based insights (requires BOTH target and costPerHour)
+    if (costPerHour !== null) {
+      const costPerTurn = (costPerHour * hoursPerDay) / target;
+      const dailyGapValue = gap * costPerTurn * (uniqueDoors || 1);
+      const dailySurplusValue = surplus * costPerTurn * (uniqueDoors || 1);
+
+      estimate.daily_gap_value = gap > 0 ? round1(dailyGapValue) : null;
+      estimate.daily_surplus_value = surplus > 0 ? round1(dailySurplusValue) : null;
+
+      if (performancePct >= 100 && dailySurplusValue > 0) {
+        insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
+      } else if (dailyGapValue > 0) {
+        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity`);
+      }
     }
   }
 
@@ -2788,20 +2880,11 @@ function computeDockDoorROIIfEnabled({ meta, metrics, assumptions }) {
       cost_per_dock_door_hour: costPerHour,
       hours_per_day: hoursPerDay,
     },
-    estimate: {
-      avg_turns_per_door_per_day: round1(turnsPerDoorPerDay),
-      target_turns_per_door_per_day: target,
-      performance_vs_target_pct: performancePct,
-      gap_turns_per_day: gap > 0 ? round1(gap) : null,
-      surplus_turns_per_day: surplus > 0 ? round1(surplus) : null,
-      unique_doors: uniqueDoors,
-      total_turns: totalTurns,
-      total_days: totalDays,
-      daily_gap_value: gap > 0 ? round1(dailyGapValue) : null,
-      daily_surplus_value: surplus > 0 ? round1(dailySurplusValue) : null,
-    },
+    estimate,
     insights,
-    disclaimer: 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.',
+    disclaimer: target !== null
+      ? 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.'
+      : 'Analysis based on recorded dock door events. Add target turns/door/day to enable performance comparison.',
   };
 }
 
@@ -3295,15 +3378,15 @@ function recalcDetentionROI(existingRoi, metrics, assumptions) {
 /**
  * Recalculate dock door ROI with new assumptions.
  * Uses stored values from the original ROI estimate.
+ * Now supports showing insights even without assumptions (matches original logic).
  */
 function recalcDockDoorROI(existingRoi, metrics, assumptions) {
   if (!existingRoi) return null;
 
   const a = assumptions || {};
-  const targetTurns = a.target_turns_per_door_per_day;
-  const costPerDockHour = a.cost_per_dock_door_hour;
-
-  if (!Number.isFinite(targetTurns)) return null;
+  const target = Number.isFinite(a.target_turns_per_door_per_day) ? a.target_turns_per_door_per_day : null;
+  const costPerHour = Number.isFinite(a.cost_per_dock_door_hour) ? a.cost_per_dock_door_hour : null;
+  const hoursPerDay = 8;
 
   // Get values from original ROI estimate (metrics don't have turns data)
   const avgTurns = existingRoi.estimate?.avg_turns_per_door_per_day || 0;
@@ -3311,63 +3394,79 @@ function recalcDockDoorROI(existingRoi, metrics, assumptions) {
   const totalDays = existingRoi.estimate?.total_days || 1;
   const totalTurns = existingRoi.estimate?.total_turns;
 
-  // Calculate performance vs target
-  const throughputPct = avgTurns > 0 ? Math.round((avgTurns / targetTurns) * 100) : null;
-  const gap = Math.max(0, targetTurns - avgTurns);
-  const surplus = Math.max(0, avgTurns - targetTurns);
-
-  // Cost calculations (matching original)
-  const hoursPerDay = 8;
-  const costPerTurn = Number.isFinite(costPerDockHour) ? (costPerDockHour * hoursPerDay) / targetTurns : null;
-  const dailyGapValue = costPerTurn ? round1(gap * costPerTurn * (uniqueDoors || 1)) : null;
-  const dailySurplusValue = costPerTurn ? round1(surplus * costPerTurn * (uniqueDoors || 1)) : null;
+  // Need basic data to show any insights
+  if (!Number.isFinite(avgTurns) || avgTurns === 0) {
+    return existingRoi; // Keep original if no data
+  }
 
   const insights = [];
 
-  // 1. Performance vs target (always show if we have data)
-  if (Number.isFinite(throughputPct)) {
-    insights.push(`Dock doors averaging ${round1(avgTurns)} turns/day vs ${targetTurns} target (${throughputPct}%)`);
-  }
+  // Always show: average turns per door per day (no assumptions needed)
+  insights.push(`Dock doors averaging ${round1(avgTurns)} turns/door/day`);
 
-  // 2. Totals summary (data-dependent, preserved from original)
+  // Always show: totals summary (no assumptions needed)
   if (totalTurns && totalDays) {
     insights.push(`Total: ${totalTurns} turns over ${totalDays} days across ${uniqueDoors || '?'} doors`);
   }
 
-  // 3. Gap/surplus analysis (target-dependent)
-  if (throughputPct >= 100) {
-    insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
-    if (dailySurplusValue > 0) {
-      insights.push(`Efficiency value: ~$${dailySurplusValue}/day in additional throughput`);
+  // Build estimate object - always include base metrics
+  const estimate = {
+    avg_turns_per_door_per_day: round1(avgTurns),
+    unique_doors: uniqueDoors,
+    total_turns: totalTurns,
+    total_days: totalDays,
+  };
+
+  // Target-dependent insights (only if target is provided)
+  if (target !== null) {
+    const performancePct = Math.round((avgTurns / target) * 100);
+    const gap = Math.max(0, target - avgTurns);
+    const surplus = Math.max(0, avgTurns - target);
+
+    // Update first insight to include target comparison
+    insights[0] = `Dock doors averaging ${round1(avgTurns)} turns/day vs ${target} target (${performancePct}%)`;
+
+    estimate.target_turns_per_door_per_day = target;
+    estimate.performance_vs_target_pct = performancePct;
+    estimate.gap_turns_per_day = gap > 0 ? round1(gap) : null;
+    estimate.surplus_turns_per_day = surplus > 0 ? round1(surplus) : null;
+
+    // Gap/surplus insight (requires target)
+    if (performancePct >= 100) {
+      insights.push(`Exceeding target by ${round1(surplus)} turns/door/day`);
+    } else {
+      insights.push(`Below target by ${round1(gap)} turns/door/day`);
     }
-  } else if (gap > 0) {
-    insights.push(`Below target by ${round1(gap)} turns/door/day`);
-    if (dailyGapValue > 0) {
-      insights.push(`Opportunity cost: ~$${dailyGapValue}/day in unrealized capacity`);
+
+    // Cost-based insights (requires BOTH target and costPerHour)
+    if (costPerHour !== null) {
+      const costPerTurn = (costPerHour * hoursPerDay) / target;
+      const dailyGapValue = gap * costPerTurn * (uniqueDoors || 1);
+      const dailySurplusValue = surplus * costPerTurn * (uniqueDoors || 1);
+
+      estimate.daily_gap_value = gap > 0 ? round1(dailyGapValue) : null;
+      estimate.daily_surplus_value = surplus > 0 ? round1(dailySurplusValue) : null;
+
+      if (performancePct >= 100 && dailySurplusValue > 0) {
+        insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
+      } else if (dailyGapValue > 0) {
+        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity`);
+      }
     }
   }
 
   return {
     label: 'Dock Door Throughput Analysis',
     assumptionsUsed: {
-      target_turns_per_door_per_day: targetTurns,
-      cost_per_dock_door_hour: costPerDockHour || null,
+      target_turns_per_door_per_day: target,
+      cost_per_dock_door_hour: costPerHour,
       hours_per_day: hoursPerDay,
     },
-    estimate: {
-      avg_turns_per_door_per_day: round1(avgTurns),
-      target_turns_per_door_per_day: targetTurns,
-      performance_vs_target_pct: throughputPct,
-      gap_turns_per_day: gap > 0 ? round1(gap) : null,
-      surplus_turns_per_day: surplus > 0 ? round1(surplus) : null,
-      unique_doors: uniqueDoors,
-      total_turns: totalTurns,
-      total_days: totalDays,
-      daily_gap_value: dailyGapValue,
-      daily_surplus_value: dailySurplusValue,
-    },
+    estimate,
     insights,
-    disclaimer: 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.',
+    disclaimer: target !== null
+      ? 'Estimates based on target turns assumption. Actual dock productivity varies by facility layout, product mix, and scheduling.'
+      : 'Analysis based on recorded dock door events. Add target turns/door/day to enable performance comparison.',
   };
 }
 
