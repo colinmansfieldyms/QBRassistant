@@ -1037,8 +1037,13 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.detention = 0;
     this.prevented = 0;
 
+    // Track live/drop for ALL rows (for general coverage)
     this.live = 0;
     this.drop = 0;
+
+    // Track live/drop ONLY for detention events (for the pie chart)
+    this.detentionLive = 0;
+    this.detentionDrop = 0;
 
     // Multi-granularity time series for trend analysis
     this.monthlyDetention = new CounterMap();
@@ -1047,11 +1052,16 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.monthlyPrevented = new CounterMap();
     this.weeklyPrevented = new CounterMap();
     this.dailyPrevented = new CounterMap();
-    this.topScac = new CounterMap();
+
+    // Track SCAC ONLY for detention events (for the carrier bar chart)
+    this.detentionByScac = new CounterMap();
 
     // Detention spend tracking
     this.detentionEventsWithDeparture = 0;
     this.totalDetentionHours = 0;
+
+    // Track data source for CSV mode warning
+    this.isCSVMode = opts.isCSVMode || false;
   }
 
   ingest({ row }) {
@@ -1071,12 +1081,22 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     if (det) { this.detention++; this.parseOk++; this.trackDate(det); }
     if (pre && !det) this.prevented++;
 
+    // Track live/drop for ALL rows (general coverage metrics)
     const live = normalizeBoolish(row.live_load) ?? (row.live_load == 1);
     if (live === true) this.live++;
     else if (live === false) this.drop++;
 
-    const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
-    if (!isNil(scac)) this.topScac.inc(scac);
+    // Track live/drop and SCAC ONLY for detention events (for charts)
+    // A detention event is when det is not null (detention_start_time exists)
+    // OR for CSV mode, also consider pre-detention (pre_detention_start_time exists)
+    const isDetentionEvent = det || pre;
+    if (isDetentionEvent) {
+      if (live === true) this.detentionLive++;
+      else if (live === false) this.detentionDrop++;
+
+      const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
+      if (!isNil(scac)) this.detentionByScac.inc(scac);
+    }
 
     if (eventDt) {
       const mk = monthKey(eventDt, this.timezone);
@@ -1124,6 +1144,16 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     if (this.detention === 0 && this.preDetention === 0) {
       dataQualityFindings.push({ level: 'yellow', text: 'No detention signals found - module may not be configured.' });
       recs.push('Recommend a PM/Admin audit: confirm detention configuration, triggers, and report usage.');
+    }
+
+    // CSV mode warning about prevented detention data
+    if (this.isCSVMode && this.prevented === 0 && this.preDetention > 0) {
+      findings.push({
+        level: 'yellow',
+        text: 'CSV data does not capture "Prevented Detention" events. Use API mode or review the Detention Dashboard in YMS for prevention metrics.',
+        confidence: 'high',
+        confidenceReason: 'CSV exports typically only include detention events that occurred, not events that were prevented by early departure.'
+      });
     }
 
     // Calculate coverage for dqFactors
@@ -1258,8 +1288,8 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         pre_detention_count: this.preDetention,
         detention_count: this.detention,
         prevented_detention_count: this.prevented,
-        live_load_count: this.live,
-        drop_load_count: this.drop,
+        live_load_count: this.detentionLive,
+        drop_load_count: this.detentionDrop,
       },
       charts: [
         {
@@ -1284,27 +1314,45 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
             })),
           }
         },
-        {
-          id: 'detention_live_drop_and_top_scac',
-          title: 'Detention split + top SCAC',
-          kind: 'bar',
-          description: 'Live vs drop counts plus top carriers by occurrences.',
+        // Detention events by Live/Drop (pie chart)
+        ...(this.detentionLive + this.detentionDrop > 0 ? [{
+          id: 'detention_live_drop',
+          title: 'Detention events by load type',
+          kind: 'pie',
+          description: `Of ${this.detentionLive + this.detentionDrop} detention events, how many were live vs drop loads.`,
           data: {
-            labels: ['Live load', 'Drop load', ...this.topScac.top(5).map(x => x.key)],
+            labels: ['Live load', 'Drop load'],
             datasets: [{
-              label: 'Count',
-              data: [this.live, this.drop, ...this.topScac.top(5).map(x => x.value)]
+              label: 'Detention events',
+              data: [this.detentionLive, this.detentionDrop]
             }]
           },
           csv: {
-            columns: ['category', 'count'],
+            columns: ['load_type', 'detention_events'],
             rows: [
-              { category: 'Live load', count: this.live },
-              { category: 'Drop load', count: this.drop },
-              ...this.topScac.top(5).map(x => ({ category: `SCAC:${x.key}`, count: x.value })),
+              { load_type: 'Live load', detention_events: this.detentionLive },
+              { load_type: 'Drop load', detention_events: this.detentionDrop },
             ]
           }
-        }
+        }] : []),
+        // Detention events by carrier (bar chart)
+        ...(this.detentionByScac.map.size > 0 ? [{
+          id: 'detention_by_carrier',
+          title: 'Detention events by carrier',
+          kind: 'bar',
+          description: 'Top carriers with the most detention events.',
+          data: {
+            labels: this.detentionByScac.top(10).map(x => x.key),
+            datasets: [{
+              label: 'Detention events',
+              data: this.detentionByScac.top(10).map(x => x.value)
+            }]
+          },
+          csv: {
+            columns: ['carrier_scac', 'detention_events'],
+            rows: this.detentionByScac.top(10).map(x => ({ carrier_scac: x.key, detention_events: x.value }))
+          }
+        }] : [])
       ],
       findings,
       recommendations: recs,
@@ -2394,11 +2442,11 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
 }
 
 // ---------- Factory ----------
-export function createAnalyzers({ timezone, startDate, endDate, assumptions, onWarning }) {
+export function createAnalyzers({ timezone, startDate, endDate, assumptions, onWarning, isCSVMode = false }) {
   const base = { timezone, startDate, endDate, assumptions, onWarning };
   return {
     current_inventory: new CurrentInventoryAnalyzer(base),
-    detention_history: new DetentionHistoryAnalyzer(base),
+    detention_history: new DetentionHistoryAnalyzer({ ...base, isCSVMode }),
     dockdoor_history: new DockDoorHistoryAnalyzer(base),
     driver_history: new DriverHistoryAnalyzer(base),
     trailer_history: new TrailerHistoryAnalyzer(base),

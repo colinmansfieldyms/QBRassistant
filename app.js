@@ -1241,6 +1241,7 @@ async function runAssessment() {
         endDate: inputs.endDate,
         assumptions: inputs.assumptions,
         onWarning: (w) => addWarning(w),
+        isCSVMode: state.dataSource === 'csv',
       });
       mainThreadIngest = createMainThreadIngestQueue({
         analyzers,
@@ -1485,6 +1486,7 @@ async function runCSVAssessment() {
       endDate: null,
       assumptions: inputs.assumptions,
       onWarning: (w) => addWarning(w),
+      isCSVMode: true,
     });
 
     // Process all CSV files
