@@ -1115,43 +1115,37 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Track detention spend: detention time to departure time
-    // CSV has: "Detention Date", "Detention Time", "Departure Date", "Departure Time"
-    // API may have: detention_start_time, departure_datetime, etc.
+    // After CSV normalization: detention_start_time and departure_datetime are combined timestamps
+    // API mode: same fields exist directly
 
-    // Get detention datetime - prefer already-parsed `det`, else try combining date+time columns
-    let detDt = det;
-    if (!detDt) {
-      const detDate = firstPresent(row, ['Detention Date', 'detention_date', 'detention_start_date']);
-      const detTime = firstPresent(row, ['Detention Time', 'detention_time', 'detention_start_time_local']);
-      if (!isNil(detDate) && !isNil(detTime)) {
-        detDt = parseTimestamp(`${detDate} ${detTime}`, { timezone: this.timezone, treatAsLocal: true });
-      }
-    }
-
-    if (detDt) {
+    // Use already-parsed `det` for detention start (from detention_start_time)
+    if (det) {
       // Try to find departure datetime
-      // First try combined timestamp columns
+      // CSV normalization creates 'departure_datetime' from "Departure Date" + "Departure Time"
+      // API may have the same or similar fields
       const depRaw = firstPresent(row, [
-        'departure_datetime', 'depart_datetime', 'yard_out_time',
-        'left_yard_time', 'checkout_time', 'actual_departure_time'
+        'departure_datetime',  // CSV normalized field
+        'depart_datetime', 'yard_out_time', 'left_yard_time',
+        'checkout_time', 'actual_departure_time'
       ]);
 
       let depDt = null;
       if (depRaw) {
-        depDt = parseTimestamp(depRaw, { timezone: this.timezone, assumeUTC: true });
+        // CSV departure_datetime is in local time format like "12-04-2025 11:39"
+        depDt = parseTimestamp(depRaw, { timezone: this.timezone, treatAsLocal: true });
       }
 
-      // Fallback: try date + time separately (CSV format)
+      // Fallback: try separate date + time columns (in case normalization didn't happen)
       if (!depDt) {
-        const depDate = firstPresent(row, ['Departure Date', 'departure_date', 'depart_date', 'out_date']);
-        const depTime = firstPresent(row, ['Departure Time', 'departure_time', 'depart_time', 'out_time']);
+        const depDate = firstPresent(row, ['csv_departure_date', 'departure_date', 'depart_date', 'out_date']);
+        const depTime = firstPresent(row, ['csv_departure_time', 'departure_time', 'depart_time', 'out_time']);
         if (!isNil(depDate) && !isNil(depTime)) {
           depDt = parseTimestamp(`${depDate} ${depTime}`, { timezone: this.timezone, treatAsLocal: true });
         }
       }
 
-      if (depDt && depDt > detDt) {
-        const hours = depDt.diff(detDt, 'hours').hours;
+      if (depDt && depDt > det) {
+        const hours = depDt.diff(det, 'hours').hours;
         if (Number.isFinite(hours) && hours > 0) {
           this.detentionEventsWithDeparture++;
           this.totalDetentionHours += hours;
