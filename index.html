@@ -125,34 +125,68 @@
 
           <fieldset class="fieldset">
             <legend>ROI assumptions (optional)</legend>
-            <div class="assumptions">
-              <label class="field">
-                <span>Detention cost per hour</span>
-                <input id="assumptionDetention" type="number" min="0" step="0.01" placeholder="e.g., 75" />
-              </label>
-              <label class="field">
-                <span>Labor fully loaded rate per hour</span>
-                <input id="assumptionLabor" type="number" min="0" step="0.01" placeholder="e.g., 42" />
-              </label>
-              <label class="field">
-                <span>Target moves per driver per day</span>
-                <input id="assumptionTargetMoves" type="number" min="0" step="1" placeholder="50" />
-                <small>Default 50. Top performers can hit 80–100.</small>
-              </label>
-              <label class="field">
-                <span>Target turns per dock door per day</span>
-                <input id="assumptionTargetTurnsPerDoor" type="number" min="0" step="1" placeholder="e.g., 8" />
-                <small>How many trailer turns expected per dock door daily.</small>
-              </label>
-              <label class="field">
-                <span>Cost per dock door hour</span>
-                <input id="assumptionCostPerDockHour" type="number" min="0" step="0.01" placeholder="e.g., 50" />
-                <small>Operational cost per dock door per hour.</small>
-              </label>
-              <button id="recalcRoiBtn" class="btn btn-ghost small" type="button" disabled style="margin-top: 8px; font-size: 0.8rem; padding: 4px 10px;">
-                ♻️ ROI
-              </button>
+            <div class="roi-categories">
+
+              <!-- Detention Category -->
+              <details class="roi-category" id="roiDetention" data-reports="detention_history">
+                <summary class="roi-category-toggle">
+                  <span class="roi-category-title">Detention</span>
+                  <span class="roi-recommended-badge hidden" data-tooltip="">&#9733; Recommended</span>
+                  <span class="roi-category-chevron"></span>
+                </summary>
+                <div class="roi-category-content">
+                  <label class="field">
+                    <span>Detention cost per hour</span>
+                    <input id="assumptionDetention" type="number" min="0" step="0.01" placeholder="e.g., 75" />
+                  </label>
+                </div>
+              </details>
+
+              <!-- Driver Performance Category -->
+              <details class="roi-category" id="roiDriver" data-reports="driver_history">
+                <summary class="roi-category-toggle">
+                  <span class="roi-category-title">Driver Performance</span>
+                  <span class="roi-recommended-badge hidden" data-tooltip="">&#9733; Recommended</span>
+                  <span class="roi-category-chevron"></span>
+                </summary>
+                <div class="roi-category-content">
+                  <label class="field">
+                    <span>Labor fully loaded rate per hour</span>
+                    <input id="assumptionLabor" type="number" min="0" step="0.01" placeholder="e.g., 42" />
+                  </label>
+                  <label class="field">
+                    <span>Target moves per driver per day</span>
+                    <input id="assumptionTargetMoves" type="number" min="0" step="1" placeholder="50" />
+                    <small>Default 50. Top performers can hit 80–100.</small>
+                  </label>
+                </div>
+              </details>
+
+              <!-- Dock Door Utilization Category -->
+              <details class="roi-category" id="roiDockDoor" data-reports="dockdoor_history">
+                <summary class="roi-category-toggle">
+                  <span class="roi-category-title">Dock Door Utilization</span>
+                  <span class="roi-recommended-badge hidden" data-tooltip="">&#9733; Recommended</span>
+                  <span class="roi-category-chevron"></span>
+                </summary>
+                <div class="roi-category-content">
+                  <label class="field">
+                    <span>Target turns per dock door per day</span>
+                    <input id="assumptionTargetTurnsPerDoor" type="number" min="0" step="1" placeholder="e.g., 8" />
+                    <small>How many trailer turns expected per dock door daily.</small>
+                  </label>
+                  <label class="field">
+                    <span>Cost per dock door hour</span>
+                    <input id="assumptionCostPerDockHour" type="number" min="0" step="0.01" placeholder="e.g., 50" />
+                    <small>Operational cost per dock door per hour.</small>
+                  </label>
+                </div>
+              </details>
+
             </div>
+            <button id="recalcRoiBtn" class="btn btn-ghost small" type="button" disabled style="margin-top: 8px; font-size: 0.8rem; padding: 4px 10px;">
+              ♻️ ROI
+            </button>
           </fieldset>
         </div>
 

@@ -166,6 +166,146 @@ input:focus, textarea:focus, select:focus{
   gap:10px;
 }
 
+/* ROI Categories - Collapsible sections */
+.roi-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.roi-category {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.roi-category[open] {
+  background: var(--bg-secondary);
+}
+
+.roi-category-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  list-style: none;
+  user-select: none;
+}
+
+.roi-category-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.roi-category-title {
+  flex: 1;
+}
+
+.roi-category-chevron {
+  width: 16px;
+  height: 16px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.roi-category-chevron::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: translate(-50%, -50%) rotate(-45deg);
+  transition: transform 0.2s ease;
+}
+
+.roi-category[open] .roi-category-chevron::before {
+  transform: translate(-50%, -70%) rotate(45deg);
+}
+
+.roi-category-content {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.roi-category-content .field {
+  margin: 0;
+}
+
+/* Recommended Badge */
+.roi-recommended-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(234, 179, 8, 0.15);
+  color: #b45309;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: help;
+  position: relative;
+  white-space: nowrap;
+}
+
+.roi-recommended-badge.hidden {
+  display: none;
+}
+
+/* Recommended badge tooltip */
+.roi-recommended-badge:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  padding: 8px 10px;
+  background: var(--text);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  border-radius: 6px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.roi-recommended-badge:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--text);
+  z-index: 201;
+  pointer-events: none;
+}
+
+/* Adjust tooltip position when badge is near right edge */
+.roi-category:last-child .roi-recommended-badge:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.roi-category:last-child .roi-recommended-badge:hover::before {
+  left: auto;
+  right: 20px;
+  transform: none;
+}
+
 .row{ display:flex; align-items:center; }
 .gap-sm{ gap:8px; }
 .gap-md{ gap:10px; }

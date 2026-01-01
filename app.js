@@ -1652,6 +1652,56 @@ function setDataSource(source) {
   if (source === 'csv' && !state.csvImportState) {
     state.csvImportState = createCSVImportState();
   }
+
+  // Update ROI category recommendations based on new data source
+  updateROICategoryRecommendations();
+}
+
+// ---------- ROI Category Recommendations ----------
+/**
+ * Updates ROI category expand/collapse state and recommended badges
+ * based on uploaded CSV files (CSV mode) or selected report checkboxes (API mode).
+ */
+function updateROICategoryRecommendations() {
+  const categories = document.querySelectorAll('.roi-category');
+  if (!categories.length) return;
+
+  // Determine which reports are selected based on data source mode
+  let selectedReports = [];
+
+  if (state.dataSource === 'csv') {
+    // CSV mode: get reports from uploaded files
+    if (state.csvImportState) {
+      selectedReports = Object.keys(state.csvImportState.getFilesByReportType());
+    }
+  } else {
+    // API mode: get reports from checkboxes
+    const checks = document.querySelectorAll('.reportCheck:checked');
+    selectedReports = Array.from(checks).map(c => c.value);
+  }
+
+  categories.forEach(category => {
+    const reportTypes = (category.dataset.reports || '').split(',').map(r => r.trim());
+    const badge = category.querySelector('.roi-recommended-badge');
+    const isRelevant = reportTypes.some(r => selectedReports.includes(r));
+
+    if (isRelevant) {
+      // Expand category and show badge
+      category.open = true;
+      if (badge) {
+        badge.classList.remove('hidden');
+        // Build tooltip with specific report name(s)
+        const matchedReports = reportTypes.filter(r => selectedReports.includes(r));
+        const reportLabels = matchedReports.map(r => REPORT_TYPE_LABELS[r] || r).join(', ');
+        badge.dataset.tooltip = `You uploaded ${reportLabels}. Fill in these assumptions to calculate ROI.`;
+      }
+    } else {
+      // Hide badge but don't collapse (user may have manually opened)
+      if (badge) {
+        badge.classList.add('hidden');
+      }
+    }
+  });
 }
 
 function updateCSVFileList() {
@@ -1675,6 +1725,9 @@ function updateCSVFileList() {
       updateCSVFileList();
     });
   });
+
+  // Update ROI category recommendations based on uploaded files
+  updateROICategoryRecommendations();
 }
 
 async function handleCSVFileUpload(files) {
@@ -1741,6 +1794,11 @@ UI.mockModeToggle.addEventListener('change', () => {
 
 UI.timezoneSelect.addEventListener('change', () => {
   state.timezone = UI.timezoneSelect.value;
+});
+
+// Update ROI category recommendations when report checkboxes change (API mode)
+UI.reportChecks.forEach(check => {
+  check.addEventListener('change', updateROICategoryRecommendations);
 });
 
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
