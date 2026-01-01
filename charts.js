@@ -505,9 +505,9 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
   ]);
   wrap.appendChild(roiTitle);
 
-  if (!roi) {
+  if (!roi && !detentionSpend) {
     wrap.appendChild(el('div', { class: 'muted' }, ['ROI estimates not enabled (missing assumptions).']));
-  } else {
+  } else if (roi) {
     const box = el('div', { class: 'callout callout-info' });
     const est = roi.estimate;
     box.appendChild(el('div', { style: 'font-weight:900; color:var(--accent); margin-bottom:6px;' }, [roi.label]));

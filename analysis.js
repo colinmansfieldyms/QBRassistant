@@ -1250,6 +1250,16 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       recs.push('If drops are common, confirm drop workflow timestamps are being captured.');
     }
 
+    // Recommendations for all-Live or all-Drop detention events
+    const totalDetentionEvents = this.detentionLive + this.detentionDrop;
+    if (totalDetentionEvents > 0) {
+      if (this.detentionLive > 0 && this.detentionDrop === 0) {
+        recs.push('All detention events are for Live loads. Consider adding detention tracking for Drop loads.');
+      } else if (this.detentionDrop > 0 && this.detentionLive === 0) {
+        recs.push('All detention events are for Drop loads. Consider adding detention tracking for Live loads.');
+      }
+    }
+
     const dqBase = this.dataQualityScore();
     const dq = Math.round(0.6 * dqBase + 0.4 * coverage);
     const badge = scoreToBadge(dq);
