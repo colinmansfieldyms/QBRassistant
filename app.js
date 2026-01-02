@@ -65,6 +65,8 @@ const UI = {
   inputErrors: document.querySelector('#inputErrors'),
   progressPanel: document.querySelector('#progressPanel'),
   warningsPanel: document.querySelector('#warningsPanel'),
+  warningsSection: document.querySelector('#warningsSection'),
+  warningsBadge: document.querySelector('#warningsBadge'),
   resultsRoot: document.querySelector('#resultsRoot'),
   statusBanner: document.querySelector('#statusBanner'),
   downloadSummaryBtn: document.querySelector('#downloadSummaryBtn'),
@@ -326,6 +328,7 @@ function resetAll() {
 
   UI.progressPanel.innerHTML = `<div class="muted">No run yet.</div>`;
   UI.warningsPanel.textContent = 'None.';
+  updateWarningsBadge();
   UI.resultsRoot.innerHTML = `
     <div class="empty-state">
       <div class="empty-title">Ready when you are.</div>
@@ -540,6 +543,15 @@ function addWarning(msg) {
   const stamp = DateTime.now().setZone(state.timezone).toFormat('yyyy-LL-dd HH:mm:ss');
   state.warnings.push(`[${stamp}] ${msg}`);
   UI.warningsPanel.textContent = state.warnings.length ? state.warnings.join('\n') : 'None.';
+  updateWarningsBadge();
+}
+
+function updateWarningsBadge() {
+  const count = state.warnings.length;
+  if (UI.warningsBadge) {
+    UI.warningsBadge.textContent = count;
+    UI.warningsBadge.classList.toggle('hidden', count === 0);
+  }
 }
 
 // ---------- Perf instrumentation (lightweight, optional) ----------
@@ -1110,6 +1122,7 @@ async function runAssessment() {
   clearBanner();
   state.warnings = [];
   UI.warningsPanel.textContent = 'None.';
+  updateWarningsBadge();
 
   const inputs = {
     tenant: UI.tenantInput.value.trim(),
@@ -1417,6 +1430,7 @@ async function runCSVAssessment() {
   clearBanner();
   state.warnings = [];
   UI.warningsPanel.textContent = 'None.';
+  updateWarningsBadge();
 
   const inputs = {
     tenant: UI.tenantInput.value.trim(),

@@ -218,10 +218,14 @@
         <div id="perfPanel" class="perf-panel muted small">Disabled. Append <code>?perf=1</code> to enable lightweight instrumentation (no tokens/PII logged).</div>
       </section>
 
-      <section class="card">
-        <div class="card-title">Warnings</div>
+      <details class="card warnings-card" id="warningsSection">
+        <summary class="card-title warnings-toggle">
+          <span>Warnings</span>
+          <span class="warnings-badge hidden" id="warningsBadge">0</span>
+          <span class="warnings-chevron"></span>
+        </summary>
         <div id="warningsPanel" class="warnings-panel muted">None.</div>
-      </section>
+      </details>
     </aside>
 
     <!-- RIGHT COLUMN -->
