@@ -129,6 +129,61 @@ function chartConfigFromKind(kind, chartData, title, partialPeriodMode = 'includ
     };
   }
 
+  // Apply outlier styling (orange points for outlier indices)
+  if (kind === 'line' && chartData?.datasets?.some(ds => ds.outlierIndices?.length > 0)) {
+    processedData = {
+      ...processedData,
+      datasets: processedData.datasets.map(ds => {
+        const outlierIndices = ds.outlierIndices || [];
+        if (outlierIndices.length === 0) return ds;
+
+        const newDs = { ...ds };
+        const originalBgColor = newDs.backgroundColor || newDs.borderColor || '#3b82f6';
+
+        // Orange background for outlier points
+        newDs.pointBackgroundColor = ctx => {
+          // If there's already a pointBackgroundColor function (from partial period), compose with it
+          const baseColor = typeof ds.pointBackgroundColor === 'function'
+            ? ds.pointBackgroundColor(ctx)
+            : (ds.pointBackgroundColor || originalBgColor);
+          return outlierIndices.includes(ctx.dataIndex) ? '#f97316' : baseColor;
+        };
+
+        // Orange border for outlier points
+        newDs.pointBorderColor = ctx => {
+          const baseBorder = typeof ds.pointBorderColor === 'function'
+            ? ds.pointBorderColor(ctx)
+            : (ds.pointBorderColor || ds.borderColor || originalBgColor);
+          return outlierIndices.includes(ctx.dataIndex) ? '#ea580c' : baseBorder;
+        };
+
+        return newDs;
+      })
+    };
+  }
+
+  // Build tooltip callback for outlier indication
+  const hasOutliers = chartData?.datasets?.some(ds => ds.outlierIndices?.length > 0);
+  const tooltipCallback = hasOutliers ? {
+    label: function(context) {
+      const ds = context.dataset;
+      const outlierIndices = ds.outlierIndices || [];
+      const isOutlier = outlierIndices.includes(context.dataIndex);
+
+      let label = ds.label || '';
+      if (label) label += ': ';
+      if (context.parsed.y != null) {
+        label += context.parsed.y.toLocaleString();
+      }
+
+      if (isOutlier) {
+        label += ' - Outlier';
+      }
+
+      return label;
+    }
+  } : {};
+
   const base = {
     type: kind === 'pie' ? 'pie' : (kind === 'bar' ? 'bar' : 'line'),
     data: processedData,
@@ -137,7 +192,8 @@ function chartConfigFromKind(kind, chartData, title, partialPeriodMode = 'includ
       maintainAspectRatio: false,
       plugins: {
         legend: { display: true, position: 'bottom' },
-        title: { display: false, text: title }
+        title: { display: false, text: title },
+        tooltip: { callbacks: tooltipCallback }
       },
       scales: (kind === 'pie') ? {} : {
         x: { ticks: { maxRotation: 0, autoSkip: true } },

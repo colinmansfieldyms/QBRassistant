@@ -1673,6 +1673,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const timeLabel = useGranularity.granularity;
     const chartGranularityLabel = useGranularity.label;
 
+    // Detect outliers in dwell and process time series
+    const dwellOutliers = detectOutliersIQR(dwellSeries.labels, dwellSeries.median);
+    const processOutliers = detectOutliersIQR(processSeries.labels, processSeries.median);
+
     const requesterTop = this.moveRequestedBy.top(8);
     const processorTop = this.processedBy.top(8);
 
@@ -1711,6 +1715,59 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const turnsCounts = turnsLabels.map(k => turnsData.map.get(k) || 0);
     const doorsCounts = turnsLabels.map(k => doorsData.get(k)?.size || 0);
 
+    // Add outlier findings if detected
+    if (dwellOutliers.hasOutliers) {
+      const outlierCount = dwellOutliers.outlierLabels.length;
+      const outlierDates = dwellOutliers.outlierLabels.slice(0, 3).join(', ') +
+        (outlierCount > 3 ? ` (+${outlierCount - 3} more)` : '');
+      const maxOutlier = Math.max(...dwellOutliers.outlierValues);
+      const maxOutlierHours = Math.round(maxOutlier / 60 * 10) / 10;
+
+      findings.push({
+        level: 'yellow',
+        text: `Detected ${outlierCount} outlier ${timeLabel}(s) with unusually high dwell times: ${outlierDates}. ` +
+          `Peak: ${Math.round(maxOutlier).toLocaleString()} min (~${maxOutlierHours.toLocaleString()} hrs). ` +
+          `Median excluding outliers: ~${Math.round(dwellOutliers.medianWithoutOutliers)} min ` +
+          `(vs ~${Math.round(dwellOutliers.medianWithOutliers)} min with outliers).`,
+        confidence: 'high',
+        confidenceReason: generateConfidenceReason('high', {
+          ...dqFactors,
+          isThresholdBased: true
+        })
+      });
+      recs.push('Investigate trailers with extended dwell times (>24 hrs). Common causes: storage trailers, missed check-outs, or workflow gaps.');
+    }
+
+    if (processOutliers.hasOutliers) {
+      const outlierCount = processOutliers.outlierLabels.length;
+      const outlierDates = processOutliers.outlierLabels.slice(0, 3).join(', ') +
+        (outlierCount > 3 ? ` (+${outlierCount - 3} more)` : '');
+      const maxOutlier = Math.max(...processOutliers.outlierValues);
+      const maxOutlierHours = Math.round(maxOutlier / 60 * 10) / 10;
+
+      findings.push({
+        level: 'yellow',
+        text: `Detected ${outlierCount} outlier ${timeLabel}(s) with unusually high process times: ${outlierDates}. ` +
+          `Peak: ${Math.round(maxOutlier).toLocaleString()} min (~${maxOutlierHours.toLocaleString()} hrs). ` +
+          `Median excluding outliers: ~${Math.round(processOutliers.medianWithoutOutliers)} min ` +
+          `(vs ~${Math.round(processOutliers.medianWithOutliers)} min with outliers).`,
+        confidence: 'high',
+        confidenceReason: generateConfidenceReason('high', {
+          ...dqFactors,
+          isThresholdBased: true
+        })
+      });
+    }
+
+    // Compute unified labels for the chart and map outlier indices
+    const unifiedLabels = unionSorted(dwellSeries.labels, processSeries.labels);
+    const dwellOutlierIndicesInUnified = dwellOutliers.outlierLabels
+      .map(label => unifiedLabels.indexOf(label))
+      .filter(idx => idx >= 0);
+    const processOutlierIndicesInUnified = processOutliers.outlierLabels
+      .map(label => unifiedLabels.indexOf(label))
+      .filter(idx => idx >= 0);
+
     return {
       report: 'dockdoor_history',
       meta,
@@ -1741,19 +1798,23 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
           title: `Median dwell & process times (${chartGranularityLabel})`,
           kind: 'line',
           description: `Median minutes per ${timeLabel} (streaming quantile estimation).`,
+          outlierInfo: {
+            dwell: dwellOutliers,
+            process: processOutliers
+          },
           data: {
-            labels: unionSorted(dwellSeries.labels, processSeries.labels),
+            labels: unifiedLabels,
             datasets: [
-              { label: 'Dwell median (min)', data: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), dwellSeries.labels, dwellSeries.median) },
-              { label: 'Process median (min)', data: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), processSeries.labels, processSeries.median) },
+              { label: 'Dwell median (min)', data: alignSeries(unifiedLabels, dwellSeries.labels, dwellSeries.median), outlierIndices: dwellOutlierIndicesInUnified },
+              { label: 'Process median (min)', data: alignSeries(unifiedLabels, processSeries.labels, processSeries.median), outlierIndices: processOutlierIndicesInUnified },
             ]
           },
           csv: {
             columns: [timeLabel, 'dwell_median_min', 'process_median_min', 'timezone'],
-            rows: unionSorted(dwellSeries.labels, processSeries.labels).map((m, i) => ({
+            rows: unifiedLabels.map((m, i) => ({
               [timeLabel]: m,
-              dwell_median_min: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), dwellSeries.labels, dwellSeries.median)[i],
-              process_median_min: alignSeries(unionSorted(dwellSeries.labels, processSeries.labels), processSeries.labels, processSeries.median)[i],
+              dwell_median_min: alignSeries(unifiedLabels, dwellSeries.labels, dwellSeries.median)[i],
+              process_median_min: alignSeries(unifiedLabels, processSeries.labels, processSeries.median)[i],
               timezone: meta.timezone
             }))
           }
@@ -3237,6 +3298,136 @@ export function detectPartialPeriodsForSeries(labels, values) {
   if (Number.isFinite(lastVal) && lastVal < threshold) {
     result.lastPartial = true;
   }
+
+  return result;
+}
+
+/**
+ * Interpolate value at a fractional index in a sorted array.
+ * @param {number[]} arr - Sorted array of numbers
+ * @param {number} idx - Fractional index
+ * @returns {number}
+ */
+function interpolateAtIndex(arr, idx) {
+  const lower = Math.floor(idx);
+  const upper = Math.ceil(idx);
+  if (lower === upper || upper >= arr.length) return arr[Math.min(lower, arr.length - 1)];
+  const weight = idx - lower;
+  return arr[lower] * (1 - weight) + arr[upper] * weight;
+}
+
+/**
+ * Calculate median of an array of numbers.
+ * @param {number[]} values - Array of numbers
+ * @returns {number|null}
+ */
+function calculateMedianSimple(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+/**
+ * Detect outliers in a time series using IQR method + absolute threshold.
+ * A value is an outlier if:
+ *   - It exceeds Q3 + 1.5*IQR (statistical outlier), OR
+ *   - It exceeds the absolute threshold (e.g., 1440 min = 24 hours)
+ *
+ * @param {string[]} labels - Time labels
+ * @param {number[]} values - Data values corresponding to labels
+ * @param {object} options - Detection options
+ * @param {number} options.absoluteThreshold - Absolute max value (default: 1440 min = 24hrs)
+ * @param {number} options.iqrMultiplier - IQR multiplier for outlier fence (default: 1.5)
+ * @returns {{
+ *   hasOutliers: boolean,
+ *   outlierIndices: number[],
+ *   outlierLabels: string[],
+ *   outlierValues: number[],
+ *   q1: number|null,
+ *   q3: number|null,
+ *   iqr: number|null,
+ *   upperFence: number|null,
+ *   medianWithoutOutliers: number|null,
+ *   medianWithOutliers: number|null
+ * }}
+ */
+export function detectOutliersIQR(labels, values, options = {}) {
+  const {
+    absoluteThreshold = 1440, // 24 hours in minutes
+    iqrMultiplier = 1.5
+  } = options;
+
+  const result = {
+    hasOutliers: false,
+    outlierIndices: [],
+    outlierLabels: [],
+    outlierValues: [],
+    q1: null,
+    q3: null,
+    iqr: null,
+    upperFence: null,
+    medianWithoutOutliers: null,
+    medianWithOutliers: null
+  };
+
+  if (!labels || !values || labels.length === 0) {
+    return result;
+  }
+
+  // Filter valid values with their indices
+  const validPairs = labels
+    .map((label, i) => ({ label, value: values[i], index: i }))
+    .filter(p => Number.isFinite(p.value) && p.value >= 0);
+
+  if (validPairs.length < 4) {
+    // Not enough data points for IQR-based detection
+    return result;
+  }
+
+  // Sort values to compute quartiles
+  const sortedValues = [...validPairs].map(p => p.value).sort((a, b) => a - b);
+  const n = sortedValues.length;
+
+  // Calculate Q1 and Q3 using linear interpolation
+  const q1Idx = (n - 1) * 0.25;
+  const q3Idx = (n - 1) * 0.75;
+
+  const q1 = interpolateAtIndex(sortedValues, q1Idx);
+  const q3 = interpolateAtIndex(sortedValues, q3Idx);
+  const iqr = q3 - q1;
+  const upperFence = q3 + iqrMultiplier * iqr;
+
+  result.q1 = Math.round(q1 * 10) / 10;
+  result.q3 = Math.round(q3 * 10) / 10;
+  result.iqr = Math.round(iqr * 10) / 10;
+  result.upperFence = Math.round(upperFence * 10) / 10;
+
+  // Identify outliers
+  const nonOutlierValues = [];
+
+  for (const p of validPairs) {
+    const isStatisticalOutlier = p.value > upperFence;
+    const isAbsoluteOutlier = p.value > absoluteThreshold;
+
+    if (isStatisticalOutlier || isAbsoluteOutlier) {
+      result.outlierIndices.push(p.index);
+      result.outlierLabels.push(p.label);
+      result.outlierValues.push(p.value);
+    } else {
+      nonOutlierValues.push(p.value);
+    }
+  }
+
+  result.hasOutliers = result.outlierIndices.length > 0;
+
+  // Calculate medians with and without outliers
+  result.medianWithOutliers = calculateMedianSimple(validPairs.map(p => p.value));
+  result.medianWithoutOutliers = nonOutlierValues.length > 0
+    ? calculateMedianSimple(nonOutlierValues)
+    : result.medianWithOutliers;
 
   return result;
 }
