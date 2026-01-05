@@ -838,7 +838,11 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
           rows: Object.entries(moveTypeTop).map(([k, v]) => ({ move_type_name: k, count: v })),
         }
       },
-      {
+    ];
+
+    // Add updated_at recency chart for API mode only (not CSV)
+    if (!this.hasCSVYardAge) {
+      charts.push({
         id: 'updated_recency_buckets',
         title: 'Updated_at recency buckets',
         kind: 'bar',
@@ -851,10 +855,10 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
           columns: ['bucket', 'count'],
           rows: updatedSeries,
         }
-      }
-    ];
+      });
+    }
 
-    // Add yard-age chart for CSV mode
+    // Add yard-age chart for CSV mode only
     if (this.hasCSVYardAge) {
       const yardAgeSeries = Object.entries(this.yardAgeBuckets)
         .filter(([k]) => k !== 'unknown')
