@@ -328,6 +328,159 @@ function closeChartFullscreen() {
   }
 }
 
+// ---------- Drill-Down Modal ----------
+let drilldownModal = null;
+
+function createDrilldownModal() {
+  const modal = el('div', { class: 'drilldown-modal' });
+  const content = el('div', { class: 'drilldown-modal-content' });
+
+  const header = el('div', { class: 'drilldown-modal-header' });
+  const title = el('h3', { class: 'drilldown-modal-title' });
+  const closeBtn = el('button', { class: 'drilldown-modal-close', type: 'button' }, ['×']);
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+
+  const tableWrap = el('div', { class: 'drilldown-table-wrap' });
+
+  const footer = el('div', { class: 'drilldown-modal-footer' });
+  const exportBtn = el('button', { class: 'btn', type: 'button' }, ['Export CSV']);
+  footer.appendChild(exportBtn);
+
+  content.appendChild(header);
+  content.appendChild(tableWrap);
+  content.appendChild(footer);
+  modal.appendChild(content);
+
+  document.body.appendChild(modal);
+
+  return { modal, title, tableWrap, exportBtn, closeBtn };
+}
+
+function openDrilldownModal(label, rows, drilldownConfig) {
+  if (!drilldownModal) {
+    drilldownModal = createDrilldownModal();
+
+    // Close on background click
+    drilldownModal.modal.addEventListener('click', (e) => {
+      if (e.target === drilldownModal.modal) {
+        closeDrilldownModal();
+      }
+    });
+
+    // Close button
+    drilldownModal.closeBtn.addEventListener('click', closeDrilldownModal);
+
+    // ESC key to close
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && drilldownModal.modal.classList.contains('active')) {
+        closeDrilldownModal();
+      }
+    });
+  }
+
+  // Set title
+  drilldownModal.title.textContent = `Details for: ${label} (${rows.length} records)`;
+
+  // Build sortable table
+  const columns = drilldownConfig.columns || [];
+  const columnLabels = drilldownConfig.columnLabels || columns;
+
+  // Track sort state
+  let sortColumn = null;
+  let sortAscending = true;
+  let sortedRows = [...rows];
+
+  function renderTable() {
+    drilldownModal.tableWrap.innerHTML = '';
+
+    const table = el('table', { class: 'drilldown-table' });
+    const thead = el('thead');
+    const headerRow = el('tr');
+
+    columnLabels.forEach((colLabel, idx) => {
+      const col = columns[idx];
+      const isSorted = sortColumn === col;
+      const sortIndicator = isSorted ? (sortAscending ? ' ▲' : ' ▼') : '';
+      const th = el('th', {
+        class: 'drilldown-th sortable',
+        onClick: () => {
+          if (sortColumn === col) {
+            sortAscending = !sortAscending;
+          } else {
+            sortColumn = col;
+            sortAscending = true;
+          }
+          // Sort rows
+          sortedRows = [...rows].sort((a, b) => {
+            const valA = a[col];
+            const valB = b[col];
+            // Handle numeric vs string
+            if (typeof valA === 'number' && typeof valB === 'number') {
+              return sortAscending ? valA - valB : valB - valA;
+            }
+            const strA = String(valA ?? '').toLowerCase();
+            const strB = String(valB ?? '').toLowerCase();
+            return sortAscending ? strA.localeCompare(strB) : strB.localeCompare(strA);
+          });
+          renderTable();
+        }
+      }, [colLabel + sortIndicator]);
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = el('tbody');
+    for (const row of sortedRows) {
+      const tr = el('tr');
+      for (const col of columns) {
+        const value = row[col];
+        const displayValue = value === '' || value === null || value === undefined ? '—' : String(value);
+        tr.appendChild(el('td', {}, [displayValue]));
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    drilldownModal.tableWrap.appendChild(table);
+  }
+
+  renderTable();
+
+  // Export button
+  drilldownModal.exportBtn.onclick = () => {
+    const csvLines = [];
+    csvLines.push(columnLabels.join(','));
+    for (const row of sortedRows) {
+      const values = columns.map(col => {
+        const val = row[col];
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        // Escape quotes and wrap in quotes if contains comma or quote
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      });
+      csvLines.push(values.join(','));
+    }
+    const csvText = csvLines.join('\n');
+    const filename = `drilldown_${label.replace(/[^a-z0-9]/gi, '_')}.csv`;
+    downloadText(filename, csvText);
+  };
+
+  // Show modal
+  drilldownModal.modal.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeDrilldownModal() {
+  if (!drilldownModal) return;
+  drilldownModal.modal.classList.remove('active');
+  document.body.style.overflow = '';
+}
+
 export function renderReportResult({
   report,
   result,
@@ -335,6 +488,7 @@ export function renderReportResult({
   dateRange,
   partialPeriodInfo,
   partialPeriodMode = 'include',
+  enableDrilldown = true,
   onWarning,
   chartRegistry,
 }) {
@@ -437,10 +591,20 @@ export function renderReportResult({
       }, ['⬇ CSV']),
     ]);
 
-    const title = el('div', { class: 'chart-title' }, [
-      el('b', {}, [def.title]),
-      actions
-    ]);
+    // Drilldown indicator
+    const hasDrilldown = enableDrilldown && def.drilldown && def.drilldown.byLabel;
+    const drilldownIndicator = hasDrilldown
+      ? el('span', {
+          class: 'drilldown-indicator',
+          title: 'Click chart elements to view details'
+        }, ['🔍'])
+      : null;
+
+    const titleContent = [el('b', {}, [def.title])];
+    if (drilldownIndicator) titleContent.push(drilldownIndicator);
+    titleContent.push(actions);
+
+    const title = el('div', { class: 'chart-title' }, titleContent);
 
     const desc = def.description ? el('div', { class: 'muted small', style: 'margin-bottom:8px;' }, [def.description]) : null;
 
@@ -452,6 +616,36 @@ export function renderReportResult({
 
     // Render chart
     const cfg = chartConfigFromKind(def.kind, chartData, def.title, partialPeriodMode);
+
+    // Add onClick handler for drilldown if enabled
+    if (hasDrilldown) {
+      cfg.options = cfg.options || {};
+      cfg.options.onClick = (event, elements, chart) => {
+        if (!elements.length) return;
+
+        const element = elements[0];
+        const datasetIndex = element.datasetIndex;
+        const dataIndex = element.index;
+        const label = chart.data.labels[dataIndex];
+
+        // For outlierOnly charts (like dock door), only allow click on outlier points
+        if (def.drilldown.outlierOnly) {
+          const dataset = chart.data.datasets[datasetIndex];
+          if (!dataset.outlierIndices?.includes(dataIndex)) {
+            return; // Not an outlier point, ignore click
+          }
+        }
+
+        const rows = def.drilldown.byLabel[label];
+        if (rows && rows.length > 0) {
+          openDrilldownModal(label, rows, def.drilldown);
+        }
+      };
+
+      // Set cursor to pointer for clickable elements
+      canvas.style.cursor = 'pointer';
+    }
+
     const chart = new window.Chart(canvas.getContext('2d'), cfg);
     handles.push({ id: def.id, chart, def, canvas });
   }

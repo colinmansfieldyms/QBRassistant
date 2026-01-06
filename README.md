@@ -127,6 +127,14 @@ Access via the gear icon to configure:
 - **Trim partial periods** - Remove incomplete first/last periods from charts
 - **Highlight partial periods** - Show all data but visually distinguish partial periods
 
+**Drill-Down** - When enabled (default), clicking on chart elements (bars, pie segments, or outlier points) opens a modal showing the underlying records. Available on select high-value charts:
+- **Current Inventory** - Yard age buckets show trailer #, SCAC, age, and location
+- **Trailer History** - Top carriers by lost events show trailer #, event date, and event type
+- **Detention History** - Detention by carrier shows trailer #, detention hours, and date
+- **Dock Door History** - Outlier points show trailer #, dwell time, and check-in/out times
+
+Charts with drill-down capability display a 🔍 icon in the title. The drill-down modal includes sortable columns and an "Export CSV" button to export just that subset of data.
+
 ### Web Worker
 
 **Processing Mode** - Enable background processing for large datasets to keep the UI responsive. Recommended for most use cases.

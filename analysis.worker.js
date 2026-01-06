@@ -61,7 +61,7 @@ function buildResults(run) {
 }
 
 function handleInit(data) {
-  const { runId, timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled, partialEmitIntervalMs } = data;
+  const { runId, timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled, partialEmitIntervalMs, enableDrilldown } = data;
   if (!runId) return;
 
   const adaptive = createAdaptiveState();
@@ -72,7 +72,7 @@ function handleInit(data) {
 
   const run = {
     analyzers: null,
-    config: { timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled },
+    config: { timezone, startDate, endDate, assumptions, selectedReports, facilities, tenant, roiEnabled, enableDrilldown },
     warnings: [],
     warningBuffer: [],
     totalRowsProcessed: 0,
@@ -90,6 +90,7 @@ function handleInit(data) {
     endDate,
     assumptions,
     onWarning: (msg) => bufferWarning(run, msg),
+    enableDrilldown,
   });
 
   runs.set(runId, run);

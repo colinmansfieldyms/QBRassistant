@@ -751,6 +751,9 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     this.yardAgeBuckets = { '0-1d': 0, '1-7d': 0, '7-30d': 0, '30d+': 0, 'unknown': 0 };
     this.hasCSVYardAge = false;
 
+    // Drilldown data for yard-age buckets (only collected when enableDrilldown is true)
+    this.yardAgeDrilldown = { '0-1d': [], '1-7d': [], '7-30d': [], '30d+': [] };
+
     this.moveType = new CounterMap();
     this.outbound = 0;
     this.inbound = 0;
@@ -812,13 +815,24 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     if (row.csv_elapsed_hours !== undefined && row.csv_elapsed_hours !== null && row.csv_elapsed_hours !== '') {
       this.hasCSVYardAge = true;
       const hours = parseFloat(row.csv_elapsed_hours);
+      let bucket = null;
       if (Number.isFinite(hours) && hours >= 0) {
-        if (hours <= 24) this.yardAgeBuckets['0-1d']++;
-        else if (hours <= 168) this.yardAgeBuckets['1-7d']++;
-        else if (hours <= 720) this.yardAgeBuckets['7-30d']++;
-        else this.yardAgeBuckets['30d+']++;
+        if (hours <= 24) bucket = '0-1d';
+        else if (hours <= 168) bucket = '1-7d';
+        else if (hours <= 720) bucket = '7-30d';
+        else bucket = '30d+';
+        this.yardAgeBuckets[bucket]++;
       } else {
         this.yardAgeBuckets['unknown']++;
+      }
+
+      // Collect drilldown data if enabled
+      if (bucket && this.enableDrilldown) {
+        const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
+        const scac = safeStr(row.scac ?? row.carrier_scac ?? row.scac_code ?? '');
+        const location = safeStr(row.location_name || row.parking_spot || row.spot || '');
+        const ageDays = Math.round(hours / 24 * 10) / 10;
+        this.yardAgeDrilldown[bucket].push({ trailer, scac, ageDays, location });
       }
     }
   }
@@ -865,6 +879,14 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         .filter(([k]) => k !== 'unknown')
         .map(([bucket, count]) => ({ bucket, count }));
 
+      // Build drilldown data by bucket label
+      const drilldown = this.enableDrilldown ? {} : null;
+      if (drilldown) {
+        yardAgeSeries.forEach(({ bucket }) => {
+          drilldown[bucket] = this.yardAgeDrilldown[bucket] || [];
+        });
+      }
+
       charts.push({
         id: 'yard_age_distribution',
         title: 'Trailer yard-age distribution',
@@ -877,7 +899,12 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         csv: {
           columns: ['yard_age_bucket', 'count'],
           rows: yardAgeSeries.map(r => ({ yard_age_bucket: r.bucket, count: r.count })),
-        }
+        },
+        drilldown: drilldown ? {
+          columns: ['trailer', 'scac', 'ageDays', 'location'],
+          columnLabels: ['Trailer #', 'SCAC', 'Age (days)', 'Location'],
+          byLabel: drilldown
+        } : null
       });
     }
 
@@ -1061,6 +1088,9 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // Track SCAC ONLY for detention events (for the carrier bar chart)
     this.detentionByScac = new CounterMap();
 
+    // Drilldown data for detention by carrier (only collected when enableDrilldown is true)
+    this.detentionByScacDrilldown = new Map(); // carrier -> array of { trailer, detentionHours, detentionDate }
+
     // Detention spend tracking
     this.detentionEventsWithDeparture = 0;
     this.totalDetentionHours = 0;
@@ -1100,7 +1130,27 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       else if (live === false) this.detentionDrop++;
 
       const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
-      if (!isNil(scac)) this.detentionByScac.inc(scac);
+      if (!isNil(scac)) {
+        this.detentionByScac.inc(scac);
+
+        // Collect drilldown data if enabled
+        if (this.enableDrilldown) {
+          const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
+          const detentionDate = (det || pre)?.toFormat('yyyy-MM-dd HH:mm') || '';
+          // Calculate detention hours if departure info available
+          let detentionHours = '';
+          const detentionDuration = row.detention_hours || row.detention_time_hours;
+          if (detentionDuration !== undefined && detentionDuration !== null) {
+            detentionHours = parseFloat(detentionDuration);
+            if (!Number.isFinite(detentionHours)) detentionHours = '';
+            else detentionHours = Math.round(detentionHours * 10) / 10;
+          }
+          if (!this.detentionByScacDrilldown.has(scac)) {
+            this.detentionByScacDrilldown.set(scac, []);
+          }
+          this.detentionByScacDrilldown.get(scac).push({ trailer, detentionHours, detentionDate });
+        }
+      }
     }
 
     if (eventDt) {
@@ -1391,7 +1441,14 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
           csv: {
             columns: ['carrier_scac', 'detention_events'],
             rows: this.detentionByScac.top(10).map(x => ({ carrier_scac: x.key, detention_events: x.value }))
-          }
+          },
+          drilldown: this.enableDrilldown ? {
+            columns: ['trailer', 'detentionHours', 'detentionDate'],
+            columnLabels: ['Trailer #', 'Detention Hours', 'Detention Date'],
+            byLabel: Object.fromEntries(
+              this.detentionByScac.top(10).map(x => [x.key, this.detentionByScacDrilldown.get(x.key) || []])
+            )
+          } : null
         }] : [])
       ],
       findings,
@@ -1442,6 +1499,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     this.doorsByDay = new Map();   // day -> Set<door>
     this.doorsByWeek = new Map();  // week -> Set<door>
     this.doorsByMonth = new Map(); // month -> Set<door>
+
+    // Drilldown data for outlier days (only collected when enableDrilldown is true)
+    // Stores all records by day so we can show details when clicking outlier points
+    this.recordsByDay = new Map(); // day -> array of { trailer, dwellMins, checkIn, checkOut }
   }
 
   getEstimators(map, key) {
@@ -1481,6 +1542,18 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         this.getEstimators(this.dwellByMonth, mk).median.add(mins);
         this.getEstimators(this.dwellByWeek, wk).median.add(mins);
         this.getEstimators(this.dwellByDay, dk).median.add(mins);
+
+        // Collect drilldown data if enabled (store by day for outlier lookup)
+        if (this.enableDrilldown) {
+          const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
+          const checkIn = dwellStart.toFormat('yyyy-MM-dd HH:mm');
+          const checkOut = dwellEnd.toFormat('yyyy-MM-dd HH:mm');
+          const dwellMins = Math.round(mins);
+          if (!this.recordsByDay.has(dk)) {
+            this.recordsByDay.set(dk, []);
+          }
+          this.recordsByDay.get(dk).push({ trailer, dwellMins, checkIn, checkOut });
+        }
       }
     }
     this.dwellCoverage.total++;
@@ -1824,7 +1897,16 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
               process_median_min: alignSeries(unifiedLabels, processSeries.labels, processSeries.median)[i],
               timezone: meta.timezone
             }))
-          }
+          },
+          // Drilldown for outlier points - only for days with outliers
+          drilldown: this.enableDrilldown && dwellOutliers.hasOutliers ? {
+            columns: ['trailer', 'dwellMins', 'checkIn', 'checkOut'],
+            columnLabels: ['Trailer #', 'Dwell (min)', 'Check-In', 'Check-Out'],
+            byLabel: Object.fromEntries(
+              dwellOutliers.outlierLabels.map(label => [label, this.recordsByDay.get(label) || []])
+            ),
+            outlierOnly: true // Flag to indicate only outlier points are clickable
+          } : null
         },
         {
           id: useProcessedByChart ? 'top_processed_by' : 'top_move_requested_by',
@@ -2262,6 +2344,9 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     this.yardCheckInsertByDay = new CounterMap();
     this.spotEditedByDay = new CounterMap();
     this.facilityEditedByDay = new CounterMap();
+
+    // Drilldown data for lost events by carrier (only collected when enableDrilldown is true)
+    this.lostByCarrierDrilldown = new Map(); // carrier -> array of { trailer, eventDate, eventType }
   }
 
   ingest({ row }) {
@@ -2285,6 +2370,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     if (isLost) {
       this.lostCount++;
       this.errorCounts.trailer_marked_lost++;
+      const carrierKey = isNil(carrier) ? 'Unknown' : carrier;
       if (!isNil(carrier)) this.lostByCarrier.inc(carrier);
       if (dt) {
         const dk = dayKey(dt, this.timezone);
@@ -2293,6 +2379,16 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         this.byDay.inc(dk);
         this.errorsByPeriod.inc(dk);
         this.lostByDay.inc(dk);
+      }
+
+      // Collect drilldown data if enabled
+      if (this.enableDrilldown) {
+        const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || row.trailer || '');
+        const eventDate = dt ? dt.toFormat('yyyy-MM-dd HH:mm') : '';
+        if (!this.lostByCarrierDrilldown.has(carrierKey)) {
+          this.lostByCarrierDrilldown.set(carrierKey, []);
+        }
+        this.lostByCarrierDrilldown.get(carrierKey).push({ trailer, eventDate, eventType: event });
       }
     }
 
@@ -2514,7 +2610,14 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
           csv: {
             columns: ['carrier_scac', 'lost_events'],
             rows: topCarriers.map(x => ({ carrier_scac: x.key, lost_events: x.value }))
-          }
+          },
+          drilldown: this.enableDrilldown ? {
+            columns: ['trailer', 'eventDate', 'eventType'],
+            columnLabels: ['Trailer #', 'Event Date', 'Event Type'],
+            byLabel: Object.fromEntries(
+              topCarriers.map(x => [x.key, this.lostByCarrierDrilldown.get(x.key) || []])
+            )
+          } : null
         }
       ],
       findings,
@@ -2544,8 +2647,8 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
 }
 
 // ---------- Factory ----------
-export function createAnalyzers({ timezone, startDate, endDate, assumptions, onWarning, isCSVMode = false }) {
-  const base = { timezone, startDate, endDate, assumptions, onWarning };
+export function createAnalyzers({ timezone, startDate, endDate, assumptions, onWarning, isCSVMode = false, enableDrilldown = true }) {
+  const base = { timezone, startDate, endDate, assumptions, onWarning, enableDrilldown };
   return {
     current_inventory: new CurrentInventoryAnalyzer(base),
     detention_history: new DetentionHistoryAnalyzer({ ...base, isCSVMode }),

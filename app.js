@@ -117,6 +117,8 @@ const UI = {
   partialPeriodInfoText: document.querySelector('#partialPeriodInfoText'),
   partialGranularityLabels: document.querySelectorAll('.partial-granularity-label'),
   partialTrimGranularity: document.querySelector('#partialTrimGranularity'),
+  // Drill-down
+  drilldownToggle: document.querySelector('#drilldownToggle'),
 };
 
 const state = {
@@ -141,6 +143,7 @@ const state = {
   csvProgress: {}, // CSV processing progress
   partialPeriodMode: 'include', // 'include' | 'trim' | 'highlight'
   partialPeriodInfo: null, // Global partial period detection result
+  enableDrilldown: true, // Enable drill-down on charts
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -998,6 +1001,7 @@ function renderAllResults() {
       dateRange: { startDate: inputs.startDate, endDate: inputs.endDate },
       partialPeriodInfo: state.partialPeriodInfo,
       partialPeriodMode: state.partialPeriodMode,
+      enableDrilldown: state.enableDrilldown,
       onDownloadChartPng: ({ filename, dataUrl }) => {
         // handled in charts.js button wiring; keeping hook for future
       },
@@ -1232,6 +1236,7 @@ async function runAssessment() {
             tenant: inputs.tenant,
             roiEnabled,
             partialEmitIntervalMs: bpConfig.partialUpdateInterval,
+            enableDrilldown: state.enableDrilldown,
           });
           if (workerRun && workerRuntime.worker) {
             workerBatcher = createWorkerBatcher({
@@ -1255,6 +1260,7 @@ async function runAssessment() {
         assumptions: inputs.assumptions,
         onWarning: (w) => addWarning(w),
         isCSVMode: state.dataSource === 'csv',
+        enableDrilldown: state.enableDrilldown,
       });
       mainThreadIngest = createMainThreadIngestQueue({
         analyzers,
@@ -1501,6 +1507,7 @@ async function runCSVAssessment() {
       assumptions: inputs.assumptions,
       onWarning: (w) => addWarning(w),
       isCSVMode: true,
+      enableDrilldown: state.enableDrilldown,
     });
 
     // Process all CSV files
@@ -1841,6 +1848,7 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
       onWarning: addWarning,
       partialPeriodMode,
       partialPeriodInfo: state.partialPeriodInfo,
+      enableDrilldown: state.enableDrilldown,
       chartRegistry: state.chartRegistry,
     });
     UI.resultsRoot.appendChild(card);
@@ -2125,6 +2133,16 @@ function initPartialPeriodHandling() {
   });
 }
 
+function initDrilldownHandling() {
+  UI.drilldownToggle?.addEventListener('change', () => {
+    state.enableDrilldown = UI.drilldownToggle.checked;
+    // Re-render to update chart click handlers and indicators
+    if (Object.keys(state.results).length > 0) {
+      scheduleResultsRender();
+    }
+  });
+}
+
 // ---------- Init ----------
 (function init() {
   buildTimezoneOptions(UI.timezoneSelect);
@@ -2163,6 +2181,9 @@ function initPartialPeriodHandling() {
 
   // Initialize backpressure override drawer
   initBackpressureDrawer();
+
+  // Initialize drill-down toggle
+  initDrilldownHandling();
 
   // Initialize CSV mode as default (set up UI and state)
   setDataSource('csv');

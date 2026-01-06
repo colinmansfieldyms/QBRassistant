@@ -794,6 +794,149 @@ canvas{ max-width:100%; }
 }
 
 /* ============================================================================
+   DRILL-DOWN MODAL
+   ============================================================================ */
+
+.drilldown-modal {
+  display: none;
+  position: fixed;
+  z-index: 1001;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+.drilldown-modal.active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drilldown-modal-content {
+  background: white;
+  border-radius: var(--radius);
+  padding: 0;
+  width: 90%;
+  max-width: 900px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease-out;
+}
+
+.drilldown-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.drilldown-modal-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 0;
+}
+
+.drilldown-modal-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px 8px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.drilldown-modal-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.drilldown-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+  min-height: 0;
+}
+
+.drilldown-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.drilldown-table thead {
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 1;
+}
+
+.drilldown-table th {
+  text-align: left;
+  padding: 12px 16px;
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.drilldown-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.drilldown-table th.sortable:hover {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.drilldown-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drilldown-table tbody tr:hover {
+  background: var(--bg);
+}
+
+.drilldown-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.drilldown-modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: var(--bg);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+/* Drilldown indicator icon on chart titles */
+.drilldown-indicator {
+  margin-left: 8px;
+  font-size: 0.85rem;
+  opacity: 0.7;
+  cursor: help;
+}
+
+.drilldown-indicator:hover {
+  opacity: 1;
+}
+
+/* ============================================================================
    BACKPRESSURE DRAWER
    ============================================================================ */
 
