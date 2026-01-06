@@ -500,7 +500,7 @@ input:focus, textarea:focus, select:focus{
   background:#fff;
   position: relative;
   white-space: nowrap;
-  min-width: 70px;
+  min-width: 85px;
   text-align: center;
   display: inline-block;
   box-sizing: border-box;
