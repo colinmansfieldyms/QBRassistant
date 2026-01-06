@@ -531,8 +531,19 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
           }, [confidenceText])
         : el('span', { class: 'muted small' }, [confidenceText]);
 
+      // Map level to semantic label with tooltip
+      const badgeMeta = {
+        green: { label: 'GOOD', tooltip: 'Illustrates improvement in a key area.' },
+        yellow: { label: 'CAUTION', tooltip: 'Potential issue related to system use or configuration. PM should investigate.' },
+        red: { label: 'BAD', tooltip: 'Illustrates an issue or negative trend in a key area.' }
+      }[f.level] || { label: f.level.toUpperCase(), tooltip: '' };
+
       ul.appendChild(el('li', {}, [
-        el('span', { class: `badge ${f.level}` }, [f.level.toUpperCase()]),
+        el('span', {
+          class: `badge ${f.level}`,
+          'data-tooltip': badgeMeta.tooltip,
+          style: badgeMeta.tooltip ? 'cursor: help;' : ''
+        }, [badgeMeta.label]),
         document.createTextNode(` ${f.text} `),
         confidenceEl,
       ]));
@@ -791,14 +802,10 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
       spendBox.appendChild(insightsList);
     }
 
-    // Show finding if zero detention
-    if (detentionSpend.zeroDetentionNote) {
-      spendBox.appendChild(el('div', { class: 'muted small', style: 'margin-top: 8px; padding: 8px; background: rgba(181, 71, 8, 0.1); border-radius: 6px;' }, [
-        'PM Note: No detention events recorded. Verify detention rules are configured in YMS.'
-      ]));
+    // Only show disclaimer if it has content
+    if (detentionSpend.disclaimer) {
+      spendBox.appendChild(el('div', { class: 'muted small', style: 'margin-top:8px;' }, [detentionSpend.disclaimer]));
     }
-
-    spendBox.appendChild(el('div', { class: 'muted small', style: 'margin-top:8px;' }, [detentionSpend.disclaimer]));
     wrap.appendChild(spendBox);
   }
 

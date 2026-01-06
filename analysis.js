@@ -574,10 +574,11 @@ function computeTrendAnalysis(dataByGranularity, metricName, options = {}) {
   } = options;
 
   // dataByGranularity can be: { monthly, weekly, daily } or a single data source
+  // Prefer finer granularity first (daily → weekly → monthly) to match chart display
   const granularities = [
-    { key: 'monthly', label: 'month-over-month', data: dataByGranularity.monthly || dataByGranularity },
+    { key: 'daily', label: 'day-over-day', data: dataByGranularity.daily },
     { key: 'weekly', label: 'week-over-week', data: dataByGranularity.weekly },
-    { key: 'daily', label: 'day-over-day', data: dataByGranularity.daily }
+    { key: 'monthly', label: 'month-over-month', data: dataByGranularity.monthly || dataByGranularity }
   ];
 
   for (const { key, label, data } of granularities) {
@@ -1165,8 +1166,14 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // Data quality findings (move to tooltip)
     const dataQualityFindings = [];
     if (this.detention === 0 && this.preDetention === 0) {
-      dataQualityFindings.push({ level: 'yellow', text: 'No detention signals found - module may not be configured.' });
-      recs.push('Recommend a PM/Admin audit: confirm detention configuration, triggers, and report usage.');
+      // Add to main findings (not just tooltip) so user clearly sees the issue
+      findings.push({
+        level: 'yellow',
+        text: 'No detention events found in this data. Detention rules may not be configured in YMS.',
+        confidence: 'high',
+        confidenceReason: 'No detention or pre-detention signals detected in the uploaded data.'
+      });
+      recs.push('Verify detention rules are configured in YMS. If detention tracking is not needed, this finding can be ignored.');
     }
 
     // CSV mode warning about prevented detention data
@@ -3170,7 +3177,7 @@ function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
     };
   }
 
-  // No detention events at all
+  // No detention events at all - simplified message (finding is shown in Findings section)
   if (trueDetentionCount === 0) {
     insights.push('Detention spend this period: $0 (no detention events recorded)');
     return {
@@ -3182,8 +3189,8 @@ function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
         detention_spend: 0,
       },
       insights,
-      zeroDetentionNote: true,
-      disclaimer: 'No detention events found in this data. Verify detention rules are configured in YMS.',
+      zeroDetentionNote: false,
+      disclaimer: '',
     };
   }
 
