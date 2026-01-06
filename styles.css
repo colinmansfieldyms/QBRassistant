@@ -500,7 +500,10 @@ input:focus, textarea:focus, select:focus{
   background:#fff;
   position: relative;
   white-space: nowrap;
-  vertical-align: top;
+  min-width: 70px;
+  text-align: center;
+  display: inline-block;
+  box-sizing: border-box;
 }
 .badge.green{ border-color: rgba(2,122,72,0.25); background: rgba(2,122,72,0.06); color:#05603a; }
 .badge.yellow{ border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.12); color:#b45309; }
@@ -591,6 +594,7 @@ input:focus, textarea:focus, select:focus{
 .list li.finding-item .finding-text {
   flex: 1;
   min-width: 0;
+  padding-top: 5px; /* Vertically center text with badge (badge has 6px padding) */
 }
 
 .chart-grid{
