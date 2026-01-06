@@ -213,9 +213,9 @@
         </div>
       </section>
 
-      <section class="card" id="perfCard" aria-live="polite">
+      <section class="card hidden" id="perfCard" aria-live="polite">
         <div class="card-title">Performance (debug)</div>
-        <div id="perfPanel" class="perf-panel muted small">Disabled. Append <code>?perf=1</code> to enable lightweight instrumentation (no tokens/PII logged).</div>
+        <div id="perfPanel" class="perf-panel muted small">Perf debug ready. Will populate when a run starts.</div>
       </section>
 
       <details class="card warnings-card" id="warningsSection">
@@ -305,7 +305,7 @@
             <div class="bp-control">
               <div class="bp-control-header">
                 <label class="bp-label">Drill-Down</label>
-                <span class="bp-tooltip" data-tooltip="Click chart elements to view underlying records. Shows trailer details for selected bars, pie segments, or outlier points.">?</span>
+                <span class="bp-tooltip bp-tooltip-left" data-tooltip="Click chart elements to view underlying records. Shows trailer details for selected bars, pie segments, or outlier points.">?</span>
               </div>
               <label class="bp-toggle-label">
                 <input type="checkbox" id="drilldownToggle" class="bp-checkbox" checked />
@@ -325,7 +325,7 @@
             <div class="bp-control">
               <div class="bp-control-header">
                 <label class="bp-label">Processing Mode</label>
-                <span class="bp-tooltip" data-tooltip="Web Workers process data in a background thread, keeping the UI responsive during heavy aggregation. Recommended for large datasets.">?</span>
+                <span class="bp-tooltip bp-tooltip-left" data-tooltip="Web Workers process data in a background thread, keeping the UI responsive during heavy aggregation. Recommended for large datasets.">?</span>
               </div>
               <div class="row gap-md" style="align-items: center;">
                 <label class="toggle">
@@ -374,7 +374,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpGlobalMaxConcurrency" class="bp-label">Global Max Concurrency</label>
-              <span class="bp-tooltip" data-tooltip="Maximum simultaneous API requests across all reports. Higher values fetch data faster but may overwhelm the server or browser.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Maximum simultaneous API requests across all reports. Higher values fetch data faster but may overwhelm the server or browser.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpGlobalMaxConcurrency" class="bp-slider" min="1" max="20" step="1" />
@@ -392,7 +392,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label class="bp-label">Enable Green Zone</label>
-              <span class="bp-tooltip" data-tooltip="When enabled, the system automatically boosts concurrency when all reports are responding quickly and memory is healthy.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="When enabled, the system automatically boosts concurrency when all reports are responding quickly and memory is healthy.">?</span>
             </div>
             <label class="bp-toggle-label">
               <input type="checkbox" id="bpGreenZoneEnabled" class="bp-checkbox" checked />
@@ -404,7 +404,7 @@
           <div class="bp-control bp-control-dependent" data-depends-on="bpGreenZoneEnabled">
             <div class="bp-control-header">
               <label for="bpGreenZoneConcurrencyMax" class="bp-label">Green Zone Boost Level</label>
-              <span class="bp-tooltip" data-tooltip="Maximum concurrency allowed when Green Zone is active. Only takes effect when Green Zone is enabled and conditions are favorable.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Maximum concurrency allowed when Green Zone is active. Only takes effect when Green Zone is enabled and conditions are favorable.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpGreenZoneConcurrencyMax" class="bp-slider" min="8" max="20" step="1" />
@@ -417,7 +417,7 @@
           <div class="bp-control bp-control-dependent" data-depends-on="bpGreenZoneEnabled">
             <div class="bp-control-header">
               <label for="bpGreenZoneStreakCount" class="bp-label">Entry Streak Count</label>
-              <span class="bp-tooltip" data-tooltip="Number of consecutive 'good' latency samples required before entering Green Zone. Lower = more aggressive boosting, higher = more conservative.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Number of consecutive 'good' latency samples required before entering Green Zone. Lower = more aggressive boosting, higher = more conservative.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpGreenZoneStreakCount" class="bp-slider" min="1" max="10" step="1" />
@@ -435,7 +435,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpFetchBufferSize" class="bp-label">Fetch Buffer Size</label>
-              <span class="bp-tooltip" data-tooltip="Maximum pages to download ahead of processing. Larger buffers keep workers busy but use more memory.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Maximum pages to download ahead of processing. Larger buffers keep workers busy but use more memory.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpFetchBufferSize" class="bp-slider" min="2" max="20" step="1" />
@@ -448,7 +448,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpProcessingPoolSize" class="bp-label">Processing Pool Size</label>
-              <span class="bp-tooltip" data-tooltip="Number of pages to process simultaneously. Higher values increase CPU usage but can speed up analysis.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Number of pages to process simultaneously. Higher values increase CPU usage but can speed up analysis.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpProcessingPoolSize" class="bp-slider" min="1" max="6" step="1" />
@@ -461,7 +461,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpPageQueueLimit" class="bp-label">Page Queue Limit</label>
-              <span class="bp-tooltip" data-tooltip="Maximum pages waiting in the prefetch queue. Acts as a memory safety valve.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Maximum pages waiting in the prefetch queue. Acts as a memory safety valve.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpPageQueueLimit" class="bp-slider" min="5" max="30" step="1" />
@@ -474,7 +474,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpForceTier" class="bp-label">Force Tier</label>
-              <span class="bp-tooltip" data-tooltip="Override automatic dataset size detection. Use 'Auto' for normal operation, or force a specific tier to test behavior.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Override automatic dataset size detection. Use 'Auto' for normal operation, or force a specific tier to test behavior.">?</span>
             </div>
             <select id="bpForceTier" class="bp-select">
               <option value="auto">Auto (detect from data)</option>
@@ -495,7 +495,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpBatchSize" class="bp-label">Batch Size</label>
-              <span class="bp-tooltip" data-tooltip="Number of rows sent to the Web Worker at once. Larger batches reduce transfer overhead but increase memory spikes.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="Number of rows sent to the Web Worker at once. Larger batches reduce transfer overhead but increase memory spikes.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpBatchSize" class="bp-slider" min="100" max="2000" step="50" />
@@ -508,7 +508,7 @@
           <div class="bp-control">
             <div class="bp-control-header">
               <label for="bpPartialUpdateInterval" class="bp-label">Partial Update Interval</label>
-              <span class="bp-tooltip" data-tooltip="How often the UI receives progress updates during processing. Faster updates feel more responsive but add overhead.">?</span>
+              <span class="bp-tooltip bp-tooltip-left" data-tooltip="How often the UI receives progress updates during processing. Faster updates feel more responsive but add overhead.">?</span>
             </div>
             <div class="bp-control-row">
               <input type="range" id="bpPartialUpdateInterval" class="bp-slider" min="200" max="5000" step="100" />
@@ -520,6 +520,26 @@
         </div>
           </div><!-- /.bp-section-content -->
         </details><!-- /.bp-section API Backpressure Overrides -->
+
+        <!-- DEBUG MODE SECTION (collapsed by default) -->
+        <details class="bp-section">
+          <summary class="bp-section-toggle">
+            <span>Debug Mode</span>
+            <span class="bp-section-chevron"></span>
+          </summary>
+          <div class="bp-section-content">
+            <div class="bp-control">
+              <div class="bp-control-header">
+                <label class="bp-label">Performance Instrumentation</label>
+                <span class="bp-tooltip bp-tooltip-left" data-tooltip="Opens the app with performance instrumentation enabled. Shows real-time metrics including request latency, pages/second, memory usage, and processing times. No tokens or PII are logged.">?</span>
+              </div>
+              <p class="bp-control-desc">Launch the app with lightweight performance instrumentation to diagnose slow runs or API issues.</p>
+              <a href="https://colinmansfieldyms.github.io/QBRassistant/?perf=1" target="_blank" rel="noopener" class="btn" style="margin-top: 8px;">
+                Launch Debug Mode
+              </a>
+            </div>
+          </div>
+        </details>
       </div>
     </aside>
 

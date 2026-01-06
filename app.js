@@ -338,10 +338,8 @@ function resetAll() {
   UI.printBtn.disabled = true;
   UI.cancelBtn.disabled = true;
   UI.runBtn.disabled = false;
-  if (UI.perfPanel) {
-    UI.perfPanel.textContent = state.perf.enabled
-      ? 'Perf debug ready. Will populate when a run starts.'
-      : 'Disabled. Append ?perf=1 to enable lightweight instrumentation (no tokens/PII logged).';
+  if (UI.perfPanel && state.perf.enabled) {
+    UI.perfPanel.textContent = 'Perf debug ready. Will populate when a run starts.';
   }
 
   // keep tenant/facilities/dates/timezone to reduce annoyance? The requirement says reset all inputs/results.
@@ -2161,10 +2159,12 @@ function initDrilldownHandling() {
 (function init() {
   buildTimezoneOptions(UI.timezoneSelect);
 
-  if (UI.perfPanel) {
-    UI.perfPanel.textContent = state.perf.enabled
-      ? 'Perf debug ready. Enable via ?perf=1 (already on) to view live timings.'
-      : 'Disabled. Append ?perf=1 to enable lightweight instrumentation (no tokens/PII logged).';
+  // Show perf panel only when ?perf=1 is in URL
+  if (UI.perfCard && state.perf.enabled) {
+    UI.perfCard.classList.remove('hidden');
+  }
+  if (UI.perfPanel && state.perf.enabled) {
+    UI.perfPanel.textContent = 'Perf debug ready. Will populate when a run starts.';
   }
 
   // default dates: last 90 days

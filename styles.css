@@ -1159,7 +1159,10 @@ canvas{ max-width:100%; }
   margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  overflow: hidden;
+}
+
+.bp-section-content {
+  overflow: visible;
 }
 
 .bp-section:last-child {
@@ -1347,6 +1350,13 @@ canvas{ max-width:100%; }
   font-weight: 650;
   font-size: 0.88rem;
   color: var(--text);
+}
+
+.bp-control-desc {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 4px 0 0 0;
+  line-height: 1.4;
 }
 
 .bp-scope-badge {
