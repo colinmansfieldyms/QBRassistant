@@ -831,9 +831,10 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       if (bucket && this.enableDrilldown) {
         const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
         const scac = safeStr(row.scac ?? row.carrier_scac ?? row.scac_code ?? '');
+        const moveType = safeStr(row.move_type_name || row.move_type || '');
         const location = safeStr(row.drop_spot || row.location_name || row.parking_spot || row.spot || '');
         const ageDays = Math.round(hours / 24 * 10) / 10;
-        this.yardAgeDrilldown[bucket].push({ trailer, scac, ageDays, location });
+        this.yardAgeDrilldown[bucket].push({ trailer, scac, moveType, ageDays, location });
       }
     }
   }
@@ -902,8 +903,8 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
           rows: yardAgeSeries.map(r => ({ yard_age_bucket: r.bucket, count: r.count })),
         },
         drilldown: drilldown ? {
-          columns: ['trailer', 'scac', 'ageDays', 'location'],
-          columnLabels: ['Trailer #', 'SCAC', 'Age (days)', 'Location'],
+          columns: ['trailer', 'scac', 'moveType', 'ageDays', 'location'],
+          columnLabels: ['Trailer #', 'SCAC', 'Move Type', 'Age (days)', 'Location'],
           byLabel: drilldown
         } : null
       });
