@@ -685,12 +685,13 @@ function scacIsPlaceholder(scac) {
 
 // ---------- Report analyzers ----------
 class BaseAnalyzer {
-  constructor({ timezone, startDate, endDate, assumptions, onWarning }) {
+  constructor({ timezone, startDate, endDate, assumptions, onWarning, enableDrilldown = true }) {
     this.timezone = timezone;
     this.startDate = startDate;
     this.endDate = endDate;
     this.assumptions = assumptions;
     this.onWarning = onWarning;
+    this.enableDrilldown = enableDrilldown;
 
     this.totalRows = 0;
     this.parseFails = 0;
