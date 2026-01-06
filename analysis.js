@@ -831,7 +831,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       if (bucket && this.enableDrilldown) {
         const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
         const scac = safeStr(row.scac ?? row.carrier_scac ?? row.scac_code ?? '');
-        const location = safeStr(row.location_name || row.parking_spot || row.spot || '');
+        const location = safeStr(row.drop_spot || row.location_name || row.parking_spot || row.spot || '');
         const ageDays = Math.round(hours / 24 * 10) / 10;
         this.yardAgeDrilldown[bucket].push({ trailer, scac, ageDays, location });
       }

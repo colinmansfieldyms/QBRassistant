@@ -924,16 +924,53 @@ canvas{ max-width:100%; }
   border-radius: 0 0 var(--radius) var(--radius);
 }
 
-/* Drilldown indicator icon on chart titles */
-.drilldown-indicator {
-  margin-left: 8px;
-  font-size: 0.85rem;
-  opacity: 0.7;
+/* Drilldown badge in chart actions */
+.drilldown-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: rgba(38, 34, 98, 0.1);
+  color: var(--accent);
+  border-radius: 12px;
   cursor: help;
+  position: relative;
 }
 
-.drilldown-indicator:hover {
-  opacity: 1;
+.drilldown-badge:hover {
+  background: rgba(38, 34, 98, 0.18);
+}
+
+/* Tooltip for drilldown badge */
+.drilldown-badge[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 400;
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.drilldown-badge[data-tooltip]:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  z-index: 100;
+  pointer-events: none;
 }
 
 /* ============================================================================
@@ -1812,6 +1849,35 @@ canvas{ max-width:100%; }
   font-size: 0.78rem;
   color: var(--warn);
   cursor: help;
+  position: relative;
+}
+
+.csv-file-warnings[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  background: var(--text);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  white-space: pre-line;
+  max-width: 300px;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  pointer-events: none;
+}
+
+.csv-file-warnings[data-tooltip]:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 16px;
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  z-index: 1000;
+  pointer-events: none;
 }
 
 .csv-file-type {

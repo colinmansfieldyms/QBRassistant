@@ -24,6 +24,7 @@ export const CSV_FIELD_MAPS = {
     'Updated At': 'updated_at',
     'Carrier SCAC': 'carrier_scac',
     'Driver Cell': 'driver_cell',
+    'Drop Spot': 'drop_spot',
   },
 
   detention_history: {

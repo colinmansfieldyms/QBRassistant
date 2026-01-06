@@ -256,7 +256,7 @@ function createChartModal() {
 
 let chartModal = null;
 
-function openChartFullscreen(def, chartData, report, onWarning, partialPeriodMode = 'include') {
+function openChartFullscreen(def, chartData, report, onWarning, partialPeriodMode = 'include', enableDrilldown = true) {
   if (!chartModal) {
     chartModal = createChartModal();
 
@@ -296,6 +296,23 @@ function openChartFullscreen(def, chartData, report, onWarning, partialPeriodMod
       minRotation: 0,
       autoSkip: false, // Show all labels
       font: { size: 11 }
+    };
+  }
+
+  // Add drilldown click handler if enabled
+  const hasDrilldown = enableDrilldown && def.drilldown && def.drilldown.byLabel;
+  if (hasDrilldown) {
+    cfg.options.onClick = (event, elements, chart) => {
+      if (elements.length === 0) return;
+      const el = elements[0];
+      const label = chart.data.labels?.[el.index];
+      if (label && def.drilldown.byLabel[label]) {
+        openDrilldownModal(label, def.drilldown.byLabel[label], def.drilldown);
+      }
+    };
+    // Set cursor to pointer for clickable elements
+    cfg.options.onHover = (event, elements) => {
+      chartModal.canvas.style.cursor = elements.length > 0 ? 'pointer' : 'default';
     };
   }
 
@@ -450,19 +467,19 @@ function openDrilldownModal(label, rows, drilldownConfig) {
 
   // Export button
   drilldownModal.exportBtn.onclick = () => {
+    // Helper to escape CSV cell values
+    const escapeCSV = (val) => {
+      if (val === null || val === undefined) return '';
+      const str = String(val);
+      // Always wrap in quotes and escape internal quotes
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
     const csvLines = [];
-    csvLines.push(columnLabels.join(','));
+    // Escape header row too
+    csvLines.push(columnLabels.map(escapeCSV).join(','));
     for (const row of sortedRows) {
-      const values = columns.map(col => {
-        const val = row[col];
-        if (val === null || val === undefined) return '';
-        const str = String(val);
-        // Escape quotes and wrap in quotes if contains comma or quote
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      });
+      const values = columns.map(col => escapeCSV(row[col]));
       csvLines.push(values.join(','));
     }
     const csvText = csvLines.join('\n');
@@ -554,13 +571,27 @@ export function renderReportResult({
 
     // Capture chartData in closure for fullscreen
     const chartDataForFullscreen = chartData;
-    const actions = el('div', { class: 'chart-actions' }, [
+
+    // Drilldown indicator - check if this chart has drilldown data
+    const hasDrilldown = enableDrilldown && def.drilldown && def.drilldown.byLabel;
+
+    const actionButtons = [];
+
+    // Add drilldown indicator button before other actions
+    if (hasDrilldown) {
+      actionButtons.push(el('span', {
+        class: 'drilldown-badge',
+        'data-tooltip': 'Click chart bars or points to view underlying records'
+      }, ['🔍 Drill-down']));
+    }
+
+    actionButtons.push(
       el('button', {
         class: 'btn btn-ghost',
         type: 'button',
         onClick: () => {
           try {
-            openChartFullscreen(def, chartDataForFullscreen, report, onWarning, partialPeriodMode);
+            openChartFullscreen(def, chartDataForFullscreen, report, onWarning, partialPeriodMode, enableDrilldown);
           } catch (e) {
             onWarning?.(`Fullscreen failed: ${e?.message || String(e)}`);
           }
@@ -588,20 +619,12 @@ export function renderReportResult({
             onWarning?.(`Chart CSV export failed: ${e?.message || String(e)}`);
           }
         }
-      }, ['⬇ CSV']),
-    ]);
+      }, ['⬇ CSV'])
+    );
 
-    // Drilldown indicator
-    const hasDrilldown = enableDrilldown && def.drilldown && def.drilldown.byLabel;
-    const drilldownIndicator = hasDrilldown
-      ? el('span', {
-          class: 'drilldown-indicator',
-          title: 'Click chart elements to view details'
-        }, ['🔍'])
-      : null;
+    const actions = el('div', { class: 'chart-actions' }, actionButtons);
 
     const titleContent = [el('b', {}, [def.title])];
-    if (drilldownIndicator) titleContent.push(drilldownIndicator);
     titleContent.push(actions);
 
     const title = el('div', { class: 'chart-title' }, titleContent);

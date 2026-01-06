@@ -408,8 +408,10 @@ export function renderFileList(csvState) {
       .join('');
 
     const rowCountText = f.rowCount !== null ? `${f.rowCount.toLocaleString()} rows` : '';
+    // Escape HTML entities and quotes for safe attribute value
+    const escapeAttr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const warningsHtml = f.validationWarnings.length > 0
-      ? `<div class="csv-file-warnings" title="${f.validationWarnings.join('\n')}">${f.validationWarnings.length} warning(s)</div>`
+      ? `<div class="csv-file-warnings" data-tooltip="${escapeAttr(f.validationWarnings.join('\n'))}">${f.validationWarnings.length} warning(s)</div>`
       : '';
 
     return `
