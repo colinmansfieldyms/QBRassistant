@@ -110,7 +110,9 @@ To enable ROI calculations, provide any of these optional values:
 ### Current Inventory
 Snapshot of trailers currently in the yard, including equipment types, dwell times, and aging analysis.
 
-**CSV-specific feature:** Yard age distribution chart showing trailers in buckets (0-1d, 1-7d, 7-30d, 30d+) based on elapsed time.
+**Mode-specific charts:**
+- **API mode (recommended for this report):** Shows "Updated recency" chart indicating how recently each inventory record was updated—useful for understanding real-time yard activity and data freshness.
+- **CSV mode:** Shows "Yard age distribution" chart with trailers grouped by dwell time (0-1d, 1-7d, 7-30d, 30d+) based on elapsed hours in the export.
 
 ### Detention History
 Tracks detention events where trailers exceed allowed dwell time. Calculates:
@@ -157,9 +159,9 @@ Each report displays:
 1. **Metrics** - Key performance indicators in a grid format
 2. **Charts** - Visual trends over time (line charts) or distributions (bar/pie charts)
 3. **Findings** - Automatically generated insights with severity levels:
-   - **Green** - Healthy/positive finding
-   - **Yellow** - Warning/attention needed
-   - **Red** - Critical issue detected
+   - **Good** (green) - Healthy/positive finding
+   - **Caution** (yellow) - Warning/attention needed
+   - **Bad** (red) - Critical issue detected
 4. **Recommendations** - Actionable suggestions based on findings
 5. **ROI Estimates** - Business value calculations (when assumptions provided)
 
@@ -187,7 +189,7 @@ During API fetches, the progress panel shows:
 
 ## Advanced settings
 
-Access via the gear icon to configure:
+Access via the gear icon on the right edge of the screen to configure:
 
 ### Data handling
 
