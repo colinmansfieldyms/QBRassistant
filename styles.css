@@ -498,10 +498,46 @@ input:focus, textarea:focus, select:focus{
   font-size:0.85rem;
   border:1px solid var(--border);
   background:#fff;
+  position: relative;
+  white-space: nowrap;
+  vertical-align: top;
 }
 .badge.green{ border-color: rgba(2,122,72,0.25); background: rgba(2,122,72,0.06); color:#05603a; }
-.badge.yellow{ border-color: rgba(181,71,8,0.25); background: rgba(181,71,8,0.06); color:#7a2e0e; }
-.badge.red{ border-color: rgba(180,35,24,0.30); background: rgba(180,35,24,0.06); color:#7a271a; }
+.badge.yellow{ border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.12); color:#b45309; }
+.badge.red{ border-color: rgba(220,38,38,0.35); background: rgba(220,38,38,0.08); color:#b91c1c; }
+
+/* Badge tooltip */
+.badge[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  padding: 8px 10px;
+  background: var(--text);
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  border-radius: 8px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+.badge[data-tooltip]:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  z-index: 201;
+  pointer-events: none;
+}
 
 .report-card{
   background:white;
@@ -545,6 +581,17 @@ input:focus, textarea:focus, select:focus{
 }
 .list li{ margin:10px 0; }
 .list .muted{ color:var(--muted); }
+
+/* Finding item layout - prevents text from wrapping under the badge */
+.list li.finding-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.list li.finding-item .finding-text {
+  flex: 1;
+  min-width: 0;
+}
 
 .chart-grid{
   display:grid;

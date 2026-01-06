@@ -538,14 +538,16 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
         red: { label: 'BAD', tooltip: 'Illustrates an issue or negative trend in a key area.' }
       }[f.level] || { label: f.level.toUpperCase(), tooltip: '' };
 
-      ul.appendChild(el('li', {}, [
+      ul.appendChild(el('li', { class: 'finding-item' }, [
         el('span', {
           class: `badge ${f.level}`,
           'data-tooltip': badgeMeta.tooltip,
           style: badgeMeta.tooltip ? 'cursor: help;' : ''
         }, [badgeMeta.label]),
-        document.createTextNode(` ${f.text} `),
-        confidenceEl,
+        el('span', { class: 'finding-text' }, [
+          document.createTextNode(`${f.text} `),
+          confidenceEl,
+        ]),
       ]));
     }
     wrap.appendChild(ul);
