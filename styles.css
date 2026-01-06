@@ -460,6 +460,20 @@ input:focus, textarea:focus, select:focus{
   max-width: 70ch;
 }
 
+.empty-state-help {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.empty-state-help:hover {
+  text-decoration: underline;
+}
+
 .section-title{
   display:flex;
   align-items:center;

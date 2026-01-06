@@ -332,14 +332,7 @@ function resetAll() {
   UI.progressPanel.innerHTML = `<div class="muted">No run yet.</div>`;
   UI.warningsPanel.textContent = 'None.';
   updateWarningsBadge();
-  UI.resultsRoot.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-title">Ready when you are.</div>
-      <div class="empty-subtitle">
-        Paste a token, pick facilities + reports, then run. This app streams aggregation and discards raw rows by default.
-      </div>
-    </div>
-  `;
+  renderEmptyState();
 
   UI.downloadSummaryBtn.disabled = true;
   UI.printBtn.disabled = true;
@@ -555,6 +548,21 @@ function updateWarningsBadge() {
     UI.warningsBadge.textContent = count;
     UI.warningsBadge.classList.toggle('hidden', count === 0);
   }
+}
+
+function renderEmptyState() {
+  const isCSV = state.dataSource === 'csv';
+  const subtitle = isCSV
+    ? 'Upload CSV files, select report types, then run. This app streams aggregation and discards raw rows by default.'
+    : 'Paste a token, pick facilities + reports, then run. This app streams aggregation and discards raw rows by default.';
+
+  UI.resultsRoot.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-title">Ready when you are.</div>
+      <div class="empty-subtitle" id="emptyStateSubtitle">${subtitle}</div>
+      <a href="https://github.com/colinmansfieldyms/QBRassistant/blob/main/README.md" target="_blank" rel="noopener" class="btn btn-ghost empty-state-help">How to use</a>
+    </div>
+  `;
 }
 
 // ---------- Perf instrumentation (lightweight, optional) ----------
@@ -1672,6 +1680,12 @@ function setDataSource(source) {
   // Initialize CSV state if needed
   if (source === 'csv' && !state.csvImportState) {
     state.csvImportState = createCSVImportState();
+  }
+
+  // Update empty state text if no results are showing
+  const hasResults = UI.resultsRoot.querySelector('.report-card');
+  if (!hasResults) {
+    renderEmptyState();
   }
 
   // Update ROI category recommendations based on new data source
