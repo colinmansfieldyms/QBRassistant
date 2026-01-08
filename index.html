@@ -29,11 +29,6 @@
         </div>
       </div>
 
-      <label class="toggle">
-        <input id="mockModeToggle" type="checkbox" />
-        <span>Mock mode</span>
-      </label>
-
       <button id="resetAllBtn" class="btn btn-ghost" type="button" title="Clear inputs/results and wipe token from memory">
         Reset all
       </button>
@@ -162,7 +157,11 @@
                 <div class="roi-category-content">
                   <label class="field">
                     <span>Labor fully loaded rate per hour</span>
-                    <input id="assumptionLabor" type="number" min="0" step="0.01" placeholder="e.g., 42" />
+                    <div class="input-with-prefix">
+                      <span class="input-prefix">$</span>
+                      <input id="assumptionLabor" type="number" min="0" step="0.01" placeholder="e.g., 42" />
+                    </div>
+                    <small>Wages + benefits + overhead per driver hour.</small>
                   </label>
                   <label class="field">
                     <span>Target moves per driver per day</span>
@@ -522,6 +521,25 @@
         </div>
           </div><!-- /.bp-section-content -->
         </details><!-- /.bp-section API Backpressure Overrides -->
+
+        <!-- MOCK MODE SECTION (collapsed by default) -->
+        <details class="bp-section">
+          <summary class="bp-section-toggle">
+            <span>Mock Mode</span>
+            <span class="bp-section-chevron"></span>
+          </summary>
+          <div class="bp-section-content">
+            <div class="bp-control">
+              <div class="bp-control-header">
+                <label class="toggle" style="margin: 0;">
+                  <input id="mockModeToggle" type="checkbox" />
+                  <span>Enable Mock Mode</span>
+                </label>
+                <span class="bp-tooltip bp-tooltip-left" data-tooltip="Demo the tool without connecting to a live API or uploading files. Uses sample datasets with realistic data patterns for each report type. Great for training or exploring features.">?</span>
+              </div>
+            </div>
+          </div>
+        </details>
 
         <!-- DEBUG MODE SECTION (collapsed by default) -->
         <details class="bp-section">

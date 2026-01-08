@@ -2459,7 +2459,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         });
         if (finding) findings.push(finding);
         if (lostTrend.direction === 'increased') {
-          recs.push('Lost events trending up - investigate carrier handoffs and scan compliance.');
+          recs.push('Lost events trending up - investigate carrier handoffs and check-out habits.');
         }
       } else if (this.lostCount > 0) {
         findings.push({
