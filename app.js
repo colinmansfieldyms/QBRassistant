@@ -2089,6 +2089,60 @@ function initBackpressureDrawer() {
 
   // Initialize partial period handling
   initPartialPeriodHandling();
+
+  // Initialize fixed tooltips for drawer
+  initFixedTooltips();
+}
+
+// ---------- Fixed Tooltips (escape overflow containers) ----------
+
+function initFixedTooltips() {
+  const fixedTooltip = document.getElementById('fixedTooltip');
+  if (!fixedTooltip) return;
+
+  // Find all tooltips that need fixed positioning (inside the drawer)
+  const drawer = UI.bpDrawer;
+  if (!drawer) return;
+
+  // Use event delegation on the drawer
+  drawer.addEventListener('mouseenter', (e) => {
+    const trigger = e.target.closest('.bp-tooltip-left');
+    if (!trigger) return;
+
+    const tooltipText = trigger.dataset.tooltip;
+    if (!tooltipText) return;
+
+    // Position and show the fixed tooltip
+    const rect = trigger.getBoundingClientRect();
+    fixedTooltip.textContent = tooltipText;
+    fixedTooltip.classList.add('visible');
+
+    // Position to the left of the trigger, vertically centered
+    const tooltipRect = fixedTooltip.getBoundingClientRect();
+    let top = rect.top + (rect.height / 2) - (tooltipRect.height / 2);
+    let left = rect.left - tooltipRect.width - 12;
+
+    // Keep tooltip on screen
+    if (left < 10) {
+      left = 10;
+    }
+    if (top < 10) {
+      top = 10;
+    }
+    if (top + tooltipRect.height > window.innerHeight - 10) {
+      top = window.innerHeight - tooltipRect.height - 10;
+    }
+
+    fixedTooltip.style.top = `${top}px`;
+    fixedTooltip.style.left = `${left}px`;
+  }, true);
+
+  drawer.addEventListener('mouseleave', (e) => {
+    const trigger = e.target.closest('.bp-tooltip-left');
+    if (!trigger) return;
+
+    fixedTooltip.classList.remove('visible');
+  }, true);
 }
 
 // ---------- Partial Period Handling ----------

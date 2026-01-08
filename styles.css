@@ -1106,11 +1106,6 @@ canvas{ max-width:100%; }
   padding: 12px 16px;
 }
 
-/* Allow tooltips to escape scroll container */
-.bp-drawer-content .bp-control {
-  overflow: visible;
-}
-
 .bp-drawer-actions {
   display: flex;
   align-items: center;
@@ -1498,28 +1493,44 @@ canvas{ max-width:100%; }
   border-bottom-color: var(--text);
 }
 
-/* Tooltip that appears below and to the left (for sidebar drawer) */
-.bp-tooltip.bp-tooltip-left:hover::after {
-  left: auto;
-  right: 0;
-  top: calc(100% + 8px);
-  bottom: auto;
-  transform: none;
-  z-index: 10000;
-  width: 280px;
+/* Tooltip in sidebar drawer - disable CSS tooltip, use JS-positioned fixed tooltip instead */
+.bp-tooltip.bp-tooltip-left:hover::after,
+.bp-tooltip.bp-tooltip-left:hover::before {
+  display: none;
 }
 
-.bp-tooltip.bp-tooltip-left:hover::before {
-  left: auto;
-  right: 3px;
-  top: calc(100% + 2px);
-  bottom: auto;
-  transform: none;
-  border-left-color: transparent;
-  border-right-color: transparent;
-  border-bottom-color: var(--text);
-  border-top-color: transparent;
-  z-index: 10000;
+/* Fixed tooltip (JS-positioned, escapes all overflow containers) */
+.fixed-tooltip {
+  position: fixed;
+  display: none;
+  padding: 12px 14px;
+  background: var(--text);
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.5;
+  border-radius: 10px;
+  z-index: 99999;
+  max-width: 300px;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.fixed-tooltip.visible {
+  display: block;
+}
+
+/* Arrow for fixed tooltip (pointing right toward the ? icon) */
+.fixed-tooltip::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent;
+  border-left-color: var(--text);
+  border-right: none;
 }
 
 /* Badge tooltip (wider, for confidence badges in report headers) */
