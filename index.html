@@ -19,6 +19,16 @@
     </div>
 
     <div class="header-actions">
+      <div class="export-dropdown" id="exportDropdown">
+        <button class="btn btn-ghost export-dropdown-trigger" type="button" id="exportDropdownTrigger" disabled>
+          Exports ▾
+        </button>
+        <div class="export-dropdown-menu" id="exportDropdownMenu">
+          <button id="downloadSummaryBtn" class="export-dropdown-item" type="button">Download Summary TXT</button>
+          <button id="printBtn" class="export-dropdown-item" type="button">Print to PDF</button>
+        </div>
+      </div>
+
       <label class="toggle">
         <input id="mockModeToggle" type="checkbox" />
         <span>Mock mode</span>
@@ -202,14 +212,6 @@
         <div class="card-title">Progress</div>
         <div id="progressPanel" class="progress-panel">
           <div class="muted">No run yet.</div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-title">Exports</div>
-        <div class="export-panel">
-          <button id="downloadSummaryBtn" class="btn btn-ghost" type="button" disabled>Download Summary TXT</button>
-          <button id="printBtn" class="btn btn-ghost" type="button" disabled>Print to PDF</button>
         </div>
       </section>
 
@@ -529,14 +531,12 @@
           </summary>
           <div class="bp-section-content">
             <div class="bp-control">
-              <div class="bp-control-header">
-                <label class="bp-label">Performance Instrumentation</label>
+              <div class="bp-control-header" style="margin-bottom: 12px;">
+                <a href="https://colinmansfieldyms.github.io/QBRassistant/?perf=1" target="_blank" rel="noopener" class="btn btn-ghost">
+                  Launch Debug Mode
+                </a>
                 <span class="bp-tooltip bp-tooltip-left" data-tooltip="Opens the app with performance instrumentation enabled. Shows real-time metrics including request latency, pages/second, memory usage, and processing times. No tokens or PII are logged.">?</span>
               </div>
-              <p class="bp-control-desc">Launch the app with lightweight performance instrumentation to diagnose slow runs or API issues.</p>
-              <a href="https://colinmansfieldyms.github.io/QBRassistant/?perf=1" target="_blank" rel="noopener" class="btn" style="margin-top: 8px;">
-                Launch Debug Mode
-              </a>
             </div>
           </div>
         </details>

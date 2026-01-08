@@ -71,6 +71,7 @@ const UI = {
   statusBanner: document.querySelector('#statusBanner'),
   downloadSummaryBtn: document.querySelector('#downloadSummaryBtn'),
   printBtn: document.querySelector('#printBtn'),
+  exportDropdownTrigger: document.querySelector('#exportDropdownTrigger'),
   assumptionDetention: document.querySelector('#assumptionDetention'),
   assumptionLabor: document.querySelector('#assumptionLabor'),
   assumptionTargetMoves: document.querySelector('#assumptionTargetMoves'),
@@ -336,6 +337,7 @@ function resetAll() {
 
   UI.downloadSummaryBtn.disabled = true;
   UI.printBtn.disabled = true;
+  UI.exportDropdownTrigger.disabled = true;
   UI.cancelBtn.disabled = true;
   UI.runBtn.disabled = false;
   if (UI.perfPanel && state.perf.enabled) {
@@ -371,6 +373,7 @@ function setRunningUI(running) {
   UI.mockModeToggle.disabled = running;
   UI.downloadSummaryBtn.disabled = running || Object.keys(state.results).length === 0;
   UI.printBtn.disabled = running || Object.keys(state.results).length === 0;
+  UI.exportDropdownTrigger.disabled = running || Object.keys(state.results).length === 0;
   if (UI.recalcRoiBtn) {
     UI.recalcRoiBtn.disabled = running || Object.keys(state.results).length === 0;
   }
@@ -1028,6 +1031,7 @@ function renderAllResults() {
 
   UI.downloadSummaryBtn.disabled = false;
   UI.printBtn.disabled = false;
+  UI.exportDropdownTrigger.disabled = false;
   if (state.perf.enabled) {
     recordRender(performance.now() - renderStart);
   }
