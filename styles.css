@@ -378,6 +378,47 @@ input:focus, textarea:focus, select:focus{
   pointer-events: none;
 }
 
+/* Glossary term tooltips in findings/recommendations */
+.glossary-term {
+  position: relative;
+  border-bottom: 1px dotted var(--accent);
+  cursor: help;
+  color: inherit;
+}
+
+.glossary-term:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  padding: 10px 12px;
+  background: var(--text);
+  color: white;
+  font-size: 0.82rem;
+  font-weight: 400;
+  line-height: 1.5;
+  border-radius: 8px;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.glossary-term:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  z-index: 10000;
+  pointer-events: none;
+}
+
 .row{ display:flex; align-items:center; }
 .gap-sm{ gap:8px; }
 .gap-md{ gap:10px; }

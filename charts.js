@@ -30,6 +30,65 @@ function humanizeReportName(name) {
 }
 
 /**
+ * Glossary of terms that should have tooltips in findings/recommendations.
+ * Key is the term (case-insensitive match), value is the definition.
+ */
+const GLOSSARY = {
+  'queue time': 'Time a move request waits before a driver accepts it. Calculated from when the move is created until a driver taps "Accept."',
+  'deadhead': 'Time drivers spend traveling to a trailer before starting the move. High deadhead % means drivers are often assigned trailers far from their current location.',
+  'dwell time': 'Total time a trailer spends at a dock door, from arrival to departure.',
+  'process time': 'Time spent actively loading or unloading a trailer at a dock door.',
+  'detention': 'Time a trailer waits beyond the allowed free time before loading/unloading begins. Often results in carrier fees.',
+  'turns per door': 'Number of trailers processed through a single dock door in a day. Higher turns = better door utilization.',
+  'compliance': 'Percentage of moves where drivers properly tap Accept, Start, and Complete in sequence with realistic timing.',
+  'lost events': 'Trailers marked as "lost" in the system - their location is unknown. Often due to missed check-out scans.',
+};
+
+/**
+ * Wraps glossary terms in text with tooltip spans.
+ * Returns an array of DOM nodes (text nodes and span elements).
+ */
+function wrapGlossaryTerms(text) {
+  const nodes = [];
+  let remaining = text;
+
+  // Build regex to match any glossary term (case-insensitive)
+  const terms = Object.keys(GLOSSARY).sort((a, b) => b.length - a.length); // Longest first
+  const pattern = new RegExp(`(${terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi');
+
+  let lastIndex = 0;
+  let match;
+
+  // Reset lastIndex for global regex
+  pattern.lastIndex = 0;
+
+  while ((match = pattern.exec(text)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      nodes.push(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+
+    // Add the term with tooltip
+    const term = match[1];
+    const definition = GLOSSARY[term.toLowerCase()];
+    const span = el('span', {
+      class: 'glossary-term',
+      'data-tooltip': definition,
+    }, [term]);
+    nodes.push(span);
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    nodes.push(document.createTextNode(text.slice(lastIndex)));
+  }
+
+  return nodes.length > 0 ? nodes : [document.createTextNode(text)];
+}
+
+/**
  * Build tooltip text for confidence badge from dataQuality object.
  * Combines the main tooltip text with any data quality findings.
  */
@@ -755,16 +814,21 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
         red: { label: 'BAD', tooltip: 'Illustrates an issue or negative trend in a key area.' }
       }[f.level] || { label: f.level.toUpperCase(), tooltip: '' };
 
+      // Build finding text with glossary term tooltips
+      const findingTextSpan = el('span', { class: 'finding-text' });
+      for (const node of wrapGlossaryTerms(f.text)) {
+        findingTextSpan.appendChild(node);
+      }
+      findingTextSpan.appendChild(document.createTextNode(' '));
+      findingTextSpan.appendChild(confidenceEl);
+
       ul.appendChild(el('li', { class: 'finding-item' }, [
         el('span', {
           class: `badge ${f.level}`,
           'data-tooltip': badgeMeta.tooltip,
           style: badgeMeta.tooltip ? 'cursor: help;' : ''
         }, [badgeMeta.label]),
-        el('span', { class: 'finding-text' }, [
-          document.createTextNode(`${f.text} `),
-          confidenceEl,
-        ]),
+        findingTextSpan,
       ]));
     }
     wrap.appendChild(ul);
@@ -780,7 +844,13 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
     wrap.appendChild(el('div', { class: 'muted' }, ['None.']));
   } else {
     const ul = el('ul', { class: 'list' });
-    for (const r of recs) ul.appendChild(el('li', {}, [r]));
+    for (const r of recs) {
+      const li = el('li', {});
+      for (const node of wrapGlossaryTerms(r)) {
+        li.appendChild(node);
+      }
+      ul.appendChild(li);
+    }
     wrap.appendChild(ul);
   }
 
