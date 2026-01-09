@@ -23,6 +23,7 @@ export const CSV_FIELD_MAPS = {
     'Latest Loaded Time': 'csv_latest_loaded',
     'Updated At': 'updated_at',
     'Carrier SCAC': 'carrier_scac',
+    'SCAC': 'carrier_scac',
     'Driver Cell': 'driver_cell',
     'Drop Spot': 'drop_spot',
   },
