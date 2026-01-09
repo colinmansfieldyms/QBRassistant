@@ -2004,6 +2004,13 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     this.queueP90 = new P2Quantile(0.9);
     this.queueTotal = 0;
 
+    // Dispatch efficiency: deadhead (accept→start) vs execution (start→complete)
+    this.deadheadMedian = new P2Quantile(0.5);
+    this.deadheadP90 = new P2Quantile(0.9);
+    this.executionMedian = new P2Quantile(0.5);
+    this.executionP90 = new P2Quantile(0.9);
+    this.dispatchTotal = 0;
+
     // Day boundaries: moves per day + approx distinct drivers per day
     this.movesByDay = new CounterMap();
     this.activeDriversByDay = new Map();
@@ -2121,6 +2128,28 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       this.queueP90.add(q);
       this.queueTotal++;
     }
+
+    // Dispatch efficiency: deadhead (accept→start) vs execution (start→complete)
+    if (accept && start && complete) {
+      let deadheadMin = start.diff(accept, 'minutes').minutes;
+      let executionMin = complete.diff(start, 'minutes').minutes;
+
+      // Cross-midnight correction: CSV times share a single date, so midnight crossings
+      // result in negative diffs. Add 24h if negative but plausible.
+      if (deadheadMin < 0 && deadheadMin > -1440) deadheadMin += 1440;
+      if (executionMin < 0 && executionMin > -1440) executionMin += 1440;
+
+      // Only count if times are reasonable (>30s, <4 hours)
+      const MAX_REASONABLE = 240;
+      if (deadheadMin > 0.5 && deadheadMin <= MAX_REASONABLE &&
+          executionMin > 0.5 && executionMin <= MAX_REASONABLE) {
+        this.deadheadMedian.add(deadheadMin);
+        this.deadheadP90.add(deadheadMin);
+        this.executionMedian.add(executionMin);
+        this.executionP90.add(executionMin);
+        this.dispatchTotal++;
+      }
+    }
   }
 
   finalize(meta) {
@@ -2221,6 +2250,34 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Dispatch efficiency finding (deadhead ratio)
+    const deadheadMed = this.deadheadMedian.value();
+    const executionMed = this.executionMedian.value();
+    let deadheadRatio = null;
+    if (Number.isFinite(deadheadMed) && Number.isFinite(executionMed) && this.dispatchTotal >= 20) {
+      const totalMed = deadheadMed + executionMed;
+      deadheadRatio = totalMed > 0 ? Math.round((deadheadMed / totalMed) * 100) : null;
+
+      if (deadheadRatio !== null) {
+        if (deadheadRatio > 50) {
+          findings.push({
+            level: 'yellow',
+            text: `Drivers spending ${deadheadRatio}% of move time traveling to trailers.`,
+            confidence: 'medium',
+            confidenceReason: generateConfidenceReason('medium', { ...dqFactors, sampleSize: this.dispatchTotal })
+          });
+          recs.push('Review dispatch logic - Loss of productivity when drivers are assigned trailers far from their current location.');
+        } else {
+          findings.push({
+            level: 'green',
+            text: `Dispatch efficiency ${deadheadRatio <= 30 ? 'looks healthy' : 'is reasonable'} (${deadheadRatio}% deadhead).`,
+            confidence: 'medium',
+            confidenceReason: generateConfidenceReason('medium', { ...dqFactors, sampleSize: this.dispatchTotal })
+          });
+        }
+      }
+    }
+
     // Compliance recommendation (linked to data quality issue)
     if (compliancePct !== null && compliancePct < 30) {
       recs.push('Recommend retraining on driver workflow (accept/start/complete), and validate device connectivity + timestamp capture.');
@@ -2256,7 +2313,10 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
         compliance_pct: compliancePct,
         queue_median_minutes: Number.isFinite(queueMed) ? Math.round(queueMed * 10) / 10 : null,
         queue_p90_minutes: Number.isFinite(queueP90) ? Math.round(queueP90 * 10) / 10 : null,
-        // Derived “moves per driver per day” (approx)
+        deadhead_median_minutes: Number.isFinite(deadheadMed) ? Math.round(deadheadMed * 10) / 10 : null,
+        execution_median_minutes: Number.isFinite(executionMed) ? Math.round(executionMed * 10) / 10 : null,
+        deadhead_ratio_pct: deadheadRatio,
+        // Derived "moves per driver per day" (approx)
         avg_moves_per_driver_per_day: deriveMovesPerDriverPerDay(this.movesByDay, this.activeDriversByDay),
       },
       charts: [

@@ -62,16 +62,16 @@ const pages = {
   driver_history: {
     FAC1: [
       [
-        { yard_driver_name: 'Driver A', complete_time: '2025-12-10 10:10:00', move_accept_time: '2025-12-10 10:09:00', elapsed_time_minutes: 1.0, time_in_queue_minutes: 12, event: 'Move has been finished' },
-        { yard_driver_name: 'Driver B', complete_time: '2025-12-10 10:30:00', move_accept_time: '2025-12-10 10:20:00', elapsed_time_minutes: 10.0, time_in_queue_minutes: 5, event: 'Move has been finished' },
+        { yard_driver_name: 'Driver A', complete_time: '2025-12-10 10:10:00', move_accept_time: '2025-12-10 10:05:00', start_time: '2025-12-10 10:07:00', elapsed_time_minutes: 5.0, time_in_queue_minutes: 12, event: 'Move has been finished' },
+        { yard_driver_name: 'Driver B', complete_time: '2025-12-10 10:30:00', move_accept_time: '2025-12-10 10:20:00', start_time: '2025-12-10 10:24:00', elapsed_time_minutes: 10.0, time_in_queue_minutes: 5, event: 'Move has been finished' },
       ],
       [
-        { yard_driver_name: 'Driver A', complete_time: '2025-12-11 11:00:00', move_accept_time: '2025-12-11 10:58:30', elapsed_time_minutes: 1.5, time_in_queue_minutes: 8, event: 'Move has been finished' },
+        { yard_driver_name: 'Driver A', complete_time: '2025-12-11 11:00:00', move_accept_time: '2025-12-11 10:52:00', start_time: '2025-12-11 10:55:00', elapsed_time_minutes: 8.0, time_in_queue_minutes: 8, event: 'Move has been finished' },
       ]
     ],
     FAC2: [
       [
-        { yard_driver_name: 'Driver C', complete_time: '2025-12-12 12:10:00', move_accept_time: '2025-12-12 12:09:30', elapsed_time_minutes: 0.7, time_in_queue_minutes: 2, event: 'Move has been finished' },
+        { yard_driver_name: 'Driver C', complete_time: '2025-12-12 12:10:00', move_accept_time: '2025-12-12 12:02:00', start_time: '2025-12-12 12:05:00', elapsed_time_minutes: 8.0, time_in_queue_minutes: 2, event: 'Move has been finished' },
       ]
     ]
   },
@@ -130,10 +130,13 @@ function generateLargeDatasetPage({ report, facility, page, totalPages, rowsPerP
         move_requested_by: 'Admin'
       });
     } else if (report === 'driver_history') {
+      const acceptTime = new Date(baseTime + rowIndex * 3600000 - 600000);
+      const startTime = new Date(acceptTime.getTime() + (2 + (i % 5)) * 60000); // 2-6 min after accept
       data.push({
         yard_driver_name: `Driver ${String.fromCharCode(65 + (i % 10))}`,
         complete_time: timestamp,
-        move_accept_time: new Date(baseTime + rowIndex * 3600000 - 600000).toISOString().replace('T', ' ').slice(0, 19),
+        move_accept_time: acceptTime.toISOString().replace('T', ' ').slice(0, 19),
+        start_time: startTime.toISOString().replace('T', ' ').slice(0, 19),
         elapsed_time_minutes: 1 + (i % 20),
         time_in_queue_minutes: 5 + (i % 15),
         event: 'Move has been finished'
