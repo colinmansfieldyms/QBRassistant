@@ -1050,7 +1050,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         updated_last_7d_pct: Math.round(((this.updatedBuckets['0–1d'] + this.updatedBuckets['1–7d']) / (updatedTotal || 1)) * 1000) / 10,
         updated_last_30d_pct: Math.round(((this.updatedBuckets['0–1d'] + this.updatedBuckets['1–7d'] + this.updatedBuckets['7–30d']) / (updatedTotal || 1)) * 1000) / 10,
         placeholder_scac_pct: placeholderRate,
-        outbound_vs_inbound_ratio: outboundInboundRatio,
+        outbound_vs_inbound_ratio: outboundInboundRatio !== null ? Math.round(outboundInboundRatio * 100) / 100 : null,
         live_load_missing_driver_contact_pct: missingDriverRate,
       },
       charts: this.buildCharts(moveTypeTop, updatedSeries),
@@ -1978,7 +1978,7 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
-    return totalDoorDays > 0 ? totalTurnsCount / totalDoorDays : 0;
+    return totalDoorDays > 0 ? Math.round((totalTurnsCount / totalDoorDays) * 100) / 100 : 0;
   }
 }
 
