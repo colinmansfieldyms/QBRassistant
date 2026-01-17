@@ -366,10 +366,10 @@ function generateTooltipText(report, factors) {
 
     case 'dockdoor_history':
       if (factors.dwellCoveragePct !== undefined) {
-        lines.push(`Dwell coverage: ${factors.dwellCoveragePct}%`);
+        lines.push(`Dwell data quality: ${factors.dwellCoveragePct}% of records have dwell timestamps`);
       }
       if (factors.processCoveragePct !== undefined) {
-        lines.push(`Process coverage: ${factors.processCoveragePct}%`);
+        lines.push(`YMS feature adoption: ${factors.processCoveragePct}% of dock visits used processing`);
       }
       break;
 
@@ -458,10 +458,10 @@ function generateConfidenceReason(confidence, factors = {}) {
       reasons.push(`trend based on only ${trendDataPoints} periods`);
     }
     if (dwellCoveragePct !== null && dwellCoveragePct < 80) {
-      reasons.push(`dwell time coverage is ${dwellCoveragePct}%`);
+      reasons.push(`${dwellCoveragePct}% of records have dwell timestamps`);
     }
     if (processCoveragePct !== null && processCoveragePct < 80) {
-      reasons.push(`process time coverage is ${processCoveragePct}%`);
+      reasons.push(`only ${processCoveragePct}% of dock visits used YMS processing feature`);
     }
     if (compliancePct !== null && compliancePct < 70) {
       reasons.push(`timing compliance is ${compliancePct}%`);
@@ -1517,6 +1517,9 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
   ingest({ row }) {
     this.totalRows++;
 
+    // Get event type to properly handle paired events
+    const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name']));
+
     // Dwell start/end candidates
     const dwellStartRaw = firstPresent(row, ['dwell_start_time', 'dwell_start', 'dwell_in_time', 'dwell_start_time_utc']);
     const dwellEndRaw = firstPresent(row, ['dwell_end_time', 'dwell_end', 'dwell_out_time', 'dwell_end_time_utc']);
@@ -1531,8 +1534,16 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const procStart = parseTimestamp(procStartRaw, { timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; } });
     const procEnd = parseTimestamp(procEndRaw, { timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; } });
 
+    // Dwell Coverage: Count every row, mark "ok" if it has at least dwell start OR end
+    // This way "Dwell Started" and "Dwell Ended" events both count as good data quality
+    this.dwellCoverage.total++;
+    if (dwellStart || dwellEnd) {
+      this.dwellCoverage.ok++;
+    }
+
+    // Calculate dwell time metrics when we have both start and end
     if (dwellStart && dwellEnd) {
-      this.dwellCoverage.ok++; this.parseOk++;
+      this.parseOk++;
       this.trackDate(dwellStart); // Track for date range inference
       this.trackDate(dwellEnd);
       const mins = dwellEnd.diff(dwellStart, 'minutes').minutes;
@@ -1558,10 +1569,21 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         }
       }
     }
-    this.dwellCoverage.total++;
 
+    // Process Coverage: Measure feature adoption
+    // Only count "Dwell Ended" events (complete dock door visits) toward the total
+    // Mark "ok" if the visit also has process data (feature was used)
+    const isDwellEnded = /dwell\s+ended/i.test(event);
+    if (isDwellEnded) {
+      this.processCoverage.total++;
+      if (procStartRaw || procEndRaw) {
+        this.processCoverage.ok++;
+      }
+    }
+
+    // Calculate process time metrics when we have both start and end
     if (procStart && procEnd) {
-      this.processCoverage.ok++; this.parseOk++;
+      this.parseOk++;
       const mins = procEnd.diff(procStart, 'minutes').minutes;
       if (Number.isFinite(mins) && mins >= 0) {
         // Track at multiple granularities for trend analysis fallback
@@ -1573,7 +1595,6 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         this.getEstimators(this.processByDay, dk).median.add(mins);
       }
     }
-    this.processCoverage.total++;
 
     // Leaderboards (only if sample size sufficient)
     const processedBy = safeStr(firstPresent(row, ['processed_by', 'processed_by_name', 'processed_by_user']));
@@ -1637,12 +1658,12 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     // Data quality findings (move to tooltip, not shown in Findings section)
     const dataQualityFindings = [];
     if (dwellCoveragePct < 60) {
-      dataQualityFindings.push({ level: 'yellow', text: `Dwell time data: ${dwellCoveragePct}% of records have complete start/end timestamps.` });
+      dataQualityFindings.push({ level: 'yellow', text: `Dwell time data quality: ${dwellCoveragePct}% of records have dwell timestamps (start or end). Missing timestamps may indicate integration issues.` });
       recs.push('Confirm dwell start/end timestamps are being recorded consistently (workflow + integrations).');
     }
     if (processCoveragePct < 60) {
-      dataQualityFindings.push({ level: 'yellow', text: `Process time data: ${processCoveragePct}% of records have complete start/end timestamps.` });
-      recs.push('Confirm process start/end timestamps are being recorded consistently (dock door module usage).');
+      dataQualityFindings.push({ level: 'yellow', text: `YMS processing feature adoption: Only ${processCoveragePct}% of dock door visits used the loading/unloading feature. Low adoption may indicate training gaps or workflow issues.` });
+      recs.push('Increase adoption of the YMS dock door loading/unloading feature to improve visibility into process times.');
     }
 
     // Trend analysis: Dwell time (monthly -> weekly -> daily fallback)
