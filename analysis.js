@@ -437,6 +437,10 @@ function generateConfidenceReason(confidence, factors = {}) {
     if (isThresholdBased) {
       reasons.push('clear threshold exceeded');
     }
+    // Add R² explanations for high confidence trend analyses
+    if (factors.r2 !== undefined && factors.r2 >= 0.7) {
+      reasons.push(`strong linear trend (R²=${factors.r2}) indicates highly consistent pattern`);
+    }
     if (reasons.length === 0) {
       reasons.push('data quality and completeness are strong');
     }
@@ -478,6 +482,14 @@ function generateConfidenceReason(confidence, factors = {}) {
     if (isTrendBased && trendDataPoints !== null && trendDataPoints < 8) {
       reasons.push(`trend data has limited historical depth (${trendDataPoints} periods)`);
     }
+    // Add R² explanations for trend analyses
+    if (factors.r2 !== undefined) {
+      if (factors.r2 >= 0.7) {
+        reasons.push('strong linear trend (R²≥0.7) indicates consistent pattern');
+      } else if (factors.r2 >= 0.4) {
+        reasons.push('moderate trend fit (R²≥0.4) with some variation');
+      }
+    }
     if (reasons.length === 0) {
       reasons.push('some data gaps or quality issues present');
     }
@@ -497,6 +509,10 @@ function generateConfidenceReason(confidence, factors = {}) {
     }
     if (stale30Pct !== null && stale30Pct >= 25) {
       reasons.push(`${stale30Pct}% of records are stale, affecting data freshness`);
+    }
+    // Add R² explanations for low confidence trend analyses
+    if (factors.r2 !== undefined && factors.r2 < 0.4) {
+      reasons.push(`weak trend fit (R²=${factors.r2}) indicates high volatility`);
     }
     if (reasons.length === 0) {
       reasons.push('significant data quality issues limit reliability');
@@ -615,6 +631,278 @@ function computeTrendAnalysis(dataByGranularity, metricName, options = {}) {
 }
 
 /**
+ * Compare first half vs second half of the full time period.
+ * For QBR use - shows if performance improved or degraded over the period.
+ */
+function computePeriodComparison(dataByGranularity, metricName, options = {}) {
+  const { significantChangePct = 15, valueExtractor = null } = options;
+
+  // Try granularities: monthly → weekly → daily
+  const granularities = [
+    { key: 'monthly', label: 'first half vs second half (monthly)', data: dataByGranularity.monthly },
+    { key: 'weekly', label: 'first half vs second half (weekly)', data: dataByGranularity.weekly },
+    { key: 'daily', label: 'first half vs second half (daily)', data: dataByGranularity.daily }
+  ];
+
+  for (const { key, label, data } of granularities) {
+    if (!data) continue;
+
+    const series = extractTimeSeries(data, { valueExtractor });
+    if (!series || series.labels.length < 4) continue; // Need at least 4 periods to split
+
+    // Split into two halves
+    const midpoint = Math.floor(series.values.length / 2);
+    const firstHalf = series.values.slice(0, midpoint);
+    const secondHalf = series.values.slice(midpoint);
+
+    // Calculate averages for each half
+    const firstAvg = firstHalf.reduce((sum, v) => sum + v, 0) / firstHalf.length;
+    const secondAvg = secondHalf.reduce((sum, v) => sum + v, 0) / secondHalf.length;
+
+    if (!Number.isFinite(firstAvg) || !Number.isFinite(secondAvg) || firstAvg === 0) continue;
+
+    const changePct = ((secondAvg - firstAvg) / Math.abs(firstAvg)) * 100;
+    const direction = changePct > 0 ? 'increased' : 'decreased';
+    const absChange = Math.abs(changePct);
+
+    return {
+      firstHalf: {
+        value: firstAvg,
+        periods: firstHalf.length,
+        labels: series.labels.slice(0, midpoint)
+      },
+      secondHalf: {
+        value: secondAvg,
+        periods: secondHalf.length,
+        labels: series.labels.slice(midpoint)
+      },
+      changePct: Math.round(changePct * 10) / 10,
+      direction,
+      isSignificant: absChange >= significantChangePct,
+      metricName,
+      granularity: key,
+      granularityLabel: label,
+      dataPointCount: series.values.length,
+      analysisType: 'period-over-period'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Calculate overall trend using linear regression.
+ * Returns slope, R² (fit quality), and plain-English interpretation.
+ */
+function computeOverallTrend(dataByGranularity, metricName, options = {}) {
+  const { valueExtractor = null } = options;
+
+  // Prefer monthly for overall trend (smoother, less noise)
+  const granularities = [
+    { key: 'monthly', label: 'over the period (monthly)', data: dataByGranularity.monthly },
+    { key: 'weekly', label: 'over the period (weekly)', data: dataByGranularity.weekly },
+    { key: 'daily', label: 'over the period (daily)', data: dataByGranularity.daily }
+  ];
+
+  for (const { key, label, data } of granularities) {
+    if (!data) continue;
+
+    const series = extractTimeSeries(data, { valueExtractor });
+    if (!series || series.labels.length < 3) continue; // Need at least 3 points for regression
+
+    // Simple linear regression: y = mx + b
+    const n = series.values.length;
+    const x = Array.from({ length: n }, (_, i) => i); // 0, 1, 2, ...
+    const y = series.values;
+
+    const sumX = x.reduce((a, b) => a + b, 0);
+    const sumY = y.reduce((a, b) => a + b, 0);
+    const sumXY = x.reduce((sum, xi, i) => sum + xi * y[i], 0);
+    const sumX2 = x.reduce((sum, xi) => sum + xi * xi, 0);
+    const sumY2 = y.reduce((sum, yi) => sum + yi * yi, 0);
+
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+
+    // Calculate R² (coefficient of determination)
+    const yMean = sumY / n;
+    const ssRes = y.reduce((sum, yi, i) => {
+      const predicted = slope * x[i] + intercept;
+      return sum + Math.pow(yi - predicted, 2);
+    }, 0);
+    const ssTot = y.reduce((sum, yi) => sum + Math.pow(yi - yMean, 2), 0);
+    const r2 = 1 - (ssRes / ssTot);
+
+    // Calculate percentage change from start to end
+    const startValue = intercept; // predicted value at x=0
+    const endValue = slope * (n - 1) + intercept; // predicted value at x=n-1
+    const trendChangePct = ((endValue - startValue) / Math.abs(startValue)) * 100;
+
+    // Interpret trend stability based on R²
+    let stability;
+    if (r2 >= 0.7) {
+      stability = 'consistent'; // Strong linear trend
+    } else if (r2 >= 0.4) {
+      stability = 'moderate'; // Some trend but with variation
+    } else {
+      stability = 'volatile'; // Weak trend, high variability
+    }
+
+    // Interpret direction
+    let trendDirection;
+    if (Math.abs(trendChangePct) < 5) {
+      trendDirection = 'stable';
+    } else if (trendChangePct > 0) {
+      trendDirection = 'increasing';
+    } else {
+      trendDirection = 'decreasing';
+    }
+
+    return {
+      slope: Math.round(slope * 100) / 100,
+      intercept: Math.round(intercept * 10) / 10,
+      r2: Math.round(r2 * 100) / 100,
+      trendChangePct: Math.round(trendChangePct * 10) / 10,
+      trendDirection,
+      stability,
+      metricName,
+      granularity: key,
+      granularityLabel: label,
+      dataPointCount: n,
+      averageValue: Math.round(yMean * 10) / 10,
+      startValue: Math.round(startValue * 10) / 10,
+      endValue: Math.round(endValue * 10) / 10,
+      analysisType: 'overall-trend'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Identify best and worst performing periods.
+ * Automatically detects if peaks/lows correlate with weekends and includes in analysis.
+ */
+function findPeakAndLowPeriods(dataByGranularity, metricName, options = {}) {
+  const {
+    valueExtractor = null,
+    higherIsBetter = false   // False = lower is better (e.g., dwell time)
+  } = options;
+
+  // Use finest available granularity for detail
+  const granularities = [
+    { key: 'daily', data: dataByGranularity.daily },
+    { key: 'weekly', data: dataByGranularity.weekly },
+    { key: 'monthly', data: dataByGranularity.monthly }
+  ];
+
+  for (const { key, data } of granularities) {
+    if (!data) continue;
+
+    const series = extractTimeSeries(data, { valueExtractor });
+    if (!series || series.labels.length < 2) continue;
+
+    // Create pairs with day-of-week information (only for daily data)
+    const pairs = series.labels.map((label, i) => {
+      const dt = DateTime.fromISO(label);
+      return {
+        label,
+        value: series.values[i],
+        dayOfWeek: key === 'daily' ? dt.weekday : null, // 1=Mon, 7=Sun
+        isWeekend: key === 'daily' ? (dt.weekday >= 6) : null
+      };
+    });
+
+    if (pairs.length < 2) continue;
+
+    // Sort by value
+    const sorted = [...pairs].sort((a, b) => a.value - b.value);
+
+    // Best and worst depend on whether higher or lower is better
+    const best = higherIsBetter ? sorted[sorted.length - 1] : sorted[0];
+    const worst = higherIsBetter ? sorted[0] : sorted[sorted.length - 1];
+
+    // Calculate average
+    const avg = pairs.reduce((sum, p) => sum + p.value, 0) / pairs.length;
+    const bestVsAvgPct = ((best.value - avg) / Math.abs(avg)) * 100;
+    const worstVsAvgPct = ((worst.value - avg) / Math.abs(avg)) * 100;
+
+    // Analyze weekend patterns (only for daily data)
+    let weekendPattern = null;
+    if (key === 'daily') {
+      // Get top 10 best and worst performers
+      const topN = 10;
+      const topBest = higherIsBetter
+        ? sorted.slice(-topN).reverse()
+        : sorted.slice(0, topN);
+      const topWorst = higherIsBetter
+        ? sorted.slice(0, topN)
+        : sorted.slice(-topN).reverse();
+
+      // Count how many are weekends
+      const bestWeekendCount = topBest.filter(p => p.isWeekend).length;
+      const worstWeekendCount = topWorst.filter(p => p.isWeekend).length;
+
+      // If 60%+ of best/worst are weekends, flag it as a pattern
+      if (bestWeekendCount >= topN * 0.6) {
+        weekendPattern = {
+          type: 'best',
+          percentage: Math.round((bestWeekendCount / topN) * 100),
+          message: `${bestWeekendCount} of top ${topN} ${higherIsBetter ? 'highest' : 'lowest'} periods are weekends`
+        };
+      } else if (worstWeekendCount >= topN * 0.6) {
+        weekendPattern = {
+          type: 'worst',
+          percentage: Math.round((worstWeekendCount / topN) * 100),
+          message: `${worstWeekendCount} of top ${topN} ${higherIsBetter ? 'lowest' : 'highest'} periods are weekends`
+        };
+      }
+
+      // Also check if the single best/worst are weekends
+      if (!weekendPattern) {
+        if (best.isWeekend) {
+          weekendPattern = {
+            type: 'best-single',
+            message: `${higherIsBetter ? 'Peak' : 'Best'} period occurred on a weekend`
+          };
+        } else if (worst.isWeekend) {
+          weekendPattern = {
+            type: 'worst-single',
+            message: `${higherIsBetter ? 'Lowest' : 'Worst'} period occurred on a weekend`
+          };
+        }
+      }
+    }
+
+    return {
+      best: {
+        label: best.label,
+        value: Math.round(best.value * 10) / 10,
+        vsAveragePct: Math.round(Math.abs(bestVsAvgPct) * 10) / 10,
+        isWeekend: best.isWeekend,
+        dayOfWeek: best.dayOfWeek
+      },
+      worst: {
+        label: worst.label,
+        value: Math.round(worst.value * 10) / 10,
+        vsAveragePct: Math.round(Math.abs(worstVsAvgPct) * 10) / 10,
+        isWeekend: worst.isWeekend,
+        dayOfWeek: worst.dayOfWeek
+      },
+      average: Math.round(avg * 10) / 10,
+      metricName,
+      granularity: key,
+      dataPointCount: pairs.length,
+      analysisType: 'peak-low',
+      higherIsBetter,
+      weekendPattern // null or { type, percentage?, message }
+    };
+  }
+
+  return null;
+}
+
+/**
  * Format a trend analysis result into a finding object.
  * @param {object} trend - Trend analysis result from computeTrendAnalysis
  * @param {object} options - Formatting options
@@ -660,6 +948,185 @@ function formatTrendFinding(trend, options = {}) {
     text: `${trend.metricName} ${trend.direction} ${absChange}% (${prevVal} → ${currentVal}) ${trend.granularityLabel}.`,
     confidence: 'medium',
     confidenceReason
+  };
+}
+
+/**
+ * Format period-over-period comparison into a finding.
+ */
+function formatPeriodComparisonFinding(comparison, options = {}) {
+  const {
+    increaseLevel = 'yellow',
+    decreaseLevel = 'green',
+    unit = '',
+    invertLevels = false,
+    roundValues = true,
+    dataQualityFactors = {}
+  } = options;
+
+  if (!comparison) return null;
+
+  const absChange = Math.abs(comparison.changePct);
+  const level = comparison.direction === 'increased'
+    ? (invertLevels ? decreaseLevel : increaseLevel)
+    : (invertLevels ? increaseLevel : decreaseLevel);
+
+  const formatVal = (v) => {
+    if (!Number.isFinite(v)) return '?';
+    const val = roundValues ? Math.round(v * 10) / 10 : v;
+    return `${val}${unit}`;
+  };
+
+  const firstVal = formatVal(comparison.firstHalf.value);
+  const secondVal = formatVal(comparison.secondHalf.value);
+
+  const confidenceReason = generateConfidenceReason('high', {
+    ...dataQualityFactors,
+    isTrendBased: true,
+    trendDataPoints: comparison.dataPointCount
+  });
+
+  return {
+    level,
+    text: `${comparison.metricName} ${comparison.direction} ${absChange}% over the period (first half avg: ${firstVal}, second half avg: ${secondVal}).`,
+    confidence: 'high',
+    confidenceReason,
+    analysisType: 'period-over-period'
+  };
+}
+
+/**
+ * Format overall trend analysis into a finding with plain-English explanation.
+ */
+function formatOverallTrendFinding(trend, options = {}) {
+  const {
+    increaseLevel = 'yellow',
+    decreaseLevel = 'green',
+    stableLevel = 'green',
+    unit = '',
+    invertLevels = false,
+    roundValues = true,
+    dataQualityFactors = {}
+  } = options;
+
+  if (!trend) return null;
+
+  // Determine level based on trend direction
+  let level;
+  if (trend.trendDirection === 'stable') {
+    level = stableLevel;
+  } else if (trend.trendDirection === 'increasing') {
+    level = invertLevels ? decreaseLevel : increaseLevel;
+  } else {
+    level = invertLevels ? increaseLevel : decreaseLevel;
+  }
+
+  const formatVal = (v) => {
+    if (!Number.isFinite(v)) return '?';
+    const val = roundValues ? Math.round(v * 10) / 10 : v;
+    return `${val}${unit}`;
+  };
+
+  // Build plain-English description
+  let stabilityText;
+  if (trend.stability === 'consistent') {
+    stabilityText = 'with consistent trend';
+  } else if (trend.stability === 'moderate') {
+    stabilityText = 'with some variation';
+  } else {
+    stabilityText = 'with high volatility';
+  }
+
+  const avgVal = formatVal(trend.averageValue);
+  const absChange = Math.abs(trend.trendChangePct);
+
+  let text;
+  if (trend.trendDirection === 'stable') {
+    text = `${trend.metricName} remained stable around ${avgVal} ${trend.granularityLabel} (${stabilityText}).`;
+  } else {
+    const startVal = formatVal(trend.startValue);
+    const endVal = formatVal(trend.endValue);
+    text = `${trend.metricName} ${trend.trendDirection} ${absChange}% ${trend.granularityLabel} (${startVal} → ${endVal}, ${stabilityText}).`;
+  }
+
+  const confidenceReason = generateConfidenceReason('high', {
+    ...dataQualityFactors,
+    isTrendBased: true,
+    trendDataPoints: trend.dataPointCount,
+    r2: trend.r2
+  });
+
+  return {
+    level,
+    text,
+    confidence: 'high',
+    confidenceReason,
+    analysisType: 'overall-trend',
+    metadata: {
+      r2: trend.r2,
+      stability: trend.stability
+    }
+  };
+}
+
+/**
+ * Format peak/low period identification into a finding.
+ * Includes weekend pattern analysis if detected.
+ */
+function formatPeakLowFinding(peakLow, options = {}) {
+  const {
+    unit = '',
+    roundValues = true,
+    dataQualityFactors = {},
+    showBest = true,
+    showWorst = true
+  } = options;
+
+  if (!peakLow) return null;
+
+  const formatVal = (v) => {
+    if (!Number.isFinite(v)) return '?';
+    const val = roundValues ? Math.round(v * 10) / 10 : v;
+    return `${val}${unit}`;
+  };
+
+  const bestLabel = peakLow.higherIsBetter ? 'Peak' : 'Best';
+  const worstLabel = peakLow.higherIsBetter ? 'Lowest' : 'Worst';
+
+  const parts = [];
+
+  if (showBest) {
+    const weekendNote = peakLow.best.isWeekend ? ' (weekend)' : '';
+    parts.push(`${bestLabel}: ${formatVal(peakLow.best.value)} on ${peakLow.best.label}${weekendNote} (${peakLow.best.vsAveragePct}% ${peakLow.higherIsBetter ? 'above' : 'below'} avg)`);
+  }
+
+  if (showWorst) {
+    const weekendNote = peakLow.worst.isWeekend ? ' (weekend)' : '';
+    parts.push(`${worstLabel}: ${formatVal(peakLow.worst.value)} on ${peakLow.worst.label}${weekendNote} (${peakLow.worst.vsAveragePct}% ${peakLow.higherIsBetter ? 'below' : 'above'} avg)`);
+  }
+
+  let text = `${peakLow.metricName} - ${parts.join('; ')}.`;
+
+  // Add weekend pattern observation if detected
+  if (peakLow.weekendPattern) {
+    text += ` Note: ${peakLow.weekendPattern.message}.`;
+  }
+
+  const confidenceReason = generateConfidenceReason('medium', {
+    ...dataQualityFactors,
+    isTrendBased: true,
+    trendDataPoints: peakLow.dataPointCount
+  });
+
+  return {
+    level: 'green', // Informational finding
+    text,
+    confidence: 'medium',
+    confidenceReason,
+    analysisType: 'peak-low',
+    metadata: {
+      weekendPattern: peakLow.weekendPattern
+    }
   };
 }
 
@@ -1250,41 +1717,84 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       coveragePct: coverage
     };
 
-    // Trend analysis: Detention events
-    const detentionTrend = computeTrendAnalysis(
+    // QBR Analysis: Overall trend for detention events
+    const detentionOverallTrend = computeOverallTrend(
+      { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
+      'Detention events'
+    );
+    if (detentionOverallTrend) {
+      const finding = formatOverallTrendFinding(detentionOverallTrend, {
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Period-over-period comparison for detention
+    const detentionPeriodComparison = computePeriodComparison(
       { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
       'Detention events',
       { significantChangePct: 20 }
     );
-    if (detentionTrend) {
-      if (detentionTrend.isSignificant) {
-        const finding = formatTrendFinding(detentionTrend, {
-          increaseLevel: 'yellow',  // More detention is concerning
-          decreaseLevel: 'green',
-          dataQualityFactors: dqFactors
-        });
-        if (finding) findings.push(finding);
-        if (detentionTrend.direction === 'increased') {
-          recs.push('Detention trending up - investigate carrier performance and dock scheduling.');
-        }
-      } else {
-        findings.push({
-          level: 'green',
-          text: `Detention events stable at ~${Math.round(detentionTrend.current.value)} ${detentionTrend.granularityLabel}.`,
-          confidence: 'medium',
-          confidenceReason: generateConfidenceReason('medium', { ...dqFactors, isTrendBased: true })
-        });
+    if (detentionPeriodComparison?.isSignificant) {
+      const finding = formatPeriodComparisonFinding(detentionPeriodComparison, {
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+
+      if (detentionPeriodComparison.direction === 'increased') {
+        recs.push('Detention events increased over the period - investigate carrier performance trends and dock scheduling changes.');
       }
     }
 
-    // Trend analysis: Prevented detention
-    const preventedTrend = computeTrendAnalysis(
-      { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
-      'Prevented detention',
+    // QBR Analysis: Peak/low periods for detention (automatically detects weekend patterns)
+    const detentionPeakLow = findPeakAndLowPeriods(
+      { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
+      'Detention events',
+      { higherIsBetter: false } // Lower detention is better
+    );
+    if (detentionPeakLow) {
+      const finding = formatPeakLowFinding(detentionPeakLow, {
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+
+      // Add recommendation if weekend pattern detected
+      if (detentionPeakLow.weekendPattern) {
+        if (detentionPeakLow.weekendPattern.type === 'worst') {
+          recs.push('Weekend detention events are consistently higher - review weekend dock scheduling and carrier arrival patterns.');
+        }
+      }
+    }
+
+    // Operational context: Recent state (day/week/month-over-month)
+    const detentionRecentState = computeTrendAnalysis(
+      { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
+      'Detention events (recent)',
       { significantChangePct: 20 }
     );
-    if (preventedTrend?.isSignificant) {
-      const finding = formatTrendFinding(preventedTrend, {
+    if (detentionRecentState?.isSignificant) {
+      const finding = formatTrendFinding(detentionRecentState, {
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) {
+        finding.text = `Recent state: ${finding.text}`;
+        findings.push(finding);
+      }
+    }
+
+    // QBR Analysis: Prevented detention trends
+    const preventedOverallTrend = computeOverallTrend(
+      { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
+      'Prevented detention'
+    );
+    if (preventedOverallTrend && preventedOverallTrend.trendDirection !== 'stable') {
+      const finding = formatOverallTrendFinding(preventedOverallTrend, {
         increaseLevel: 'green',   // More prevented is good
         decreaseLevel: 'yellow',
         dataQualityFactors: dqFactors
@@ -1667,54 +2177,138 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       recs.push('Increase adoption of the YMS dock door loading/unloading feature to improve visibility into process times.');
     }
 
-    // Trend analysis: Dwell time (monthly -> weekly -> daily fallback)
-    const dwellTrend = computeTrendAnalysis(
+    // QBR Analysis: Overall trend for dwell time
+    const dwellOverallTrend = computeOverallTrend(
+      { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
+      'Median dwell time'
+    );
+    if (dwellOverallTrend) {
+      const finding = formatOverallTrendFinding(dwellOverallTrend, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Period-over-period comparison for dwell time
+    const dwellPeriodComparison = computePeriodComparison(
       { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
       'Median dwell time',
       { significantChangePct: 15 }
     );
-    if (dwellTrend) {
-      if (dwellTrend.isSignificant) {
-        const finding = formatTrendFinding(dwellTrend, {
-          unit: ' min',
-          increaseLevel: 'yellow',  // Longer dwell is concerning
-          decreaseLevel: 'green',    // Shorter dwell is good
-          dataQualityFactors: dqFactors
-        });
-        if (finding) findings.push(finding);
-      } else {
-        // Report stable trend as well
-        findings.push({
-          level: 'green',
-          text: `Median dwell time stable at ~${Math.round(dwellTrend.current.value)} min ${dwellTrend.granularityLabel}.`,
-          confidence: 'medium',
-          confidenceReason: generateConfidenceReason('medium', { ...dqFactors, isTrendBased: true })
-        });
+    if (dwellPeriodComparison?.isSignificant) {
+      const finding = formatPeriodComparisonFinding(dwellPeriodComparison, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Peak/low periods for dwell time (automatically detects weekend patterns)
+    const dwellPeakLow = findPeakAndLowPeriods(
+      { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
+      'Median dwell time',
+      { higherIsBetter: false } // Lower dwell is better
+    );
+    if (dwellPeakLow) {
+      const finding = formatPeakLowFinding(dwellPeakLow, {
+        unit: ' min',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+
+      // Add recommendation if weekend pattern detected
+      if (dwellPeakLow.weekendPattern) {
+        if (dwellPeakLow.weekendPattern.type === 'worst') {
+          recs.push('Weekend dwell times are consistently higher - review weekend staffing and dock availability.');
+        }
       }
     }
 
-    // Trend analysis: Process time (monthly -> weekly -> daily fallback)
-    const processTrend = computeTrendAnalysis(
+    // Operational context: Recent state for dwell time
+    const dwellRecentState = computeTrendAnalysis(
+      { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
+      'Median dwell time (recent)',
+      { significantChangePct: 15 }
+    );
+    if (dwellRecentState?.isSignificant) {
+      const finding = formatTrendFinding(dwellRecentState, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) {
+        finding.text = `Recent state: ${finding.text}`;
+        findings.push(finding);
+      }
+    }
+
+    // QBR Analysis: Overall trend for process time
+    const processOverallTrend = computeOverallTrend(
+      { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
+      'Median process time'
+    );
+    if (processOverallTrend) {
+      const finding = formatOverallTrendFinding(processOverallTrend, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Period-over-period comparison for process time
+    const processPeriodComparison = computePeriodComparison(
       { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
       'Median process time',
       { significantChangePct: 15 }
     );
-    if (processTrend) {
-      if (processTrend.isSignificant) {
-        const finding = formatTrendFinding(processTrend, {
-          unit: ' min',
-          increaseLevel: 'yellow',
-          decreaseLevel: 'green',
-          dataQualityFactors: dqFactors
-        });
-        if (finding) findings.push(finding);
-      } else {
-        findings.push({
-          level: 'green',
-          text: `Median process time stable at ~${Math.round(processTrend.current.value)} min ${processTrend.granularityLabel}.`,
-          confidence: 'medium',
-          confidenceReason: generateConfidenceReason('medium', { ...dqFactors, isTrendBased: true })
-        });
+    if (processPeriodComparison?.isSignificant) {
+      const finding = formatPeriodComparisonFinding(processPeriodComparison, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Peak/low periods for process time
+    const processPeakLow = findPeakAndLowPeriods(
+      { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
+      'Median process time',
+      { higherIsBetter: false } // Lower process time is better
+    );
+    if (processPeakLow) {
+      const finding = formatPeakLowFinding(processPeakLow, {
+        unit: ' min',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // Operational context: Recent state for process time
+    const processRecentState = computeTrendAnalysis(
+      { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
+      'Median process time (recent)',
+      { significantChangePct: 15 }
+    );
+    if (processRecentState?.isSignificant) {
+      const finding = formatTrendFinding(processRecentState, {
+        unit: ' min',
+        increaseLevel: 'yellow',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) {
+        finding.text = `Recent state: ${finding.text}`;
+        findings.push(finding);
       }
     }
 
@@ -2226,27 +2820,63 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     const findings = [];
     const recs = [];
 
-    // Trend analysis: Weekly moves
-    const movesTrend = computeTrendAnalysis(
+    // QBR Analysis: Overall trend for weekly moves
+    const movesOverallTrend = computeOverallTrend(
+      { weekly: this.movesByWeek, daily: this.movesByDay },
+      'Weekly moves'
+    );
+    if (movesOverallTrend) {
+      const finding = formatOverallTrendFinding(movesOverallTrend, {
+        increaseLevel: 'green',   // More moves is generally good (activity)
+        decreaseLevel: 'yellow',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Period-over-period comparison for moves
+    const movesPeriodComparison = computePeriodComparison(
       { weekly: this.movesByWeek, daily: this.movesByDay },
       'Weekly moves',
       { significantChangePct: 15 }
     );
-    if (movesTrend) {
-      if (movesTrend.isSignificant) {
-        const finding = formatTrendFinding(movesTrend, {
-          increaseLevel: 'green',   // More moves is generally good (activity)
-          decreaseLevel: 'yellow',
-          dataQualityFactors: dqFactors
-        });
-        if (finding) findings.push(finding);
-      } else {
-        findings.push({
-          level: 'green',
-          text: `Move volume stable at ~${Math.round(movesTrend.current.value)} ${movesTrend.granularityLabel}.`,
-          confidence: 'medium',
-          confidenceReason: generateConfidenceReason('medium', { ...dqFactors, isTrendBased: true })
-        });
+    if (movesPeriodComparison?.isSignificant) {
+      const finding = formatPeriodComparisonFinding(movesPeriodComparison, {
+        increaseLevel: 'green',
+        decreaseLevel: 'yellow',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Peak/low periods for moves
+    const movesPeakLow = findPeakAndLowPeriods(
+      { weekly: this.movesByWeek, daily: this.movesByDay },
+      'Weekly moves',
+      { higherIsBetter: true } // More moves is better
+    );
+    if (movesPeakLow) {
+      const finding = formatPeakLowFinding(movesPeakLow, {
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // Operational context: Recent state for moves
+    const movesRecentState = computeTrendAnalysis(
+      { weekly: this.movesByWeek, daily: this.movesByDay },
+      'Weekly moves (recent)',
+      { significantChangePct: 15 }
+    );
+    if (movesRecentState?.isSignificant) {
+      const finding = formatTrendFinding(movesRecentState, {
+        increaseLevel: 'green',
+        decreaseLevel: 'yellow',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) {
+        finding.text = `Recent state: ${finding.text}`;
+        findings.push(finding);
       }
     }
 
@@ -2526,30 +3156,74 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       recs.push('If lost events are expected but missing, confirm event strings and report configuration match local processes.');
     }
 
-    // Trend analysis: Lost events (monthly -> weekly -> daily fallback)
-    const lostTrend = computeTrendAnalysis(
+    // QBR Analysis: Overall trend for lost events
+    const lostOverallTrend = computeOverallTrend(
+      { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
+      'Lost trailer events'
+    );
+    if (lostOverallTrend) {
+      const finding = formatOverallTrendFinding(lostOverallTrend, {
+        increaseLevel: 'red',     // More lost is bad
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+    }
+
+    // QBR Analysis: Period-over-period comparison for lost events
+    const lostPeriodComparison = computePeriodComparison(
       { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
       'Lost trailer events',
       { significantChangePct: 25 }
     );
-    if (lostTrend) {
-      if (lostTrend.isSignificant) {
-        const finding = formatTrendFinding(lostTrend, {
-          increaseLevel: 'red',     // More lost is bad
-          decreaseLevel: 'green',
-          dataQualityFactors: dqFactors
-        });
-        if (finding) findings.push(finding);
-        if (lostTrend.direction === 'increased') {
-          recs.push('Lost events trending up - investigate carrier handoffs and check-out habits.');
+    if (lostPeriodComparison?.isSignificant) {
+      const finding = formatPeriodComparisonFinding(lostPeriodComparison, {
+        increaseLevel: 'red',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+
+      if (lostPeriodComparison.direction === 'increased') {
+        recs.push('Lost trailer events increased over the period - investigate carrier handoffs and check-out habits.');
+      }
+    }
+
+    // QBR Analysis: Peak/low periods for lost events
+    const lostPeakLow = findPeakAndLowPeriods(
+      { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
+      'Lost trailer events',
+      { higherIsBetter: false } // Lower lost events is better
+    );
+    if (lostPeakLow) {
+      const finding = formatPeakLowFinding(lostPeakLow, {
+        dataQualityFactors: dqFactors
+      });
+      if (finding) findings.push(finding);
+
+      // Add recommendation if weekend pattern detected
+      if (lostPeakLow.weekendPattern) {
+        if (lostPeakLow.weekendPattern.type === 'worst') {
+          recs.push('Weekend lost events are consistently higher - review weekend check-in/check-out processes.');
         }
-      } else if (this.lostCount > 0) {
-        findings.push({
-          level: 'yellow',
-          text: `Lost events stable at ~${Math.round(lostTrend.current.value)} ${lostTrend.granularityLabel}.`,
-          confidence: 'medium',
-          confidenceReason: generateConfidenceReason('medium', { ...dqFactors, isTrendBased: true })
-        });
+      }
+    }
+
+    // Operational context: Recent state for lost events
+    const lostRecentState = computeTrendAnalysis(
+      { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
+      'Lost trailer events (recent)',
+      { significantChangePct: 25 }
+    );
+    if (lostRecentState?.isSignificant) {
+      const finding = formatTrendFinding(lostRecentState, {
+        increaseLevel: 'red',
+        decreaseLevel: 'green',
+        dataQualityFactors: dqFactors
+      });
+      if (finding) {
+        finding.text = `Recent state: ${finding.text}`;
+        findings.push(finding);
       }
     }
 

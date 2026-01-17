@@ -42,6 +42,15 @@ const GLOSSARY = {
   'turns per door': 'Number of trailers processed through a single dock door in a day. Higher turns = better door utilization.',
   'compliance': 'Percentage of moves where drivers properly tap Accept, Start, and Complete in sequence with realistic timing.',
   'lost events': 'Trailers marked as "lost" in the system - their location is unknown. Often due to missed check-out scans.',
+  'period-over-period': 'Compares the average performance of the first half of the date range to the second half, showing if metrics improved or declined over the full period.',
+  'overall trend': 'Statistical analysis (linear regression) showing the general direction (increasing, decreasing, or stable) and consistency of a metric across the entire time period.',
+  'linear regression': 'A statistical method that finds the best-fit straight line through data points to identify overall trends.',
+  'R²': 'R-squared (coefficient of determination) - a statistical measure from 0 to 1 indicating how well the trend line fits the data. Higher values (0.7+) mean a consistent trend; lower values indicate more volatility.',
+  'r-squared': 'R-squared (coefficient of determination) - a statistical measure from 0 to 1 indicating how well the trend line fits the data. Higher values (0.7+) mean a consistent trend; lower values indicate more volatility.',
+  'volatility': 'Measures how much a metric fluctuates around its trend line. High volatility means unpredictable swings; low volatility means steady, consistent performance.',
+  'first half vs second half': 'Splits the date range in two and compares average performance, revealing whether metrics improved or worsened during the period.',
+  'consistent trend': 'A stable, predictable pattern with R² ≥ 0.7, indicating the metric follows a clear direction with minimal random variation.',
+  'high volatility': 'Unstable performance with R² < 0.4, indicating the metric fluctuates unpredictably with no clear trend.',
 };
 
 /**
