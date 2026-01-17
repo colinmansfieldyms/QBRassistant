@@ -475,8 +475,8 @@ function generateConfidenceReason(confidence, factors = {}) {
     if (isRatioBased) {
       reasons.push('ratio analysis may not reflect all edge cases');
     }
-    if (isTrendBased && trendDataPoints === null) {
-      reasons.push('trend data has limited historical depth');
+    if (isTrendBased && trendDataPoints !== null && trendDataPoints < 8) {
+      reasons.push(`trend data has limited historical depth (${trendDataPoints} periods)`);
     }
     if (reasons.length === 0) {
       reasons.push('some data gaps or quality issues present');
@@ -606,7 +606,8 @@ function computeTrendAnalysis(dataByGranularity, metricName, options = {}) {
       isSignificant: absChange >= significantChangePct,
       metricName,
       granularity: key,
-      granularityLabel: label
+      granularityLabel: label,
+      dataPointCount: n  // Total number of time periods available
     };
   }
 
@@ -645,8 +646,8 @@ function formatTrendFinding(trend, options = {}) {
   const currentVal = formatVal(trend.current.value);
   const prevVal = formatVal(trend.previous.value);
 
-  // Count data points in the trend
-  const trendDataPoints = trend.current.count !== undefined ? 2 : null;
+  // Use the actual number of data points from the trend analysis
+  const trendDataPoints = trend.dataPointCount || null;
 
   const confidenceReason = generateConfidenceReason('medium', {
     ...dataQualityFactors,
