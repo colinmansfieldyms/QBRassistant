@@ -784,6 +784,7 @@ function computeOverallTrend(dataByGranularity, metricName, options = {}) {
  * Automatically detects if peaks/lows correlate with weekends and includes in analysis.
  */
 function findPeakAndLowPeriods(dataByGranularity, metricName, options = {}) {
+  const DateTime = getDateTime();
   const {
     valueExtractor = null,
     higherIsBetter = false   // False = lower is better (e.g., dwell time)
