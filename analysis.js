@@ -3880,7 +3880,7 @@ function computeDockDoorROIIfEnabled({ meta, metrics, assumptions }) {
       if (performancePct >= 100 && dailySurplusValue > 0) {
         insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
       } else if (dailyGapValue > 0) {
-        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity (${round1(gap)} turns/day × $${round1(costPerTurn)}/turn × ${uniqueDoors || 1} doors)`);
+        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity (${round1(gap)} turns/day gap × $${round1(costPerTurn)}/turn [${costPerHour}/hr × ${hoursPerDay}hrs ÷ ${target} target] × ${uniqueDoors || 1} doors)`);
       }
     }
   }
@@ -4632,7 +4632,7 @@ function recalcDockDoorROI(existingRoi, metrics, assumptions) {
       if (performancePct >= 100 && dailySurplusValue > 0) {
         insights.push(`Efficiency value: ~$${round1(dailySurplusValue)}/day in additional throughput`);
       } else if (dailyGapValue > 0) {
-        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity (${round1(gap)} turns/day × $${round1(costPerTurn)}/turn × ${uniqueDoors || 1} doors)`);
+        insights.push(`Opportunity cost: ~$${round1(dailyGapValue)}/day in unrealized capacity (${round1(gap)} turns/day gap × $${round1(costPerTurn)}/turn [${costPerHour}/hr × ${hoursPerDay}hrs ÷ ${target} target] × ${uniqueDoors || 1} doors)`);
       }
     }
   }
