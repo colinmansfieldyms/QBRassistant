@@ -1804,7 +1804,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Summary finding when no trends available but data exists
-    if (!detentionTrend && !preventedTrend && (this.detention > 0 || this.preDetention > 0)) {
+    if (!detentionRecentState && !preventedOverallTrend && (this.detention > 0 || this.preDetention > 0)) {
       findings.push({
         level: 'green',
         text: `Detention: ${this.detention} events, Prevented: ${this.prevented}.`,
@@ -3229,7 +3229,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Volume finding when no trend available but events exist
-    if (!lostTrend && this.lostCount > 0) {
+    if (!lostRecentState && this.lostCount > 0) {
       if (this.lostCount > 10) {
         findings.push({
           level: 'yellow',
