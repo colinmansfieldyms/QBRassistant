@@ -1,6 +1,6 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
-import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI } from './analysis.js?v=2025.01.07.0';
-import { renderReportResult, destroyAllCharts } from './charts.js?v=2025.01.07.0';
+import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI, facilityRegistry } from './analysis.js?v=2025.01.07.0';
+import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
@@ -145,6 +145,10 @@ const state = {
   partialPeriodMode: 'include', // 'include' | 'trim' | 'highlight'
   partialPeriodInfo: null, // Global partial period detection result
   enableDrilldown: true, // Enable drill-down on charts
+  // Multi-facility tracking (auto-detected from data)
+  isMultiFacility: false, // True when 2+ facilities detected
+  detectedFacilities: [], // Array of facility names from data
+  analyzers: null, // Store analyzers reference for facility result retrieval
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -306,11 +310,41 @@ function abortInFlight(reason = 'Cancelled.') {
 
 function resetAll() {
   abortInFlight('Reset all.');
+
+  // Destroy all Chart.js instances (including per-facility charts not in chartRegistry)
+  // Chart.js 3.x+ stores instances globally
+  if (window.Chart && Array.isArray(window.Chart.instances)) {
+    // Make a copy since destroy() modifies the instances array
+    const instances = [...window.Chart.instances];
+    instances.forEach((chart, index) => {
+      try {
+        chart.destroy();
+      } catch (e) {
+        console.warn(`Failed to destroy chart instance ${index}:`, e);
+      }
+    });
+  }
+
+  // Also clear the registry
   destroyAllCharts(state.chartRegistry);
   state.chartRegistry.clear();
+
   perfRenderState.timer && clearTimeout(perfRenderState.timer);
   perfRenderState.timer = null;
   perfRenderState.pending = false;
+
+  // Clear per-facility data from analyzers before nulling them
+  if (state.analyzers) {
+    Object.values(state.analyzers).forEach(analyzer => {
+      if (analyzer && analyzer.byFacility && typeof analyzer.byFacility.clear === 'function') {
+        try {
+          analyzer.byFacility.clear();
+        } catch (e) {
+          console.warn('Failed to clear analyzer per-facility data:', e);
+        }
+      }
+    });
+  }
 
   state.running = false;
   state.abortController = null;
@@ -321,6 +355,10 @@ function resetAll() {
   state.results = {};
   state.etaTracker = null;
   state.partialPeriodInfo = null;
+  state.isMultiFacility = false;
+  state.detectedFacilities = [];
+  state.analyzers = null;
+  facilityRegistry.clear();
   resetPerfStats();
   resetWorkerState();
   flushProgressRender();
@@ -654,7 +692,7 @@ function recordRender(ms) {
 // ---------- Main-thread ingestion helper (yields to keep UI responsive) ----------
 const MAIN_THREAD_INGEST_CHUNK = 200;  // Reduced chunk size for better responsiveness
 
-async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal }) {
+async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal, facility }) {
   const incoming = Array.isArray(rows) ? rows : [];
   let processed = 0;
   const t0 = state.perf.enabled ? performance.now() : 0;
@@ -665,6 +703,10 @@ async function ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, 
     for (let i = start; i < end; i++) {
       const normalized = normalizeRowStrict(incoming[i], { report, timezone, onWarning });
       if (normalized) {
+        // For API mode, inject facility into flags so analyzers can track per-facility metrics
+        if (facility && normalized.flags) {
+          normalized.flags.facility = facility;
+        }
         analyzer.ingest(normalized);
         processed++;
       }
@@ -694,7 +736,7 @@ function createMainThreadIngestQueue({ analyzers, timezone, onWarning, signal })
     }
   };
 
-  const enqueue = async ({ report, rows }) => {
+  const enqueue = async ({ report, rows, facility }) => {
     const analyzer = analyzers?.[report];
     if (!analyzer) return null;
 
@@ -714,7 +756,7 @@ function createMainThreadIngestQueue({ analyzers, timezone, onWarning, signal })
         return { processed: 0, durationMs: 0 };
       }
       try {
-        return await ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal });
+        return await ingestRowsChunked({ rows, report, timezone, analyzer, onWarning, signal, facility });
       } finally {
         pendingCount--;
         completedCount++;
@@ -1001,6 +1043,46 @@ function renderAllResults() {
     root.appendChild(disclaimers.firstElementChild);
   }
 
+  // Create getFacilityResult function for per-facility tabbed results
+  const getFacilityResult = (report, facility) => {
+    try {
+      const analyzer = state.analyzers?.[report];
+      if (!analyzer) {
+        console.warn(`No analyzer found for report: ${report}`);
+        return null;
+      }
+      if (!facility) {
+        console.warn(`No facility specified for getFacilityResult`);
+        return null;
+      }
+
+      // Check if analyzer has finalizeFacility method
+      if (typeof analyzer.finalizeFacility !== 'function') {
+        console.warn(`Analyzer for ${report} is missing finalizeFacility method`);
+        return null;
+      }
+
+      const meta = {
+        tenant: inputs.tenant,
+        facilities: [facility],
+        startDate: inputs.startDate,
+        endDate: inputs.endDate,
+        timezone: inputs.timezone,
+        assumptions: inputs.assumptions,
+      };
+
+      const result = analyzer.finalizeFacility(facility, meta);
+      if (!result) {
+        console.warn(`finalizeFacility returned null for ${facility} in ${report}`);
+      }
+      return result;
+
+    } catch (error) {
+      console.error(`Error getting facility result for ${facility} in ${report}:`, error);
+      return null;
+    }
+  };
+
   reports.forEach(report => {
     const result = state.results[report];
     const card = renderReportResult({
@@ -1022,9 +1104,25 @@ function renderAllResults() {
       },
       onWarning: addWarning,
       chartRegistry: state.chartRegistry,
+      // Multi-facility support
+      isMultiFacility: state.isMultiFacility,
+      facilities: state.detectedFacilities,
+      getFacilityResult: (facility) => getFacilityResult(report, facility),
     });
     root.appendChild(card);
   });
+
+  // Render Facility Comparisons section if multi-facility detected
+  if (state.isMultiFacility && state.detectedFacilities.length >= 2) {
+    const comparisonSection = renderFacilityComparisons({
+      facilities: state.detectedFacilities,
+      results: state.results,
+      chartRegistry: state.chartRegistry,
+    });
+    if (comparisonSection) {
+      root.appendChild(comparisonSection);
+    }
+  }
 
   UI.resultsRoot.innerHTML = '';
   UI.resultsRoot.appendChild(root);
@@ -1181,6 +1279,11 @@ async function runAssessment() {
   state.timezone = inputs.timezone;
   state.resultsRenderThrottleMs = computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT);
 
+  // Clear facility registry for fresh detection
+  facilityRegistry.clear();
+  state.isMultiFacility = false;
+  state.detectedFacilities = [];
+
   // Initialize ETA tracker
   state.etaTracker = createETATracker();
   state.etaTracker.start();
@@ -1272,6 +1375,8 @@ async function runAssessment() {
         isCSVMode: state.dataSource === 'csv',
         enableDrilldown: state.enableDrilldown,
       });
+      // Store analyzers in state for facility result retrieval
+      state.analyzers = analyzers;
       mainThreadIngest = createMainThreadIngestQueue({
         analyzers,
         timezone: inputs.timezone,
@@ -1351,7 +1456,8 @@ async function runAssessment() {
         if (!analyzer) return;
 
         // Stream/aggregate pattern: process rows immediately and discard page data
-        const task = mainThreadIngest?.enqueue({ report, rows });
+        // Pass facility to enable per-facility tracking in API mode
+        const task = mainThreadIngest?.enqueue({ report, rows, facility });
         if (task) {
           try {
             const parseStart = performance.now();
@@ -1403,6 +1509,10 @@ async function runAssessment() {
         });
       }
     }
+
+    // Update multi-facility state from detected facilities
+    state.isMultiFacility = facilityRegistry.isMultiFacility();
+    state.detectedFacilities = facilityRegistry.getFacilities();
 
     flushProgressRender();
     flushResultsRender();
@@ -1493,6 +1603,11 @@ async function runCSVAssessment() {
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
 
+  // Clear facility registry for fresh detection
+  facilityRegistry.clear();
+  state.isMultiFacility = false;
+  state.detectedFacilities = [];
+
   // Initialize progress UI for CSV mode
   initCSVProgressUI(inputs.reports);
   setRunningUI(true);
@@ -1519,6 +1634,9 @@ async function runCSVAssessment() {
       isCSVMode: true,
       enableDrilldown: state.enableDrilldown,
     });
+
+    // Store analyzers in state for facility result retrieval
+    state.analyzers = analyzers;
 
     // Process all CSV files
     const processingResults = await processCSVFiles(state.csvImportState, analyzers, {
@@ -1595,6 +1713,10 @@ async function runCSVAssessment() {
       state.inputs.dateRangeAssumed = true;
     }
 
+    // Update multi-facility state from detected facilities
+    state.isMultiFacility = facilityRegistry.isMultiFacility();
+    state.detectedFacilities = facilityRegistry.getFacilities();
+
     flushProgressRender();
     flushResultsRender();
     setBanner('ok', `Complete. Processed ${processingResults.totalRows.toLocaleString()} rows from ${state.csvImportState.count} file(s).`);
@@ -1658,6 +1780,23 @@ function renderCSVProgressUI() {
 
 // ---------- Data Source Switching ----------
 function setDataSource(source) {
+  // Prevent mode switching when results exist without user confirmation
+  // This prevents data corruption from mixing CSV and API facility data
+  if (source !== state.dataSource && Object.keys(state.results).length > 0) {
+    const confirmMessage = `Switching from ${state.dataSource.toUpperCase()} to ${source.toUpperCase()} mode will clear all current results and reset the analysis.\n\nAre you sure you want to continue?`;
+
+    if (!confirm(confirmMessage)) {
+      // User cancelled - revert tab selection
+      UI.dataSourceTabs.forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.source === state.dataSource);
+      });
+      return false; // Indicate cancellation
+    }
+
+    // User confirmed - reset everything before switching
+    resetAll();
+  }
+
   state.dataSource = source;
 
   // Update tab appearance
@@ -1854,6 +1993,41 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
   UI.resultsRoot.innerHTML = '';
   const partialPeriodMode = document.querySelector('input[name="partialPeriodMode"]:checked')?.value || 'include';
 
+  // Create getFacilityResult function for per-facility tabbed results
+  const getFacilityResultForRecalc = (report, facility) => {
+    try {
+      const analyzer = state.analyzers?.[report];
+      if (!analyzer) {
+        console.warn(`No analyzer found for report: ${report} during ROI recalc`);
+        return null;
+      }
+      if (!facility) {
+        console.warn(`No facility specified for ROI recalc`);
+        return null;
+      }
+
+      if (typeof analyzer.finalizeFacility !== 'function') {
+        console.warn(`Analyzer for ${report} is missing finalizeFacility method`);
+        return null;
+      }
+
+      const meta = {
+        tenant: state.inputs?.tenant,
+        facilities: [facility],
+        startDate: state.inputs?.startDate,
+        endDate: state.inputs?.endDate,
+        timezone: state.timezone,
+        assumptions: newAssumptions,
+      };
+
+      return analyzer.finalizeFacility(facility, meta);
+
+    } catch (error) {
+      console.error(`Error getting facility result for ${facility} in ${report} during ROI recalc:`, error);
+      return null;
+    }
+  };
+
   for (const report of Object.keys(state.results)) {
     const result = state.results[report];
     const card = renderReportResult({
@@ -1866,6 +2040,10 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
       partialPeriodInfo: state.partialPeriodInfo,
       enableDrilldown: state.enableDrilldown,
       chartRegistry: state.chartRegistry,
+      // Multi-facility support
+      isMultiFacility: state.isMultiFacility,
+      facilities: state.detectedFacilities,
+      getFacilityResult: (facility) => getFacilityResultForRecalc(report, facility),
     });
     UI.resultsRoot.appendChild(card);
   }

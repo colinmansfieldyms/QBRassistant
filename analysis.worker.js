@@ -122,6 +122,10 @@ async function handlePageRows(data) {
         onWarning: (msg) => bufferWarning(run, msg),
       });
       if (normalized) {
+        // For API mode, inject facility into flags so analyzers can track per-facility metrics
+        if (facility && normalized.flags) {
+          normalized.flags.facility = facility;
+        }
         analyzer.ingest(normalized);
         processed++;
       }

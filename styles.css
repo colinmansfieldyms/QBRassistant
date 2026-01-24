@@ -2260,6 +2260,147 @@ canvas{ max-width:100%; }
   }
 }
 
+/* ========== Facility Tabs ========== */
+.facility-tabs-container {
+  margin-bottom: 16px;
+}
+
+.facility-tabs {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  background: #f9fafb;
+  scrollbar-width: thin;
+}
+
+.facility-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.facility-tabs::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.facility-tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+  transition: all 0.2s ease;
+  border-right: 1px solid var(--border);
+
+  /* Constrain very long facility names */
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.facility-tab:last-child {
+  border-right: none;
+}
+
+.facility-tab:hover {
+  background: rgba(38, 34, 98, 0.05);
+  color: var(--text);
+}
+
+.facility-tab.active {
+  background: var(--accent);
+  color: white;
+}
+
+.facility-tab-panels {
+  position: relative;
+}
+
+.facility-tab-panel {
+  display: none;
+}
+
+.facility-tab-panel.active {
+  display: block;
+}
+
+/* Facility comparison section */
+.facility-comparison-section {
+  margin-top: 24px;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 900px) {
+  .comparison-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Traffic light colors for comparison table */
+.traffic-green {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.traffic-yellow {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.traffic-red {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.comparison-table th {
+  background: var(--bg);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.comparison-table td {
+  vertical-align: middle;
+}
+
+.comparison-table td.metric-cell {
+  text-align: center;
+  font-weight: 500;
+  border-radius: 4px;
+  margin: 2px;
+}
+
+.comparison-table .metric-name {
+  font-weight: 500;
+}
+
+.comparison-table .metric-name .tooltip-trigger {
+  cursor: help;
+  border-bottom: 1px dotted var(--muted);
+}
+
 @media print {
   :root{ --shadow:none; }
   body{ background:white; }
@@ -2273,4 +2414,8 @@ canvas{ max-width:100%; }
   .data-source-tabs{ display:none !important; }
   .csv-disclaimers{ display:none !important; }
   a[href]::after{ content:""; }
+  /* Facility tabs: hide tab bar, show only "All Facilities" panel */
+  .facility-tabs{ display:none !important; }
+  .facility-tab-panel{ display:block !important; }
+  .facility-tab-panel:not([data-tab-panel="all"]){ display:none !important; }
 }

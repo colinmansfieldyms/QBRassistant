@@ -1152,6 +1152,110 @@ function scacIsPlaceholder(scac) {
   return !s || s === 'XXXX' || s === 'UNKNOWN' || s === 'UNKN';
 }
 
+// ---------- Facility Registry ----------
+/**
+ * Tracks unique facilities across all report types.
+ * Used to determine if multi-facility mode should be enabled.
+ */
+class FacilityRegistry {
+  constructor() {
+    this.facilities = new Set();
+    this.facilityByReport = new Map();
+  }
+
+  /**
+   * Normalize and sanitize a facility name.
+   * @param {string} facility - Raw facility name from data
+   * @returns {string|null} - Normalized facility name, or null if invalid
+   */
+  static normalizeFacilityName(facility) {
+    if (!facility || typeof facility !== 'string') return null;
+
+    const trimmed = facility.trim();
+    if (!trimmed || trimmed === '(blank)' || trimmed === '(unknown)' || trimmed === '') return null;
+
+    // Length limit: max 100 characters to prevent layout issues
+    let normalized = trimmed;
+    if (normalized.length > 100) {
+      console.warn(`Facility name exceeds 100 characters (${normalized.length}), truncating: ${normalized.slice(0, 50)}...`);
+      normalized = normalized.slice(0, 100);
+    }
+
+    // Sanitize dangerous characters for XSS protection and HTML safety
+    // Remove: < > " ' & to prevent attribute breaking and XSS
+    // Keep: letters, numbers, spaces, hyphens, underscores, forward slash, parentheses, periods
+    const original = normalized;
+    normalized = normalized.replace(/[<>"'&]/g, '');
+
+    if (normalized !== original) {
+      console.warn(`Facility name contained special characters, sanitized: "${original}" -> "${normalized}"`);
+    }
+
+    // After sanitization, check if we have anything left
+    normalized = normalized.trim();
+    if (!normalized) {
+      console.warn(`Facility name was empty after sanitization: "${original}"`);
+      return null;
+    }
+
+    return normalized;
+  }
+
+  /**
+   * Register a facility for a given report type.
+   * @param {string} facility - The facility code/name
+   * @param {string} reportType - The report type (e.g., 'dockdoor_history')
+   */
+  register(facility, reportType) {
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return;
+
+    this.facilities.add(normalized);
+
+    if (!this.facilityByReport.has(reportType)) {
+      this.facilityByReport.set(reportType, new Set());
+    }
+    this.facilityByReport.get(reportType).add(normalized);
+  }
+
+  /**
+   * Check if multiple facilities have been detected.
+   * @returns {boolean}
+   */
+  isMultiFacility() {
+    return this.facilities.size >= 2;
+  }
+
+  /**
+   * Get all detected facilities, sorted alphabetically.
+   * @returns {string[]}
+   */
+  getFacilities() {
+    return Array.from(this.facilities).sort();
+  }
+
+  /**
+   * Get facilities detected for a specific report type.
+   * @param {string} reportType
+   * @returns {string[]}
+   */
+  getFacilitiesForReport(reportType) {
+    const set = this.facilityByReport.get(reportType);
+    return set ? Array.from(set).sort() : [];
+  }
+
+  /**
+   * Clear all tracked facilities. Call before starting a new analysis run.
+   */
+  clear() {
+    this.facilities.clear();
+    this.facilityByReport.clear();
+  }
+}
+
+// Singleton instance for tracking facilities across the application
+export const facilityRegistry = new FacilityRegistry();
+
 // ---------- Report analyzers ----------
 class BaseAnalyzer {
   constructor({ timezone, startDate, endDate, assumptions, onWarning, enableDrilldown = true }) {
@@ -1171,6 +1275,47 @@ class BaseAnalyzer {
     // Track date range from ingested data (for CSV mode)
     this.earliestDate = null; // DateTime object
     this.latestDate = null;   // DateTime object
+
+    // Per-facility data storage for multi-facility support
+    // Maps facility name → per-facility metrics bucket
+    this.byFacility = new Map();
+  }
+
+  /**
+   * Get or create a per-facility metrics bucket.
+   * Subclasses should override createFacilityBucket() to define the bucket structure.
+   * @param {string} facility - The facility identifier
+   * @returns {object} The facility-specific metrics bucket
+   */
+  getOrCreateFacilityBucket(facility) {
+    if (!facility) return null;
+    if (!this.byFacility.has(facility)) {
+      this.byFacility.set(facility, this.createFacilityBucket());
+    }
+    return this.byFacility.get(facility);
+  }
+
+  /**
+   * Create a new per-facility metrics bucket.
+   * Subclasses should override this to return appropriate metric containers.
+   * @returns {object} Empty metrics bucket for a facility
+   */
+  createFacilityBucket() {
+    // Default implementation - subclasses override
+    return { totalRows: 0 };
+  }
+
+  /**
+   * Register a facility with the global registry and get its bucket.
+   * Call this in ingest() with the facility from the row.
+   * @param {string} facility - The facility identifier
+   * @param {string} reportType - The report type name
+   * @returns {object|null} The facility bucket, or null if no facility
+   */
+  trackFacility(facility, reportType) {
+    if (!facility) return null;
+    facilityRegistry.register(facility, reportType);
+    return this.getOrCreateFacilityBucket(facility);
   }
 
   /**
@@ -1209,6 +1354,26 @@ class BaseAnalyzer {
     // Base score biased by parse health; subclasses layer coverage into final.
     return Math.round(parseRate * 100);
   }
+
+  /**
+   * Get list of facilities that have data in this analyzer.
+   * @returns {string[]} Array of facility names
+   */
+  getFacilities() {
+    return Array.from(this.byFacility.keys()).sort();
+  }
+
+  /**
+   * Finalize results for a specific facility.
+   * Subclasses should override this to produce facility-specific results.
+   * @param {string} facility - The facility name
+   * @param {Object} meta - Metadata for finalization
+   * @returns {Object|null} The result object for this facility, or null if not supported
+   */
+  finalizeFacility(facility, meta) {
+    // Default implementation returns null - subclasses override
+    return null;
+  }
 }
 
 class CurrentInventoryAnalyzer extends BaseAnalyzer {
@@ -1234,23 +1399,62 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     this.liveLoadMissingDriverContact = 0; // presence only
   }
 
+  /**
+   * Create a per-facility metrics bucket for current inventory.
+   */
+  createFacilityBucket() {
+    return {
+      totalRows: 0,
+      totalTrailers: 0,
+      yardAgeBuckets: { '0-1d': 0, '1-7d': 0, '7-30d': 0, '30d+': 0, 'unknown': 0 },
+      moveType: new CounterMap(),
+      outbound: 0,
+      inbound: 0,
+      placeholderScac: 0,
+      scacTotal: 0,
+      liveLoads: 0,
+      liveLoadMissingDriverContact: 0,
+    };
+  }
+
   ingest({ row, flags }) {
     this.totalRows++;
     this.totalTrailers++;
+
+    // Track facility for multi-facility support
+    const facility = row._facility || flags?.facility || '';
+    const facBucket = this.trackFacility(facility, 'current_inventory');
+    if (facBucket) {
+      facBucket.totalRows++;
+      facBucket.totalTrailers++;
+    }
     const DateTime = getDateTime();
 
     // move_type_name distribution
     const mt = safeStr(row.move_type_name);
-    if (mt) this.moveType.inc(mt);
+    if (mt) {
+      this.moveType.inc(mt);
+      if (facBucket) facBucket.moveType.inc(mt);
+    }
     const mtLower = mt.toLowerCase();
-    if (mtLower.includes('out')) this.outbound++;
-    if (mtLower.includes('in')) this.inbound++;
+    if (mtLower.includes('out')) {
+      this.outbound++;
+      if (facBucket) facBucket.outbound++;
+    }
+    if (mtLower.includes('in')) {
+      this.inbound++;
+      if (facBucket) facBucket.inbound++;
+    }
 
     // SCAC placeholder
     const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
     if (!isNil(scac)) {
       this.scacTotal++;
-      if (scacIsPlaceholder(scac)) this.placeholderScac++;
+      if (facBucket) facBucket.scacTotal++;
+      if (scacIsPlaceholder(scac)) {
+        this.placeholderScac++;
+        if (facBucket) facBucket.placeholderScac++;
+      }
     }
 
     // updated_at recency buckets
@@ -1278,7 +1482,11 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     const live = normalizeBoolish(row.live_load) ?? (row.live_load == 1);
     if (live) {
       this.liveLoads++;
-      if (!flags.driverContactPresent) this.liveLoadMissingDriverContact++;
+      if (facBucket) facBucket.liveLoads++;
+      if (!flags.driverContactPresent) {
+        this.liveLoadMissingDriverContact++;
+        if (facBucket) facBucket.liveLoadMissingDriverContact++;
+      }
     }
 
     // CSV-specific: yard-age buckets from Elapsed Time (Hours)
@@ -1292,8 +1500,10 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         else if (hours <= 720) bucket = '7-30d';
         else bucket = '30d+';
         this.yardAgeBuckets[bucket]++;
+        if (facBucket) facBucket.yardAgeBuckets[bucket]++;
       } else {
         this.yardAgeBuckets['unknown']++;
+        if (facBucket) facBucket.yardAgeBuckets['unknown']++;
       }
 
       // Collect drilldown data if enabled
@@ -1525,10 +1735,62 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       charts: this.buildCharts(moveTypeTop, updatedSeries),
       findings,
       recommendations: recs,
-      roi: null, // current inventory doesn’t drive ROI directly in MVP
+      roi: null, // current inventory doesn't drive ROI directly in MVP
       exports: {
         reportSummaryCsv: null, // built in export.js on demand
       }
+    };
+  }
+
+  /**
+   * Finalize results for a specific facility.
+   * Returns a simplified result with key metrics for tabbed display.
+   */
+  finalizeFacility(facility, meta) {
+    const bucket = this.byFacility.get(facility);
+    if (!bucket) return null;
+
+    const pct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : 0;
+    const trailers = bucket.totalTrailers || 0;
+    const placeholderRate = bucket.scacTotal ? pct(bucket.placeholderScac, bucket.scacTotal) : 0;
+    const outboundInboundRatio = bucket.inbound ? (bucket.outbound / bucket.inbound) : null;
+    const missingDriverRate = bucket.liveLoads ? pct(bucket.liveLoadMissingDriverContact, bucket.liveLoads) : null;
+
+    // Simplified data quality
+    const dq = bucket.totalRows > 0 ? 75 : 0; // Simplified score for facility view
+
+    // Build simple charts from facility bucket
+    const moveTypeTop = bucket.moveType.toObjectSorted();
+    const charts = [];
+    if (Object.keys(moveTypeTop).length > 0) {
+      charts.push({
+        id: 'move_type',
+        kind: 'pie',
+        title: 'Move Types',
+        data: moveTypeTop,
+      });
+    }
+
+    return {
+      report: 'current_inventory',
+      facility,
+      meta,
+      dataQuality: {
+        score: dq,
+        label: dq >= 80 ? 'High' : dq >= 50 ? 'Medium' : 'Low',
+        color: dq >= 80 ? 'green' : dq >= 50 ? 'yellow' : 'red',
+        totalRows: bucket.totalRows,
+      },
+      metrics: {
+        total_trailers: trailers,
+        placeholder_scac_pct: placeholderRate,
+        outbound_vs_inbound_ratio: outboundInboundRatio !== null ? Math.round(outboundInboundRatio * 100) / 100 : null,
+        live_load_missing_driver_contact_pct: missingDriverRate,
+      },
+      charts,
+      findings: [],
+      recommendations: [],
+      roi: null,
     };
   }
 }
@@ -1570,8 +1832,36 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.isCSVMode = opts.isCSVMode || false;
   }
 
-  ingest({ row }) {
+  /**
+   * Create a per-facility metrics bucket for detention history.
+   */
+  createFacilityBucket() {
+    return {
+      totalRows: 0,
+      preDetention: 0,
+      detention: 0,
+      prevented: 0,
+      live: 0,
+      drop: 0,
+      detentionLive: 0,
+      detentionDrop: 0,
+      detentionByScac: new CounterMap(),
+      detentionEventsWithDeparture: 0,
+      totalDetentionHours: 0,
+      dailyDetention: new CounterMap(),
+      dailyPrevented: new CounterMap(),
+    };
+  }
+
+  ingest({ row, flags }) {
     this.totalRows++;
+
+    // Track facility for multi-facility support
+    const facility = row._facility || flags?.facility || '';
+    const facBucket = this.trackFacility(facility, 'detention_history');
+    if (facBucket) {
+      facBucket.totalRows++;
+    }
 
     const pre = parseTimestamp(row.pre_detention_start_time, {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
@@ -1583,26 +1873,50 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // For trend grouping, pick a best event time
     const eventDt = det || pre;
 
-    if (pre) { this.preDetention++; this.parseOk++; this.trackDate(pre); }
-    if (det) { this.detention++; this.parseOk++; this.trackDate(det); }
-    if (pre && !det) this.prevented++;
+    if (pre) {
+      this.preDetention++;
+      if (facBucket) facBucket.preDetention++;
+      this.parseOk++;
+      this.trackDate(pre);
+    }
+    if (det) {
+      this.detention++;
+      if (facBucket) facBucket.detention++;
+      this.parseOk++;
+      this.trackDate(det);
+    }
+    if (pre && !det) {
+      this.prevented++;
+      if (facBucket) facBucket.prevented++;
+    }
 
     // Track live/drop for ALL rows (general coverage metrics)
     const live = normalizeBoolish(row.live_load) ?? (row.live_load == 1);
-    if (live === true) this.live++;
-    else if (live === false) this.drop++;
+    if (live === true) {
+      this.live++;
+      if (facBucket) facBucket.live++;
+    } else if (live === false) {
+      this.drop++;
+      if (facBucket) facBucket.drop++;
+    }
 
     // Track live/drop and SCAC ONLY for detention events (for charts)
     // A detention event is when det is not null (detention_start_time exists)
     // OR for CSV mode, also consider pre-detention (pre_detention_start_time exists)
     const isDetentionEvent = det || pre;
     if (isDetentionEvent) {
-      if (live === true) this.detentionLive++;
-      else if (live === false) this.detentionDrop++;
+      if (live === true) {
+        this.detentionLive++;
+        if (facBucket) facBucket.detentionLive++;
+      } else if (live === false) {
+        this.detentionDrop++;
+        if (facBucket) facBucket.detentionDrop++;
+      }
 
       const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
       if (!isNil(scac)) {
         this.detentionByScac.inc(scac);
+        if (facBucket) facBucket.detentionByScac.inc(scac);
 
         // Collect drilldown data if enabled
         if (this.enableDrilldown) {
@@ -1632,11 +1946,13 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         this.monthlyDetention.inc(mk);
         this.weeklyDetention.inc(wk);
         this.dailyDetention.inc(dk);
+        if (facBucket) facBucket.dailyDetention.inc(dk);
       }
       if (pre && !det) {
         this.monthlyPrevented.inc(mk);
         this.weeklyPrevented.inc(wk);
         this.dailyPrevented.inc(dk);
+        if (facBucket) facBucket.dailyPrevented.inc(dk);
       }
     }
 
@@ -1675,6 +1991,10 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         if (Number.isFinite(hours) && hours > 0) {
           this.detentionEventsWithDeparture++;
           this.totalDetentionHours += hours;
+          if (facBucket) {
+            facBucket.detentionEventsWithDeparture++;
+            facBucket.totalDetentionHours += hours;
+          }
         }
       }
     }
@@ -1979,6 +2299,83 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       }),
     };
   }
+
+  /**
+   * Finalize results for a specific facility.
+   * Returns a simplified result with key metrics for tabbed display.
+   */
+  finalizeFacility(facility, meta) {
+    const bucket = this.byFacility.get(facility);
+    if (!bucket) return null;
+
+    const totalEvents = bucket.preDetention + bucket.detention;
+    const preventionRate = totalEvents > 0 ? Math.round((bucket.prevented / totalEvents) * 100) : null;
+
+    // Simplified data quality
+    const dq = bucket.totalRows > 0 ? 75 : 0;
+
+    // Build simple time series chart if data available
+    const charts = [];
+    if (bucket.dailyDetention && bucket.dailyDetention.map.size > 0) {
+      const labels = Array.from(bucket.dailyDetention.map.keys()).sort();
+      const detentionData = labels.map(l => bucket.dailyDetention.map.get(l) || 0);
+      const preventedData = labels.map(l => bucket.dailyPrevented?.map.get(l) || 0);
+
+      charts.push({
+        id: 'detention_vs_prevented_daily',
+        title: 'Detention vs Prevented (Daily)',
+        kind: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Detention', data: detentionData },
+            { label: 'Prevented', data: preventedData },
+          ]
+        }
+      });
+    }
+
+    // Carrier breakdown if available
+    if (bucket.detentionByScac && bucket.detentionByScac.map.size > 0) {
+      const top10 = bucket.detentionByScac.top(10);
+      charts.push({
+        id: 'detention_by_carrier',
+        title: 'Detention by Carrier (Top 10)',
+        kind: 'bar',
+        data: {
+          labels: top10.map(x => x.key),
+          datasets: [{
+            label: 'Detention events',
+            data: top10.map(x => x.value)
+          }]
+        }
+      });
+    }
+
+    return {
+      report: 'detention_history',
+      facility,
+      meta,
+      dataQuality: {
+        score: dq,
+        label: dq >= 80 ? 'High' : dq >= 50 ? 'Medium' : 'Low',
+        color: dq >= 80 ? 'green' : dq >= 50 ? 'yellow' : 'red',
+        totalRows: bucket.totalRows,
+      },
+      metrics: {
+        pre_detention_count: bucket.preDetention,
+        detention_count: bucket.detention,
+        prevented_detention_count: bucket.prevented,
+        prevention_rate: preventionRate,
+        live_load_count: bucket.detentionLive,
+        drop_load_count: bucket.detentionDrop,
+      },
+      charts,
+      findings: [],
+      recommendations: [],
+      roi: null,
+    };
+  }
 }
 
 class DockDoorHistoryAnalyzer extends BaseAnalyzer {
@@ -2019,6 +2416,23 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     this.recordsByDay = new Map(); // day -> array of { trailer, dwellMins, checkIn, checkOut }
   }
 
+  /**
+   * Create a per-facility metrics bucket for dock door history.
+   */
+  createFacilityBucket() {
+    return {
+      totalRows: 0,
+      dwellCoverage: { ok: 0, total: 0 },
+      processCoverage: { ok: 0, total: 0 },
+      dwellByDay: new Map(),
+      processByDay: new Map(),
+      uniqueDoors: new Set(),
+      totalTurns: 0,
+      daysWithData: new Set(),
+      turnsByDay: new CounterMap(),
+    };
+  }
+
   getEstimators(map, key) {
     if (!map.has(key)) {
       map.set(key, { median: new P2Quantile(0.5), p90: new P2Quantile(0.9) });
@@ -2026,8 +2440,15 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     return map.get(key);
   }
 
-  ingest({ row }) {
+  ingest({ row, flags }) {
     this.totalRows++;
+
+    // Track facility for multi-facility support
+    const facility = row._facility || flags?.facility || '';
+    const facBucket = this.trackFacility(facility, 'dockdoor_history');
+    if (facBucket) {
+      facBucket.totalRows++;
+    }
 
     // Get event type to properly handle paired events
     const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name']));
@@ -2049,8 +2470,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     // Dwell Coverage: Count every row, mark "ok" if it has at least dwell start OR end
     // This way "Dwell Started" and "Dwell Ended" events both count as good data quality
     this.dwellCoverage.total++;
+    if (facBucket) facBucket.dwellCoverage.total++;
     if (dwellStart || dwellEnd) {
       this.dwellCoverage.ok++;
+      if (facBucket) facBucket.dwellCoverage.ok++;
     }
 
     // Calculate dwell time metrics when we have both start and end
@@ -2088,8 +2511,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const isDwellEnded = /dwell\s+ended/i.test(event);
     if (isDwellEnded) {
       this.processCoverage.total++;
+      if (facBucket) facBucket.processCoverage.total++;
       if (procStartRaw || procEndRaw) {
         this.processCoverage.ok++;
+        if (facBucket) facBucket.processCoverage.ok++;
       }
     }
 
@@ -2129,6 +2554,14 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       this.uniqueDoors.add(door);
       this.daysWithData.add(dk);
       this.totalTurns++;
+
+      // Track per-facility throughput
+      if (facBucket) {
+        facBucket.uniqueDoors.add(door);
+        facBucket.daysWithData.add(dk);
+        facBucket.totalTurns++;
+        facBucket.turnsByDay.inc(dk);
+      }
 
       if (!this.turnsByDoorByDay.has(dk)) {
         this.turnsByDoorByDay.set(dk, new Map());
@@ -2580,6 +3013,79 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     };
   }
 
+  /**
+   * Finalize results for a specific facility.
+   * Returns a simplified result with key metrics for tabbed display.
+   */
+  finalizeFacility(facility, meta) {
+    const bucket = this.byFacility.get(facility);
+    if (!bucket) return null;
+
+    // Calculate key metrics from bucket
+    const medDwell = bucket.dwellQuantile?.estimate() || null;
+    const medProcess = bucket.processQuantile?.estimate() || null;
+    const turnsPerDoorPerDay = this.calculateFacilityTurnsPerDoorPerDay(bucket);
+    const processCoveragePct = bucket.processTotal > 0
+      ? Math.round((bucket.processOk / bucket.processTotal) * 100)
+      : null;
+
+    // Simplified data quality
+    const dq = bucket.totalRows > 0 ? 75 : 0;
+
+    // Build simple charts
+    const charts = [];
+
+    // Dwell/process time series if available
+    if (bucket.dwellByDay && bucket.dwellByDay.size > 0) {
+      const labels = Array.from(bucket.dwellByDay.keys()).sort();
+      const dwellData = labels.map(l => {
+        const val = bucket.dwellByDay.get(l);
+        return val?.median || 0;
+      });
+      const processData = labels.map(l => {
+        const val = bucket.processByDay?.get(l);
+        return val?.median || 0;
+      });
+
+      charts.push({
+        id: 'dwell_process_daily',
+        title: 'Median Dwell vs Process Time (Daily)',
+        kind: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Dwell time (min)', data: dwellData },
+            { label: 'Process time (min)', data: processData },
+          ]
+        }
+      });
+    }
+
+    return {
+      report: 'dockdoor_history',
+      facility,
+      meta,
+      dataQuality: {
+        score: dq,
+        label: dq >= 80 ? 'High' : dq >= 50 ? 'Medium' : 'Low',
+        color: dq >= 80 ? 'green' : dq >= 50 ? 'yellow' : 'red',
+        totalRows: bucket.totalRows,
+      },
+      metrics: {
+        median_dwell_time_min: medDwell !== null ? Math.round(medDwell) : null,
+        median_process_time_min: medProcess !== null ? Math.round(medProcess) : null,
+        avg_turns_per_door_per_day: turnsPerDoorPerDay,
+        process_adoption_pct: processCoveragePct,
+        unique_doors: bucket.uniqueDoors?.size || 0,
+        total_turns: bucket.totalTurns || 0,
+      },
+      charts,
+      findings: [],
+      recommendations: [],
+      roi: null,
+    };
+  }
+
   // Calculate average turns per door per day
   calculateTurnsPerDoorPerDay() {
     if (this.daysWithData.size === 0 || this.uniqueDoors.size === 0) return 0;
@@ -2589,6 +3095,24 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     let totalTurnsCount = 0;
 
     for (const [, doorMap] of this.turnsByDoorByDay) {
+      for (const [, turns] of doorMap) {
+        totalDoorDays++;
+        totalTurnsCount += turns;
+      }
+    }
+
+    return totalDoorDays > 0 ? Math.round((totalTurnsCount / totalDoorDays) * 100) / 100 : 0;
+  }
+
+  // Calculate average turns per door per day for a specific facility bucket
+  calculateFacilityTurnsPerDoorPerDay(bucket) {
+    if (!bucket.turnsByDoorByDay || bucket.turnsByDoorByDay.size === 0) return 0;
+    if (!bucket.uniqueDoors || bucket.uniqueDoors.size === 0) return 0;
+
+    let totalDoorDays = 0;
+    let totalTurnsCount = 0;
+
+    for (const [, doorMap] of bucket.turnsByDoorByDay) {
       for (const [, turns] of doorMap) {
         totalDoorDays++;
         totalTurnsCount += turns;
@@ -2636,6 +3160,27 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     this.daysWorkedByDriver = new Map(); // driver -> Set of day keys
   }
 
+  /**
+   * Create a per-facility metrics bucket for driver history.
+   */
+  createFacilityBucket() {
+    return {
+      totalRows: 0,
+      movesTotal: 0,
+      movesByDriver: new CounterMap(),
+      movesByDay: new CounterMap(),
+      activeDriversByDay: new Map(),
+      complianceOk: 0,
+      complianceTotal: 0,
+      queueMedian: new P2Quantile(0.5),
+      queueP90: new P2Quantile(0.9),
+      queueTotal: 0,
+      deadheadMedian: new P2Quantile(0.5),
+      executionMedian: new P2Quantile(0.5),
+      dispatchTotal: 0,
+    };
+  }
+
   getDistinct(map, key) {
     if (!map.has(key)) map.set(key, new ApproxDistinct(2048));
     return map.get(key);
@@ -2648,8 +3193,15 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     return this.daysWorkedByDriver.get(driver);
   }
 
-  ingest({ row }) {
+  ingest({ row, flags }) {
     this.totalRows++;
+
+    // Track facility for multi-facility support
+    const facility = row._facility || flags?.facility || '';
+    const facBucket = this.trackFacility(facility, 'driver_history');
+    if (facBucket) {
+      facBucket.totalRows++;
+    }
 
     // Debug: Log first row to help diagnose field name issues
     if (this.totalRows === 1) {
@@ -2680,8 +3232,10 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
 
     if (isCompletedMove) {
       this.movesTotal++;
+      if (facBucket) facBucket.movesTotal++;
       if (driver) {
         this.movesByDriver.inc(driver);
+        if (facBucket) facBucket.movesByDriver.inc(driver);
       } else if (this.totalRows === 1) {
         // First row has no driver identifier - warn
         this.warn(`driver_history: No driver identifier found in first row. Expected fields: yard_driver_name, driver_name, driver, driver_username, or driver_id`);
@@ -2715,17 +3269,26 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       const dy = dayKey(eventDt, this.timezone);
       this.movesByWeek.inc(wk);
       this.movesByDay.inc(dy);
+      if (facBucket) facBucket.movesByDay.inc(dy);
       if (driver) {
         this.getDistinct(this.activeDriversByWeek, wk).add(driver);
         this.getDistinct(this.activeDriversByDay, dy).add(driver);
         // Track which days each driver worked (for accurate per-day averages)
         this.getDaysWorked(driver).add(dy);
+        // Track per-facility active drivers
+        if (facBucket) {
+          if (!facBucket.activeDriversByDay.has(dy)) {
+            facBucket.activeDriversByDay.set(dy, new ApproxDistinct(2048));
+          }
+          facBucket.activeDriversByDay.get(dy).add(driver);
+        }
       }
     }
 
     // Compliance rule:
     // % moves where accept/start/complete within <=2 minutes OR elapsed_time_minutes <= 2.
     this.complianceTotal++;
+    if (facBucket) facBucket.complianceTotal++;
     const elapsedMin = maybeNumber(firstPresent(row, ['elapsed_time_minutes', 'elapsed_minutes', 'move_elapsed_minutes']));
     let ok = false;
     if (Number.isFinite(elapsedMin)) ok = elapsedMin <= 2;
@@ -2736,7 +3299,10 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       const diff = complete.diff(start, 'minutes').minutes;
       if (Number.isFinite(diff)) ok = diff <= 2;
     }
-    if (ok) this.complianceOk++;
+    if (ok) {
+      this.complianceOk++;
+      if (facBucket) facBucket.complianceOk++;
+    }
 
     // Queue time
     const q = maybeNumber(firstPresent(row, ['time_in_queue_minutes', 'queue_time_minutes', 'time_in_queue']));
@@ -2744,6 +3310,11 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       this.queueMedian.add(q);
       this.queueP90.add(q);
       this.queueTotal++;
+      if (facBucket) {
+        facBucket.queueMedian.add(q);
+        facBucket.queueP90.add(q);
+        facBucket.queueTotal++;
+      }
     }
 
     // Dispatch efficiency: deadhead (accept→start) vs execution (start→complete)
@@ -2765,6 +3336,11 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
         this.executionMedian.add(executionMin);
         this.executionP90.add(executionMin);
         this.dispatchTotal++;
+        if (facBucket) {
+          facBucket.deadheadMedian.add(deadheadMin);
+          facBucket.executionMedian.add(executionMin);
+          facBucket.dispatchTotal++;
+        }
       }
     }
   }
@@ -3029,6 +3605,100 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       }),
     };
   }
+
+  /**
+   * Finalize results for a specific facility.
+   * Returns a simplified result with key metrics for tabbed display.
+   */
+  finalizeFacility(facility, meta) {
+    const bucket = this.byFacility.get(facility);
+    if (!bucket) return null;
+
+    // Calculate key metrics from bucket
+    const avgMovesPerDriverPerDay = deriveMovesPerDriverPerDay(bucket.movesByDay, bucket.activeDriversByDay);
+    const compliancePct = bucket.complianceTotal > 0
+      ? Math.round((bucket.complianceOk / bucket.complianceTotal) * 100)
+      : null;
+    const medQueue = bucket.queueTotal > 0 ? bucket.queueMedian.estimate() : null;
+    const deadheadPct = bucket.dispatchTotal > 0
+      ? this.calculateFacilityDeadheadPct(bucket)
+      : null;
+
+    // Simplified data quality
+    const dq = bucket.totalRows > 0 ? 75 : 0;
+
+    // Build simple charts
+    const charts = [];
+
+    // Moves over time if available
+    if (bucket.movesByDay && bucket.movesByDay.map.size > 0) {
+      const labels = Array.from(bucket.movesByDay.map.keys()).sort();
+      const movesData = labels.map(l => bucket.movesByDay.map.get(l) || 0);
+
+      charts.push({
+        id: 'moves_daily',
+        title: 'Moves per Day',
+        kind: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Moves',
+            data: movesData
+          }]
+        }
+      });
+    }
+
+    // Top drivers chart
+    if (bucket.movesByDriver && bucket.movesByDriver.map.size > 0) {
+      const top10 = bucket.movesByDriver.top(10);
+      charts.push({
+        id: 'top_drivers',
+        title: 'Top Drivers by Moves',
+        kind: 'bar',
+        data: {
+          labels: top10.map(x => x.key),
+          datasets: [{
+            label: 'Moves',
+            data: top10.map(x => x.value)
+          }]
+        }
+      });
+    }
+
+    return {
+      report: 'driver_history',
+      facility,
+      meta,
+      dataQuality: {
+        score: dq,
+        label: dq >= 80 ? 'High' : dq >= 50 ? 'Medium' : 'Low',
+        color: dq >= 80 ? 'green' : dq >= 50 ? 'yellow' : 'red',
+        totalRows: bucket.totalRows,
+      },
+      metrics: {
+        total_moves: bucket.movesTotal,
+        avg_moves_per_driver_per_day: avgMovesPerDriverPerDay,
+        compliance_rate: compliancePct,
+        median_queue_time_min: medQueue !== null ? Math.round(medQueue * 10) / 10 : null,
+        deadhead_pct: deadheadPct,
+      },
+      charts,
+      findings: [],
+      recommendations: [],
+      roi: null,
+    };
+  }
+
+  // Calculate deadhead percentage for a facility bucket
+  calculateFacilityDeadheadPct(bucket) {
+    if (!bucket.dispatchTotal || bucket.dispatchTotal === 0) return null;
+    const medDeadhead = bucket.deadheadMedian?.estimate() || 0;
+    const medExecution = bucket.executionMedian?.estimate() || 0;
+    const total = medDeadhead + medExecution;
+    if (total === 0) return null;
+    return Math.round((medDeadhead / total) * 100);
+  }
 }
 
 class TrailerHistoryAnalyzer extends BaseAnalyzer {
@@ -3064,8 +3734,33 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     this.lostByCarrierDrilldown = new Map(); // carrier -> array of { trailer, eventDate, eventType }
   }
 
-  ingest({ row }) {
+  /**
+   * Create a per-facility metrics bucket for trailer history.
+   */
+  createFacilityBucket() {
+    return {
+      totalRows: 0,
+      lostCount: 0,
+      errorCounts: {
+        trailer_marked_lost: 0,
+        yard_check_insert: 0,
+        spot_edited: 0,
+        facility_edited: 0,
+      },
+      errorsByPeriod: new CounterMap(),
+      daysWithData: new Set(),
+    };
+  }
+
+  ingest({ row, flags }) {
     this.totalRows++;
+
+    // Track facility for multi-facility support
+    const facility = row._facility || flags?.facility || '';
+    const facBucket = this.trackFacility(facility, 'trailer_history');
+    if (facBucket) {
+      facBucket.totalRows++;
+    }
 
     const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name', 'event_string', 'action', 'status_change']));
     if (event) this.eventTypes.inc(event);
@@ -3077,6 +3772,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       this.parseOk++;
       this.trackDate(dt); // Track for date range inference
       this.daysWithData.add(dayKey(dt, this.timezone));
+      if (facBucket) facBucket.daysWithData.add(dayKey(dt, this.timezone));
     }
 
     const carrier = row.scac ?? row.carrier_scac ?? row.scac_code ?? row.carrier;
@@ -3085,6 +3781,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     if (isLost) {
       this.lostCount++;
       this.errorCounts.trailer_marked_lost++;
+      if (facBucket) {
+        facBucket.lostCount++;
+        facBucket.errorCounts.trailer_marked_lost++;
+      }
       const carrierKey = isNil(carrier) ? 'Unknown' : carrier;
       if (!isNil(carrier)) this.lostByCarrier.inc(carrier);
       if (dt) {
@@ -3094,6 +3794,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         this.byDay.inc(dk);
         this.errorsByPeriod.inc(dk);
         this.lostByDay.inc(dk);
+        if (facBucket) facBucket.errorsByPeriod.inc(dk);
       }
 
       // Collect drilldown data if enabled
@@ -3111,30 +3812,36 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     const isYardCheckInsert = /yard\s*check\s*insert/i.test(event);
     if (isYardCheckInsert) {
       this.errorCounts.yard_check_insert++;
+      if (facBucket) facBucket.errorCounts.yard_check_insert++;
       if (dt) {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.yardCheckInsertByDay.inc(dk);
+        if (facBucket) facBucket.errorsByPeriod.inc(dk);
       }
     }
 
     const isSpotEdited = /spot\s*edited/i.test(event);
     if (isSpotEdited) {
       this.errorCounts.spot_edited++;
+      if (facBucket) facBucket.errorCounts.spot_edited++;
       if (dt) {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.spotEditedByDay.inc(dk);
+        if (facBucket) facBucket.errorsByPeriod.inc(dk);
       }
     }
 
     const isFacilityEdited = /facility\s*edited/i.test(event);
     if (isFacilityEdited) {
       this.errorCounts.facility_edited++;
+      if (facBucket) facBucket.errorCounts.facility_edited++;
       if (dt) {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.facilityEditedByDay.inc(dk);
+        if (facBucket) facBucket.errorsByPeriod.inc(dk);
       }
     }
   }
@@ -3402,6 +4109,74 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       .map(([period, count]) => ({ period, count }))
       .sort((a, b) => a.period.localeCompare(b.period));
     return entries;
+  }
+
+  /**
+   * Finalize results for a specific facility.
+   * Returns a simplified result with key metrics for tabbed display.
+   */
+  finalizeFacility(facility, meta) {
+    const bucket = this.byFacility.get(facility);
+    if (!bucket) return null;
+
+    // Calculate total errors
+    const totalErrors = (bucket.errorCounts?.trailer_marked_lost || 0) +
+      (bucket.errorCounts?.yard_check_insert || 0) +
+      (bucket.errorCounts?.spot_edited || 0) +
+      (bucket.errorCounts?.facility_edited || 0);
+
+    // Calculate error rate (errors per day)
+    const daysWithData = bucket.daysWithData?.size || 0;
+    const errorRate = daysWithData > 0 ? Math.round((totalErrors / daysWithData) * 10) / 10 : null;
+
+    // Simplified data quality
+    const dq = bucket.totalRows > 0 ? 75 : 0;
+
+    // Build simple charts
+    const charts = [];
+
+    // Error events over time if available
+    if (bucket.errorsByPeriod && bucket.errorsByPeriod.map.size > 0) {
+      const labels = Array.from(bucket.errorsByPeriod.map.keys()).sort();
+      const errorData = labels.map(l => bucket.errorsByPeriod.map.get(l) || 0);
+
+      charts.push({
+        id: 'errors_daily',
+        title: 'Error Events per Day',
+        kind: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Errors',
+            data: errorData
+          }]
+        }
+      });
+    }
+
+    return {
+      report: 'trailer_history',
+      facility,
+      meta,
+      dataQuality: {
+        score: dq,
+        label: dq >= 80 ? 'High' : dq >= 50 ? 'Medium' : 'Low',
+        color: dq >= 80 ? 'green' : dq >= 50 ? 'yellow' : 'red',
+        totalRows: bucket.totalRows,
+      },
+      metrics: {
+        total_error_events: totalErrors,
+        trailer_marked_lost: bucket.errorCounts?.trailer_marked_lost || 0,
+        yard_check_insert: bucket.errorCounts?.yard_check_insert || 0,
+        spot_edited: bucket.errorCounts?.spot_edited || 0,
+        facility_edited: bucket.errorCounts?.facility_edited || 0,
+        errors_per_day: errorRate,
+      },
+      charts,
+      findings: [],
+      recommendations: [],
+      roi: null,
+    };
   }
 }
 

@@ -26,6 +26,7 @@ export const CSV_FIELD_MAPS = {
     'SCAC': 'carrier_scac',
     'Driver Cell': 'driver_cell',
     'Drop Spot': 'drop_spot',
+    'Drop Facility': 'drop_facility',
   },
 
   detention_history: {
@@ -46,6 +47,7 @@ export const CSV_FIELD_MAPS = {
     'SCAC': 'scac',
     'Live/Drop': 'live_load',
     'Carrier SCAC': 'carrier_scac',
+    'Facility': 'facility',
   },
 
   dockdoor_history: {
@@ -63,6 +65,7 @@ export const CSV_FIELD_MAPS = {
     'Process Time Minutes': 'csv_process_time_precomputed',
     'Processed By': 'processed_by',
     'Event': 'event',
+    'Facility': 'facility',
   },
 
   driver_history: {
@@ -80,6 +83,7 @@ export const CSV_FIELD_MAPS = {
     'Complete Time': 'csv_complete_time',
     'Elapsed Time (Minutes)': 'elapsed_time_minutes',
     'Event': 'event',
+    'Facility': 'facility',
   },
 
   trailer_history: {
@@ -93,6 +97,7 @@ export const CSV_FIELD_MAPS = {
     'Trailer Status': 'trailer_status',
     'Username': 'username',
     'Carrier SCAC': 'carrier_scac',
+    'Start Location': 'start_location',
   },
 };
 
@@ -207,6 +212,50 @@ export function detectReportType(columns) {
   return bestMatch;
 }
 
+// ---------- Facility Extraction ----------
+
+/**
+ * Extracts the facility identifier from a CSV row based on report type.
+ * Used to support multi-facility analysis and comparison features.
+ *
+ * @param {object} normalizedRow - The normalized row object (after field mapping)
+ * @param {object} rawRow - The original raw CSV row (for unmapped fields)
+ * @param {string} reportType - The report type
+ * @returns {string} The facility identifier, or empty string if not found
+ */
+function extractFacilityFromRow(normalizedRow, rawRow, reportType) {
+  let facility = '';
+
+  switch (reportType) {
+    case 'dockdoor_history':
+    case 'driver_history':
+    case 'detention_history':
+      // Direct Facility field
+      facility = normalizedRow.facility || rawRow.Facility || rawRow.facility || '';
+      break;
+
+    case 'trailer_history':
+      // Extract from Start Location - text before first " -" (space-dash)
+      // e.g., "Central Parking - South Doors - Gate" → "Central Parking"
+      const startLoc = normalizedRow.start_location || rawRow['Start Location'] || rawRow.start_location || '';
+      if (startLoc) {
+        const parts = startLoc.split(' -');
+        facility = parts[0] || '';
+      }
+      break;
+
+    case 'current_inventory':
+      // Use Drop Facility field
+      facility = normalizedRow.drop_facility || rawRow['Drop Facility'] || rawRow.drop_facility || '';
+      break;
+
+    default:
+      facility = '';
+  }
+
+  return (facility || '').trim();
+}
+
 // ---------- Field Normalization ----------
 
 /**
@@ -260,6 +309,10 @@ export function normalizeCSVRow(row, reportType, timezone) {
       normalizeTrailerHistory(normalized, row);
       break;
   }
+
+  // Extract facility identifier for multi-facility support
+  // Uses underscore prefix to indicate internal/derived field
+  normalized._facility = extractFacilityFromRow(normalized, row, reportType);
 
   return normalized;
 }
