@@ -1797,12 +1797,16 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
   radarCard.appendChild(radarTitle);
   radarCard.appendChild(radarWrap);
 
-  // Build radar chart data
+  // Build radar chart data - only include metrics from uploaded report types
+  const availableReportTypes = new Set(Object.keys(results));
   const radarLabels = [];
   const metricKeys = [];
   for (const [key, def] of Object.entries(COMPARISON_METRICS)) {
-    radarLabels.push(def.label);
-    metricKeys.push(key);
+    // Only include metrics whose source report type is present in uploaded data
+    if (availableReportTypes.has(def.source)) {
+      radarLabels.push(def.label);
+      metricKeys.push(key);
+    }
   }
 
   // Generate distinct colors for facilities
@@ -1925,7 +1929,9 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
   table.appendChild(thead);
 
   const tbody = el('tbody');
-  for (const [key, def] of Object.entries(COMPARISON_METRICS)) {
+  // Only iterate over metrics from uploaded report types (using metricKeys which is already filtered)
+  for (const key of metricKeys) {
+    const def = COMPARISON_METRICS[key];
     const row = el('tr');
 
     // Metric name with tooltip

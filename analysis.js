@@ -1314,8 +1314,11 @@ class BaseAnalyzer {
    */
   trackFacility(facility, reportType) {
     if (!facility) return null;
-    facilityRegistry.register(facility, reportType);
-    return this.getOrCreateFacilityBucket(facility);
+    // Normalize the facility name to ensure consistency between registry and bucket storage
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+    facilityRegistry.register(normalized, reportType);
+    return this.getOrCreateFacilityBucket(normalized);
   }
 
   /**
