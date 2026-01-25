@@ -232,7 +232,7 @@ export async function processCSVFiles(csvState, analyzers, options = {}) {
       try {
         // For large files (>50MB), use streaming
         if (fileInfo.size > 50 * 1024 * 1024) {
-          await processLargeCSV(fileInfo, analyzer, reportType, timezone, {
+          const largeFileResult = await processLargeCSV(fileInfo, analyzer, reportType, timezone, {
             onProgress: (processed, total) => {
               onProgress?.({
                 report: reportType,
@@ -247,6 +247,9 @@ export async function processCSVFiles(csvState, analyzers, options = {}) {
             },
             signal,
           });
+          // Update counters with actual rows processed
+          reportRows += largeFileResult.totalRows;
+          results.totalRows += largeFileResult.totalRows;
         } else {
           // Small/medium files: batch processing
           const { data, columns } = await parseCSVFile(fileInfo.file);
