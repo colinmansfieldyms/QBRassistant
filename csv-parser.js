@@ -630,8 +630,9 @@ export function parseCSVFile(file, options = {}) {
  * @param {string} timezone - Timezone for timestamp parsing
  * @param {object} callbacks - { onProgress, onChunk, onComplete, onError }
  * @param {number} chunkSize - Number of rows per chunk (default 500)
+ * @param {number|null} knownRowCount - Known row count from preview parse (optional)
  */
-export function streamCSVFile(file, reportType, timezone, callbacks, chunkSize = 500) {
+export function streamCSVFile(file, reportType, timezone, callbacks, chunkSize = 500, knownRowCount = null) {
   const { onProgress, onChunk, onComplete, onError } = callbacks;
 
   if (typeof Papa === 'undefined') {
@@ -642,10 +643,9 @@ export function streamCSVFile(file, reportType, timezone, callbacks, chunkSize =
   let rowsProcessed = 0;
   let chunk = [];
   let columns = [];
-  let totalEstimate = 0;
 
-  // Estimate total rows from file size (rough: ~100 bytes per row average)
-  totalEstimate = Math.ceil(file.size / 100);
+  // Use known row count if available, otherwise estimate from file size
+  const totalEstimate = knownRowCount || Math.ceil(file.size / 100);
 
   Papa.parse(file, {
     header: true,

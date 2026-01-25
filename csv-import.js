@@ -362,7 +362,8 @@ async function processLargeCSV(fileInfo, analyzer, reportType, timezone, callbac
           reject(err);
         },
       },
-      500 // chunk size
+      500, // chunk size
+      fileInfo.rowCount // known row count from preview parse
     );
   });
 }
