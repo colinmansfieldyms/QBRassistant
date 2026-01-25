@@ -1118,6 +1118,7 @@ function renderAllResults() {
       facilities: state.detectedFacilities,
       results: state.results,
       chartRegistry: state.chartRegistry,
+      getFacilityResult: (report, facility) => getFacilityResult(report, facility),
     });
     if (comparisonSection) {
       root.appendChild(comparisonSection);

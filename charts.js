@@ -461,29 +461,28 @@ export function destroyAllCharts(chartRegistry) {
 export function createFacilityTabs({ facilities, activeTab = 'all', contentByFacility, onTabChange }) {
   const container = el('div', { class: 'facility-tabs-container' });
 
-  // Tab bar
-  const tabBar = el('div', { class: 'facility-tabs' });
+  // Dropdown selector instead of horizontal tabs
+  const selectorWrap = el('div', { class: 'facility-selector-wrap' });
 
-  // "All Facilities" tab always first
-  const allTab = el('button', {
-    class: `facility-tab${activeTab === 'all' ? ' active' : ''}`,
-    type: 'button',
-    'data-facility': 'all',
-  }, ['All Facilities']);
-  tabBar.appendChild(allTab);
+  const label = el('label', { class: 'facility-selector-label' }, ['View Facility:']);
 
-  // Individual facility tabs
+  const select = el('select', { class: 'facility-selector' });
+
+  // "All Facilities" option
+  const allOption = el('option', { value: 'all' }, ['All Facilities']);
+  if (activeTab === 'all') allOption.selected = true;
+  select.appendChild(allOption);
+
+  // Individual facility options
   for (const fac of facilities) {
-    const tab = el('button', {
-      class: `facility-tab${activeTab === fac ? ' active' : ''}`,
-      type: 'button',
-      'data-facility': fac,
-      title: fac, // Show full facility name in tooltip for long names
-    }, [fac]);
-    tabBar.appendChild(tab);
+    const option = el('option', { value: fac, title: fac }, [fac]);
+    if (activeTab === fac) option.selected = true;
+    select.appendChild(option);
   }
 
-  container.appendChild(tabBar);
+  selectorWrap.appendChild(label);
+  selectorWrap.appendChild(select);
+  container.appendChild(selectorWrap);
 
   // Content panels
   const panelsContainer = el('div', { class: 'facility-tab-panels' });
@@ -512,25 +511,17 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
 
   container.appendChild(panelsContainer);
 
-  // Tab click handler
-  tabBar.addEventListener('click', (e) => {
-    const tab = e.target.closest('.facility-tab');
-    if (!tab) return;
-
-    const facility = tab.dataset.facility;
-    if (!facility) return;
-
-    // Update active tab
-    tabBar.querySelectorAll('.facility-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
+  // Dropdown change handler
+  select.addEventListener('change', () => {
+    const selectedFacility = select.value;
 
     // Update active panel
     panelsContainer.querySelectorAll('.facility-tab-panel').forEach(p => p.classList.remove('active'));
-    const targetPanel = panelsContainer.querySelector(`[data-tab-panel="${facility}"]`);
+    const targetPanel = panelsContainer.querySelector(`[data-tab-panel="${selectedFacility}"]`);
     if (targetPanel) targetPanel.classList.add('active');
 
     // Callback
-    onTabChange?.(facility);
+    onTabChange?.(selectedFacility);
   });
 
   return container;
@@ -1645,64 +1636,104 @@ function buildReportSummaryCsvText(report, result, { timezone, dateRange }) {
  * Extract comparison metrics from results by facility.
  * Returns a map of facility -> metricKey -> value
  */
-function extractFacilityMetrics(results, facilities) {
+function extractFacilityMetrics(results, facilities, getFacilityResult) {
   const metricsByFacility = {};
 
+  // Initialize structure
   for (const fac of facilities) {
-    metricsByFacility[fac] = {};
+    metricsByFacility[fac] = {
+      // Productivity
+      moves_per_driver_day: null,
+      turns_per_door_day: null,
+
+      // Efficiency
+      median_dwell_time: null,
+      median_queue_time: null,
+      deadhead_ratio: null,
+
+      // Quality
+      error_rate: null,
+      compliance_rate: null,
+      detention_rate: null,
+
+      // Utilization
+      process_adoption: null,
+      prevention_rate: null,
+    };
   }
 
-  // Extract metrics from each report's results
-  // For now, we use the aggregated results and the detected facilities
-  // In a full implementation, we'd have per-facility result data
-  for (const [report, result] of Object.entries(results)) {
-    if (!result || !result.metrics) continue;
+  // Extract metrics from each report's per-facility results
+  const reportTypes = Object.keys(results);
 
-    const metrics = result.metrics;
+  for (const report of reportTypes) {
+    for (const fac of facilities) {
+      // Call getFacilityResult() to get per-facility data
+      const facResult = getFacilityResult(report, fac);
+      if (!facResult || !facResult.metrics) continue;
 
-    // Map report metrics to comparison metric keys
-    switch (report) {
-      case 'driver_history':
-        // Distribute evenly for demo (in real impl, use per-facility data)
-        for (const fac of facilities) {
-          metricsByFacility[fac].moves_per_driver_day = metrics.avg_moves_per_driver_per_day ?? metrics.avgMovesPerDriverPerDay ?? null;
-          metricsByFacility[fac].median_queue_time = metrics.median_queue_time_min ?? null;
-          metricsByFacility[fac].deadhead_ratio = metrics.deadhead_pct ?? null;
-          metricsByFacility[fac].compliance_rate = metrics.compliance_rate ?? null;
-        }
-        break;
+      const metrics = facResult.metrics;
 
-      case 'dockdoor_history':
-        for (const fac of facilities) {
-          metricsByFacility[fac].turns_per_door_day = metrics.avg_turns_per_door_per_day ?? null;
-          metricsByFacility[fac].median_dwell_time = metrics.median_dwell_time_min ?? null;
-          metricsByFacility[fac].process_adoption = metrics.process_adoption_pct ?? null;
-        }
-        break;
+      // Map metric keys from per-facility result to comparison metric keys
+      switch (report) {
+        case 'driver_history':
+          metricsByFacility[fac].moves_per_driver_day =
+            metrics.avg_moves_per_driver_per_day ?? metrics.avgMovesPerDriverPerDay ?? null;
+          metricsByFacility[fac].median_queue_time =
+            metrics.median_queue_time_min ?? metrics.medianQueueTimeMin ?? null;
+          metricsByFacility[fac].deadhead_ratio =
+            metrics.deadhead_pct ?? metrics.deadheadPct ?? null;
+          metricsByFacility[fac].compliance_rate =
+            metrics.compliance_rate ?? metrics.complianceRate ?? null;
+          break;
 
-      case 'trailer_history':
-        for (const fac of facilities) {
-          metricsByFacility[fac].error_rate = metrics.lost_pct ?? null;
-        }
-        break;
+        case 'dockdoor_history':
+          metricsByFacility[fac].turns_per_door_day =
+            metrics.avg_turns_per_door_per_day ?? metrics.avgTurnsPerDoorPerDay ?? null;
+          metricsByFacility[fac].median_dwell_time =
+            metrics.median_dwell_time_min ?? metrics.medianDwellTimeMin ?? null;
+          metricsByFacility[fac].process_adoption =
+            metrics.process_adoption_pct ?? metrics.processAdoptionPct ?? null;
+          break;
 
-      case 'detention_history':
-        for (const fac of facilities) {
-          metricsByFacility[fac].detention_rate = metrics.detentions_per_day ?? null;
-          metricsByFacility[fac].prevention_rate = metrics.prevention_rate ?? null;
-        }
-        break;
+        case 'trailer_history':
+          metricsByFacility[fac].error_rate =
+            metrics.error_rate_pct ?? metrics.errorRatePct ?? metrics.lost_pct ?? null;
+          break;
+
+        case 'detention_history':
+          // Calculate detentions per day if not already calculated
+          if (metrics.detentions_per_day !== undefined) {
+            metricsByFacility[fac].detention_rate = metrics.detentions_per_day;
+          } else if (metrics.detention_events !== undefined && facResult.meta) {
+            const totalDetentions = metrics.detention_events ?? 0;
+            const daysInPeriod = calculateDaysInPeriod(facResult.meta);
+            metricsByFacility[fac].detention_rate = daysInPeriod > 0
+              ? Math.round((totalDetentions / daysInPeriod) * 10) / 10
+              : null;
+          }
+          metricsByFacility[fac].prevention_rate =
+            metrics.prevention_rate_pct ?? metrics.preventionRatePct ?? metrics.prevention_rate ?? null;
+          break;
+      }
     }
   }
 
   return metricsByFacility;
 }
 
+// Helper to calculate days in period from meta
+function calculateDaysInPeriod(meta) {
+  if (!meta?.startDate || !meta?.endDate) return 0;
+  const start = new Date(meta.startDate);
+  const end = new Date(meta.endDate);
+  return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+}
+
 /**
  * Render the Facility Comparisons section.
  * Only renders if 2+ facilities are detected.
  */
-export function renderFacilityComparisons({ facilities, results, chartRegistry }) {
+export function renderFacilityComparisons({ facilities, results, chartRegistry, getFacilityResult }) {
   if (!facilities || facilities.length < 2) {
     return null; // Don't render for single facility
   }
@@ -1720,22 +1751,50 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry }
   const content = el('div', { class: 'comparison-content', style: 'margin-top: 16px;' });
 
   // Extract metrics for comparison
-  const metricsByFacility = extractFacilityMetrics(results, facilities);
+  const metricsByFacility = extractFacilityMetrics(results, facilities, getFacilityResult);
 
   // Grid: radar chart + summary table
   const grid = el('div', { class: 'comparison-grid' });
 
   // Radar Chart
-  const radarCard = el('div', { class: 'chart-card' });
-  const radarTitle = el('div', { class: 'chart-title' }, [el('b', {}, ['Performance Radar'])]);
-  const radarDesc = el('div', { class: 'muted small', style: 'margin-bottom: 8px;' }, [
-    'Normalized scores (0-100) across key metrics. Higher values are better.'
-  ]);
+  const radarCard = el('div', { class: 'chart-card comparison-card radar-card' });
+
+  // Action buttons for radar chart
+  const actionButtons = [];
+
+  actionButtons.push(
+    el('button', {
+      class: 'btn btn-ghost',
+      type: 'button',
+      title: 'View fullscreen'
+    }, ['⛶ Expand']),
+
+    el('button', {
+      class: 'btn btn-ghost',
+      type: 'button',
+      title: 'Download as PNG'
+    }, ['⬇ PNG']),
+
+    el('button', {
+      class: 'btn btn-ghost',
+      type: 'button',
+      title: 'Download as CSV'
+    }, ['⬇ CSV'])
+  );
+
+  const actions = el('div', { class: 'chart-actions' }, actionButtons);
+
+  const titleContent = [
+    el('b', {}, ['Performance Radar']),
+    el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['Normalized scores (0-100)']),
+    actions
+  ];
+
+  const radarTitle = el('div', { class: 'chart-title' }, titleContent);
   const radarCanvas = el('canvas', { width: 400, height: 400 });
   const radarWrap = el('div', { class: 'canvas-wrap', style: 'height: 400px;' }, [radarCanvas]);
 
   radarCard.appendChild(radarTitle);
-  radarCard.appendChild(radarDesc);
   radarCard.appendChild(radarWrap);
 
   // Build radar chart data
@@ -1819,6 +1878,32 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry }
     chartRegistry.get('facility_comparison').push({ id: 'radar', chart: radarChart });
   }
 
+  // Wire up action button handlers
+  actionButtons[0].addEventListener('click', () => {
+    try {
+      openRadarChartFullscreen(radarCanvas, facilities, metricsByFacility, metricKeys);
+    } catch (e) {
+      console.error('Fullscreen failed:', e);
+    }
+  });
+
+  actionButtons[1].addEventListener('click', () => {
+    try {
+      downloadPngFromCanvas(radarCanvas, 'facility_comparison_radar.png');
+    } catch (e) {
+      console.error('PNG export failed:', e);
+    }
+  });
+
+  actionButtons[2].addEventListener('click', () => {
+    try {
+      const csvText = buildRadarChartCsvText(facilities, metricsByFacility, metricKeys);
+      downloadText('facility_comparison_scores.csv', csvText);
+    } catch (e) {
+      console.error('CSV export failed:', e);
+    }
+  });
+
   // Summary Table
   const tableCard = el('div', { class: 'chart-card' });
   const tableTitle = el('div', { class: 'chart-title' }, [el('b', {}, ['Metric Summary'])]);
@@ -1883,4 +1968,147 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry }
   section.appendChild(header);
 
   return section;
+}
+
+/**
+ * Open radar chart in fullscreen modal
+ */
+function openRadarChartFullscreen(canvas, facilities, metricsByFacility, metricKeys) {
+  // Create modal backdrop
+  const modal = el('div', {
+    class: 'chart-modal',
+    style: 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 20px;'
+  });
+
+  // Create modal content
+  const content = el('div', {
+    style: 'background: white; border-radius: 8px; padding: 24px; max-width: 90vw; max-height: 90vh; overflow: auto; position: relative;'
+  });
+
+  // Close button
+  const closeBtn = el('button', {
+    type: 'button',
+    class: 'btn btn-ghost',
+    style: 'position: absolute; top: 16px; right: 16px; z-index: 1;'
+  }, ['✕ Close']);
+
+  // Title
+  const title = el('h2', { style: 'margin-bottom: 16px;' }, ['Facility Performance Radar - Normalized Scores']);
+
+  // Canvas for fullscreen chart
+  const fullscreenCanvas = el('canvas', { width: 800, height: 800 });
+  const canvasWrap = el('div', { class: 'canvas-wrap', style: 'height: 800px; width: 800px; margin: 0 auto;' }, [fullscreenCanvas]);
+
+  content.appendChild(closeBtn);
+  content.appendChild(title);
+  content.appendChild(canvasWrap);
+  modal.appendChild(content);
+
+  // Build radar chart data for fullscreen
+  const radarLabels = metricKeys.map(key => COMPARISON_METRICS[key].label);
+
+  const facilityColors = [
+    { bg: 'rgba(99, 102, 241, 0.2)', border: 'rgb(99, 102, 241)' },
+    { bg: 'rgba(34, 197, 94, 0.2)', border: 'rgb(34, 197, 94)' },
+    { bg: 'rgba(249, 115, 22, 0.2)', border: 'rgb(249, 115, 22)' },
+    { bg: 'rgba(236, 72, 153, 0.2)', border: 'rgb(236, 72, 153)' },
+    { bg: 'rgba(14, 165, 233, 0.2)', border: 'rgb(14, 165, 233)' },
+    { bg: 'rgba(168, 85, 247, 0.2)', border: 'rgb(168, 85, 247)' },
+  ];
+
+  const radarDatasets = facilities.slice(0, 10).map((fac, idx) => {
+    const colorIdx = idx % facilityColors.length;
+    const data = metricKeys.map(key => {
+      const value = metricsByFacility[fac]?.[key];
+      const def = COMPARISON_METRICS[key];
+      return normalizeMetricValue(value, def);
+    });
+
+    return {
+      label: fac,
+      data,
+      backgroundColor: facilityColors[colorIdx].bg,
+      borderColor: facilityColors[colorIdx].border,
+      borderWidth: 2,
+      pointBackgroundColor: facilityColors[colorIdx].border,
+    };
+  });
+
+  const radarConfig = {
+    type: 'radar',
+    data: {
+      labels: radarLabels,
+      datasets: radarDatasets,
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          beginAtZero: true,
+          max: 100,
+          ticks: {
+            stepSize: 25,
+            font: { size: 12 },
+          },
+          pointLabels: {
+            font: { size: 13 },
+          },
+        },
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { usePointStyle: true, padding: 16, font: { size: 14 } },
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}/100`,
+          },
+        },
+      },
+    },
+  };
+
+  // Create fullscreen chart
+  const fullscreenChart = new window.Chart(fullscreenCanvas.getContext('2d'), radarConfig);
+
+  // Close modal handler
+  const closeModal = () => {
+    fullscreenChart.destroy();
+    modal.remove();
+  };
+
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  document.body.appendChild(modal);
+}
+
+/**
+ * Build CSV text from radar chart data
+ */
+function buildRadarChartCsvText(facilities, metricsByFacility, metricKeys) {
+  const lines = [];
+
+  // Header row
+  lines.push(['Metric', ...facilities].join(','));
+
+  // Data rows
+  for (const metricKey of metricKeys) {
+    const def = COMPARISON_METRICS[metricKey];
+    const row = [def.label];
+
+    for (const fac of facilities) {
+      const value = metricsByFacility[fac]?.[metricKey];
+      const normalized = normalizeMetricValue(value, def);
+      row.push(normalized);
+    }
+
+    lines.push(row.join(','));
+  }
+
+  return lines.join('\n');
 }

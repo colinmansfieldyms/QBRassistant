@@ -2430,6 +2430,13 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       totalTurns: 0,
       daysWithData: new Set(),
       turnsByDay: new CounterMap(),
+
+      // Add quantile estimators for per-facility metrics
+      dwellQuantile: new P2Quantile(0.5),
+      processQuantile: new P2Quantile(0.5),
+
+      // Add structure for turns per door per day calculation
+      turnsByDoorByDay: new Map(), // Map<door, Map<day, count>>
     };
   }
 
@@ -2491,6 +2498,11 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         this.getEstimators(this.dwellByWeek, wk).median.add(mins);
         this.getEstimators(this.dwellByDay, dk).median.add(mins);
 
+        // Add dwell quantile for per-facility metrics
+        if (facBucket && facBucket.dwellQuantile) {
+          facBucket.dwellQuantile.add(mins);
+        }
+
         // Collect drilldown data if enabled (store by day for outlier lookup)
         if (this.enableDrilldown) {
           const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
@@ -2530,6 +2542,11 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         this.getEstimators(this.processByMonth, mk).median.add(mins);
         this.getEstimators(this.processByWeek, wk).median.add(mins);
         this.getEstimators(this.processByDay, dk).median.add(mins);
+
+        // Add process quantile for per-facility metrics
+        if (facBucket && facBucket.processQuantile) {
+          facBucket.processQuantile.add(mins);
+        }
       }
     }
 
@@ -2561,6 +2578,13 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         facBucket.daysWithData.add(dk);
         facBucket.totalTurns++;
         facBucket.turnsByDay.inc(dk);
+
+        // Track turnsByDoorByDay for avg calculation
+        if (!facBucket.turnsByDoorByDay.has(door)) {
+          facBucket.turnsByDoorByDay.set(door, new Map());
+        }
+        const facDoorDays = facBucket.turnsByDoorByDay.get(door);
+        facDoorDays.set(dk, (facDoorDays.get(dk) || 0) + 1);
       }
 
       if (!this.turnsByDoorByDay.has(dk)) {
@@ -3025,8 +3049,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     const medDwell = bucket.dwellQuantile?.estimate() || null;
     const medProcess = bucket.processQuantile?.estimate() || null;
     const turnsPerDoorPerDay = this.calculateFacilityTurnsPerDoorPerDay(bucket);
-    const processCoveragePct = bucket.processTotal > 0
-      ? Math.round((bucket.processOk / bucket.processTotal) * 100)
+    const processCoveragePct = bucket.processCoverage.total > 0
+      ? Math.round((bucket.processCoverage.ok / bucket.processCoverage.total) * 100)
       : null;
 
     // Simplified data quality
@@ -3080,10 +3104,92 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         total_turns: bucket.totalTurns || 0,
       },
       charts,
-      findings: [],
-      recommendations: [],
+      findings: this.generateFacilityFindings(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay),
+      recommendations: this.generateFacilityRecommendations(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay),
       roi: null,
     };
+  }
+
+  /**
+   * Generate findings for a specific facility
+   */
+  generateFacilityFindings(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay) {
+    const findings = [];
+
+    // Finding 1: High dwell time
+    if (medDwell !== null && medDwell > 120) {
+      findings.push({
+        level: medDwell > 180 ? 'red' : 'yellow',
+        text: `Median dwell time at ${facility} is ${Math.round(medDwell)} minutes, indicating potential dock congestion or slow processing.`,
+        confidence: 'medium',
+        confidenceReason: `Based on ${bucket.dwellCoverage.ok} door visits with valid dwell times.`,
+      });
+    }
+
+    // Finding 2: Low process adoption
+    if (processCoveragePct !== null && processCoveragePct < 70) {
+      findings.push({
+        level: processCoveragePct < 50 ? 'red' : 'yellow',
+        text: `Process feature adoption at ${facility} is only ${processCoveragePct}%, indicating incomplete YMS workflow usage.`,
+        confidence: 'high',
+        confidenceReason: `Based on ${bucket.processCoverage.total} door visits.`,
+      });
+    }
+
+    // Finding 3: Low door utilization
+    if (turnsPerDoorPerDay !== null && turnsPerDoorPerDay < 5) {
+      findings.push({
+        level: 'yellow',
+        text: `Average turns per door per day at ${facility} is ${turnsPerDoorPerDay}, suggesting underutilized dock capacity.`,
+        confidence: 'medium',
+        confidenceReason: `Based on ${bucket.uniqueDoors.size} unique doors across ${bucket.daysWithData.size} days.`,
+      });
+    }
+
+    // Finding 4: Excellent performance (positive finding)
+    if (medDwell !== null && medDwell < 60 && processCoveragePct > 90) {
+      findings.push({
+        level: 'green',
+        text: `${facility} demonstrates excellent dock performance with ${Math.round(medDwell)}-minute median dwell time and ${processCoveragePct}% process adoption.`,
+        confidence: 'high',
+        confidenceReason: `Based on comprehensive data from ${bucket.totalRows} records.`,
+      });
+    }
+
+    return findings;
+  }
+
+  /**
+   * Generate recommendations for a specific facility
+   */
+  generateFacilityRecommendations(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay) {
+    const recommendations = [];
+
+    // Recommendation for high dwell time
+    if (medDwell !== null && medDwell > 180) {
+      recommendations.push({
+        text: `Investigate dock operations at ${facility} to identify bottlenecks causing excessive dwell times.`,
+        benefit: 'Reducing dwell time improves dock throughput and carrier satisfaction.',
+      });
+    }
+
+    // Recommendation for low process adoption
+    if (processCoveragePct !== null && processCoveragePct < 70) {
+      recommendations.push({
+        text: `Provide training to drivers at ${facility} on using the YMS process feature for dock door visits.`,
+        benefit: 'Higher adoption improves visibility and operational efficiency.',
+      });
+    }
+
+    // Recommendation for low door utilization
+    if (turnsPerDoorPerDay !== null && turnsPerDoorPerDay < 5) {
+      recommendations.push({
+        text: `Review dock door allocation at ${facility} to optimize utilization or consider reducing active door count.`,
+        benefit: 'Better door utilization reduces operational costs.',
+      });
+    }
+
+    return recommendations;
   }
 
   // Calculate average turns per door per day
