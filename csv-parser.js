@@ -48,6 +48,9 @@ export const CSV_FIELD_MAPS = {
     'Live/Drop': 'live_load',
     'Carrier SCAC': 'carrier_scac',
     'Facility': 'facility',
+    'FACILITY': 'facility',
+    'Fac Code': 'facility',
+    'Fac_Code': 'facility',
   },
 
   dockdoor_history: {
@@ -66,6 +69,9 @@ export const CSV_FIELD_MAPS = {
     'Processed By': 'processed_by',
     'Event': 'event',
     'Facility': 'facility',
+    'FACILITY': 'facility',
+    'Fac Code': 'facility',
+    'Fac_Code': 'facility',
   },
 
   driver_history: {
@@ -84,6 +90,9 @@ export const CSV_FIELD_MAPS = {
     'Elapsed Time (Minutes)': 'elapsed_time_minutes',
     'Event': 'event',
     'Facility': 'facility',
+    'FACILITY': 'facility',
+    'Fac Code': 'facility',
+    'Fac_Code': 'facility',
   },
 
   trailer_history: {
@@ -98,6 +107,10 @@ export const CSV_FIELD_MAPS = {
     'Username': 'username',
     'Carrier SCAC': 'carrier_scac',
     'Start Location': 'start_location',
+    'Facility': 'facility',
+    'FACILITY': 'facility',
+    'Fac Code': 'facility',
+    'Fac_Code': 'facility',
   },
 };
 
@@ -230,8 +243,15 @@ function extractFacilityFromRow(normalizedRow, rawRow, reportType) {
     case 'dockdoor_history':
     case 'driver_history':
     case 'detention_history':
-      // Direct Facility field
-      facility = normalizedRow.facility || rawRow.Facility || rawRow.facility || '';
+      // Direct Facility field with multiple fallback options for different CSV formats
+      facility = normalizedRow.facility
+        || rawRow.Facility
+        || rawRow.facility
+        || rawRow.FACILITY
+        || rawRow['Fac Code']
+        || rawRow.fac_code
+        || rawRow.FacCode
+        || '';
       break;
 
     case 'trailer_history':
@@ -242,11 +262,25 @@ function extractFacilityFromRow(normalizedRow, rawRow, reportType) {
         const parts = startLoc.split(' -');
         facility = parts[0] || '';
       }
+      // Fallback to direct facility field if start location extraction failed
+      if (!facility) {
+        facility = normalizedRow.facility
+          || rawRow.Facility
+          || rawRow.facility
+          || rawRow.FACILITY
+          || '';
+      }
       break;
 
     case 'current_inventory':
-      // Use Drop Facility field
-      facility = normalizedRow.drop_facility || rawRow['Drop Facility'] || rawRow.drop_facility || '';
+      // Use Drop Facility field with fallbacks
+      facility = normalizedRow.drop_facility
+        || rawRow['Drop Facility']
+        || rawRow.drop_facility
+        || normalizedRow.facility
+        || rawRow.Facility
+        || rawRow.FACILITY
+        || '';
       break;
 
     default:

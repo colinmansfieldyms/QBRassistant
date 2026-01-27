@@ -1750,7 +1750,11 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
    * Returns a simplified result with key metrics for tabbed display.
    */
   finalizeFacility(facility, meta) {
-    const bucket = this.byFacility.get(facility);
+    // Normalize facility name to ensure consistent lookup with how buckets are stored
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+
+    const bucket = this.byFacility.get(normalized);
     if (!bucket) return null;
 
     const pct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : 0;
@@ -2308,7 +2312,11 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
    * Returns a simplified result with key metrics for tabbed display.
    */
   finalizeFacility(facility, meta) {
-    const bucket = this.byFacility.get(facility);
+    // Normalize facility name to ensure consistent lookup with how buckets are stored
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+
+    const bucket = this.byFacility.get(normalized);
     if (!bucket) return null;
 
     const totalEvents = bucket.preDetention + bucket.detention;
@@ -3045,7 +3053,11 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
    * Returns a simplified result with key metrics for tabbed display.
    */
   finalizeFacility(facility, meta) {
-    const bucket = this.byFacility.get(facility);
+    // Normalize facility name to ensure consistent lookup with how buckets are stored
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+
+    const bucket = this.byFacility.get(normalized);
     if (!bucket) return null;
 
     // Calculate key metrics from bucket
@@ -3720,7 +3732,11 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
    * Returns a simplified result with key metrics for tabbed display.
    */
   finalizeFacility(facility, meta) {
-    const bucket = this.byFacility.get(facility);
+    // Normalize facility name to ensure consistent lookup with how buckets are stored
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+
+    const bucket = this.byFacility.get(normalized);
     if (!bucket) return null;
 
     // Calculate key metrics from bucket
@@ -4225,7 +4241,11 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
    * Returns a simplified result with key metrics for tabbed display.
    */
   finalizeFacility(facility, meta) {
-    const bucket = this.byFacility.get(facility);
+    // Normalize facility name to ensure consistent lookup with how buckets are stored
+    const normalized = FacilityRegistry.normalizeFacilityName(facility);
+    if (!normalized) return null;
+
+    const bucket = this.byFacility.get(normalized);
     if (!bucket) return null;
 
     // Calculate total errors
