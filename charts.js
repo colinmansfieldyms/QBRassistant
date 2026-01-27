@@ -2471,16 +2471,11 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
   // Extract assumptions from any available result's meta
   let assumptions = null;
   for (const reportType of Object.keys(results)) {
-    const reportResults = results[reportType];
-    if (Array.isArray(reportResults)) {
-      for (const res of reportResults) {
-        if (res?.meta?.assumptions) {
-          assumptions = res.meta.assumptions;
-          break;
-        }
-      }
+    const result = results[reportType];
+    if (result?.meta?.assumptions) {
+      assumptions = result.meta.assumptions;
+      break;
     }
-    if (assumptions) break;
   }
 
   const section = el('div', { class: 'report-card facility-comparison-section' });
@@ -2569,7 +2564,9 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
     const data = metricKeys.map(key => {
       const value = metricsByFacility[fac]?.[key];
       const def = COMPARISON_METRICS[key];
-      return normalizeMetricValue(value, def);
+      // Use dynamic thresholds based on ROI assumptions
+      const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
+      return normalizeMetricValue(value, { ...def, thresholds: dynamicThresholds });
     });
 
     return {
@@ -2630,7 +2627,7 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
   // Wire up action button handlers
   actionButtons[0].addEventListener('click', () => {
     try {
-      openRadarChartFullscreen(radarCanvas, facilities, metricsByFacility, metricKeys);
+      openRadarChartFullscreen(radarCanvas, facilities, metricsByFacility, metricKeys, assumptions);
     } catch (e) {
       console.error('Fullscreen failed:', e);
     }
@@ -2646,7 +2643,7 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
 
   actionButtons[2].addEventListener('click', () => {
     try {
-      const csvText = buildRadarChartCsvText(facilities, metricsByFacility, metricKeys);
+      const csvText = buildRadarChartCsvText(facilities, metricsByFacility, metricKeys, assumptions);
       downloadText('facility_comparison_scores.csv', csvText);
     } catch (e) {
       console.error('CSV export failed:', e);
@@ -2732,7 +2729,10 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
     // Value cells for each facility
     for (const fac of facilities.slice(0, 10)) {
       const value = metricsByFacility[fac]?.[key];
-      const light = getTrafficLight(value, def);
+      // Use dynamic thresholds based on ROI assumptions
+      const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
+      const defWithDynamicThresholds = { ...def, thresholds: dynamicThresholds };
+      const light = getTrafficLight(value, defWithDynamicThresholds);
       const displayValue = value !== null && value !== undefined && Number.isFinite(value)
         ? `${formatNumber(value)}${def.unit}`
         : '—';
@@ -2775,7 +2775,7 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
 /**
  * Open radar chart in fullscreen modal
  */
-function openRadarChartFullscreen(canvas, facilities, metricsByFacility, metricKeys) {
+function openRadarChartFullscreen(canvas, facilities, metricsByFacility, metricKeys, assumptions) {
   // Create modal backdrop
   const modal = el('div', {
     class: 'chart-modal',
@@ -2823,7 +2823,9 @@ function openRadarChartFullscreen(canvas, facilities, metricsByFacility, metricK
     const data = metricKeys.map(key => {
       const value = metricsByFacility[fac]?.[key];
       const def = COMPARISON_METRICS[key];
-      return normalizeMetricValue(value, def);
+      // Use dynamic thresholds based on ROI assumptions
+      const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
+      return normalizeMetricValue(value, { ...def, thresholds: dynamicThresholds });
     });
 
     return {
@@ -2892,7 +2894,7 @@ function openRadarChartFullscreen(canvas, facilities, metricsByFacility, metricK
 /**
  * Build CSV text from radar chart data
  */
-function buildRadarChartCsvText(facilities, metricsByFacility, metricKeys) {
+function buildRadarChartCsvText(facilities, metricsByFacility, metricKeys, assumptions) {
   const lines = [];
 
   // Header row
@@ -2905,7 +2907,9 @@ function buildRadarChartCsvText(facilities, metricsByFacility, metricKeys) {
 
     for (const fac of facilities) {
       const value = metricsByFacility[fac]?.[metricKey];
-      const normalized = normalizeMetricValue(value, def);
+      // Use dynamic thresholds based on ROI assumptions
+      const dynamicThresholds = getDynamicThresholds(metricKey, def, assumptions);
+      const normalized = normalizeMetricValue(value, { ...def, thresholds: dynamicThresholds });
       row.push(normalized);
     }
 
