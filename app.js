@@ -2050,8 +2050,8 @@ async function pollForAIResult(requestId) {
   const airtableUrl = `https://api.airtable.com/v0/${AI_CONFIG.airtableBaseId}/${AI_CONFIG.airtableTableId}`;
 
   while (Date.now() - startTime < AI_CONFIG.pollTimeoutMs) {
-    // Get most recent record (sorted by createdTime descending)
-    const response = await fetch(`${airtableUrl}?maxRecords=1&sort%5B0%5D%5Bfield%5D=createdTime&sort%5B0%5D%5Bdirection%5D=desc`, {
+    // Get recent records (Airtable doesn't support sorting by built-in createdTime)
+    const response = await fetch(`${airtableUrl}?maxRecords=10`, {
       headers: {
         'Authorization': `Bearer ${AI_CONFIG.airtableApiKey}`,
       },
@@ -2064,7 +2064,11 @@ async function pollForAIResult(requestId) {
     const data = await response.json();
 
     if (data.records && data.records.length > 0) {
-      const record = data.records[0];
+      // Sort by createdTime descending (client-side) and get the most recent
+      const sortedRecords = data.records.sort((a, b) =>
+        new Date(b.createdTime) - new Date(a.createdTime)
+      );
+      const record = sortedRecords[0];
       const recordTime = record.createdTime;
 
       // Check if this record was created after we started (it's our result)
