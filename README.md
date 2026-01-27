@@ -1,10 +1,12 @@
-# YMS QBR Assistant
+# YardIQ
 
-A web-based tool for analyzing Yard Management Solutions (YMS) data to help Customer Experience and Sales teams quantify customer adoption, operational performance, and return on investment (ROI).
+**Your AI-powered yard consultant**
+
+A web-based tool for analyzing Yard Management Solutions (YMS) data to quantify operational performance, identify inefficiencies, and calculate return on investment (ROI).
 
 ## What does this tool do?
 
-The QBR (Quarterly Business Review) Assistant helps you:
+YardIQ helps you:
 
 1. **Analyze yard operations** - Understand how efficiently trailers, drivers, and dock doors are being utilized
 2. **Identify operational issues** - Surface problems like lost trailers, detention events, and data quality gaps
@@ -329,7 +331,7 @@ Click "Warnings" to expand a collapsible list of all warnings encountered during
 
 ```
 index.html      # Layout + CDN scripts + module entry
-styles.css      # YMS-branded UI + print styles
+styles.css      # YardIQ UI + print styles
 app.js          # UI controller/state + orchestration
 api.js          # Fetching, pagination, retry, concurrency
 analysis.js     # Streaming aggregations + findings + ROI
