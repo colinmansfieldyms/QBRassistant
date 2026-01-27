@@ -2345,7 +2345,7 @@ canvas{ max-width:100%; }
   order: 2;
 }
 
-/* Limit metric summary table height with scrolling */
+/* Metric summary table with scrolling */
 .comparison-table-container {
   max-height: 600px;
   overflow-y: auto;
@@ -2421,34 +2421,26 @@ canvas{ max-width:100%; }
 
 .comparison-table .metric-name .tooltip-trigger {
   cursor: help;
-  border-bottom: 1px dotted var(--muted);
-  position: relative;
+  border-bottom: 1px dotted var(--accent);
+  color: inherit;
 }
 
-.comparison-table .metric-name .tooltip-trigger:hover::after {
-  content: attr(data-tooltip);
+/* Floating tooltip (appended to body, escapes all containers) */
+.floating-tooltip {
   position: fixed;
-  width: 280px;
+  width: 260px;
   padding: 10px 12px;
   background: var(--text);
   color: white;
-  font-size: 12px;
+  font-size: 0.82rem;
   font-weight: 400;
-  line-height: 1.4;
-  border-radius: 6px;
-  z-index: 9999;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  line-height: 1.5;
+  border-radius: 8px;
+  z-index: 99999;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
   text-align: left;
   white-space: normal;
   pointer-events: none;
-  /* Position tooltip to the right of the element */
-  margin-left: 20px;
-  margin-top: -40px;
-}
-
-.comparison-table .metric-name .tooltip-trigger:hover::before {
-  /* Hide the arrow since fixed positioning makes alignment difficult */
-  display: none;
 }
 
 @media print {

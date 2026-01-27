@@ -1934,12 +1934,53 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
     const def = COMPARISON_METRICS[key];
     const row = el('tr');
 
-    // Metric name with tooltip
+    // Metric name with tooltip (using JS-based floating tooltip to escape scroll container)
     const nameCell = el('td', { class: 'metric-name' });
     const nameTrigger = el('span', {
       class: 'tooltip-trigger',
       'data-tooltip': def.tooltip,
     }, [def.label]);
+
+    // Add floating tooltip handlers
+    nameTrigger.addEventListener('mouseenter', (e) => {
+      const text = e.target.getAttribute('data-tooltip');
+      if (!text) return;
+
+      // Remove any existing floating tooltip
+      const existing = document.getElementById('floating-metric-tooltip');
+      if (existing) existing.remove();
+
+      // Create floating tooltip
+      const tooltip = document.createElement('div');
+      tooltip.id = 'floating-metric-tooltip';
+      tooltip.className = 'floating-tooltip';
+      tooltip.textContent = text;
+      document.body.appendChild(tooltip);
+
+      // Position above the element
+      const rect = e.target.getBoundingClientRect();
+      tooltip.style.left = `${rect.left}px`;
+      tooltip.style.top = `${rect.top - tooltip.offsetHeight - 8}px`;
+
+      // Adjust if tooltip goes off-screen
+      const tooltipRect = tooltip.getBoundingClientRect();
+      if (tooltipRect.left < 8) {
+        tooltip.style.left = '8px';
+      }
+      if (tooltipRect.right > window.innerWidth - 8) {
+        tooltip.style.left = `${window.innerWidth - tooltipRect.width - 8}px`;
+      }
+      if (tooltipRect.top < 8) {
+        // Show below instead
+        tooltip.style.top = `${rect.bottom + 8}px`;
+      }
+    });
+
+    nameTrigger.addEventListener('mouseleave', () => {
+      const tooltip = document.getElementById('floating-metric-tooltip');
+      if (tooltip) tooltip.remove();
+    });
+
     nameCell.appendChild(nameTrigger);
     row.appendChild(nameCell);
 
