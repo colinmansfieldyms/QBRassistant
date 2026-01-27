@@ -19,6 +19,10 @@
     </div>
 
     <div class="header-actions">
+      <button id="aiInsightsBtn" class="btn btn-primary" type="button" disabled>
+        AI Insights
+      </button>
+
       <div class="export-dropdown" id="exportDropdown">
         <button class="btn btn-ghost export-dropdown-trigger" type="button" id="exportDropdownTrigger" disabled>
           Exports ▾
@@ -237,6 +241,13 @@
       <section id="statusBanner" class="callout hidden" role="status"></section>
 
       <section id="resultsRoot" class="results">
+        <!-- AI Insights Section (populated dynamically) -->
+        <div id="aiInsightsSection" class="ai-insights-section" style="display:none;">
+          <h2 class="ai-insights-title">✨ AI Insights</h2>
+          <div id="aiInsightsList" class="ai-insights-grid"></div>
+          <div id="aiSummary" class="ai-summary"></div>
+        </div>
+
         <div class="empty-state">
           <div class="empty-title">Ready when you are.</div>
           <div class="empty-subtitle" id="emptyStateSubtitle">
@@ -573,6 +584,18 @@
 
   <!-- Fixed tooltip container (for tooltips that need to escape overflow containers) -->
   <div id="fixedTooltip" class="fixed-tooltip" aria-hidden="true"></div>
+
+  <!-- AI Insights Confirmation Modal -->
+  <div id="aiConfirmModal" class="modal-overlay" style="display:none;">
+    <div class="modal-content">
+      <h3>Generate AI Insights</h3>
+      <p>YardIQ will use AI to populate your best insights based on the assessment below. Results will take a few moments to generate. Ready to start?</p>
+      <div class="modal-actions">
+        <button id="aiConfirmCancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="aiConfirmStart" class="btn btn-primary" type="button">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <!-- CDNs (no build step) -->
   <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js"></script>

@@ -40,6 +40,16 @@ const PERF_RENDER_THROTTLE_MS = 900;
 const PERF_DEBUG = new URLSearchParams(window.location.search).has('perf');
 const WORKER_READY_TIMEOUT_MS = 1500;
 
+// AI Analysis Configuration
+const AI_CONFIG = {
+  zapierWebhookUrl: 'https://hooks.zapier.com/hooks/catch/6705924/uq7vm6m/',
+  airtableApiKey: 'patZXkkYHaE4V4mM8.b4506e47f9fea46cc2ba9a247478209c54da185eb34ed1785831bfab4241a7ad',
+  airtableBaseId: 'appz7ZJHREJozRaOX',
+  airtableTableId: 'tblINCl9ApdmosvJV',
+  pollIntervalMs: 2000,
+  pollTimeoutMs: 60000,
+};
+
 const REPORTS = [
   'current_inventory',
   'detention_history',
@@ -120,6 +130,14 @@ const UI = {
   partialTrimGranularity: document.querySelector('#partialTrimGranularity'),
   // Drill-down
   drilldownToggle: document.querySelector('#drilldownToggle'),
+  // AI Insights
+  aiInsightsBtn: document.querySelector('#aiInsightsBtn'),
+  aiConfirmModal: document.querySelector('#aiConfirmModal'),
+  aiConfirmCancel: document.querySelector('#aiConfirmCancel'),
+  aiConfirmStart: document.querySelector('#aiConfirmStart'),
+  aiInsightsSection: document.querySelector('#aiInsightsSection'),
+  aiInsightsList: document.querySelector('#aiInsightsList'),
+  aiSummary: document.querySelector('#aiSummary'),
 };
 
 const state = {
@@ -418,6 +436,8 @@ function setRunningUI(running) {
   if (UI.workerToggle) {
     UI.workerToggle.disabled = running || !workerRuntime.supported || !!workerRuntime.fallbackReason;
   }
+  // AI Insights button - enable only when results exist
+  UI.aiInsightsBtn.disabled = running || Object.keys(state.results).length === 0;
 }
 
 // ---------- Progress rendering ----------
@@ -1941,6 +1961,161 @@ function doPrint() {
   printReport();
 }
 
+// ---------- AI Insights ----------
+
+async function generateAIInsights() {
+  const requestId = 'req_' + crypto.randomUUID();
+
+  // Update button to generating state
+  UI.aiInsightsBtn.disabled = true;
+  UI.aiInsightsBtn.textContent = 'Generating...';
+  UI.aiInsightsBtn.classList.add('generating');
+
+  try {
+    // Build and send payload to Zapier
+    const payload = buildAIPayload(requestId);
+
+    const webhookResponse = await fetch(AI_CONFIG.zapierWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!webhookResponse.ok) {
+      throw new Error(`Webhook failed: ${webhookResponse.status}`);
+    }
+
+    // Poll Airtable for results
+    const result = await pollForAIResult(requestId);
+
+    // Display results
+    displayAIInsights(result);
+
+  } catch (error) {
+    console.error('AI insights error:', error);
+    setBanner('error', `AI insights failed: ${error.message}`);
+  } finally {
+    UI.aiInsightsBtn.disabled = false;
+    UI.aiInsightsBtn.textContent = 'AI Insights';
+    UI.aiInsightsBtn.classList.remove('generating');
+  }
+}
+
+function buildAIPayload(requestId) {
+  const allFindings = [];
+  const allRecommendations = [];
+  const allROI = {};
+  const allMetrics = {};
+
+  for (const [reportName, result] of Object.entries(state.results)) {
+    if (result.findings) {
+      allFindings.push(...result.findings.map(f => ({
+        report: reportName,
+        level: f.level,
+        text: f.text,
+        confidence: f.confidence,
+      })));
+    }
+    if (result.recommendations) {
+      allRecommendations.push(...result.recommendations);
+    }
+    if (result.roi) {
+      allROI[reportName] = result.roi;
+    }
+    if (result.metrics) {
+      allMetrics[reportName] = result.metrics;
+    }
+  }
+
+  return {
+    requestId,
+    dateRange: {
+      start: state.inputs?.startDate,
+      end: state.inputs?.endDate,
+    },
+    timezone: state.timezone,
+    facilities: state.detectedFacilities.length
+      ? state.detectedFacilities
+      : (state.inputs?.facilities || []),
+    findings: allFindings,
+    recommendations: allRecommendations,
+    roi: allROI,
+    metrics: allMetrics,
+  };
+}
+
+async function pollForAIResult(requestId) {
+  const startTime = Date.now();
+  const airtableUrl = `https://api.airtable.com/v0/${AI_CONFIG.airtableBaseId}/${AI_CONFIG.airtableTableId}`;
+
+  while (Date.now() - startTime < AI_CONFIG.pollTimeoutMs) {
+    // Query Airtable for matching requestId, sorted by most recent first
+    const filterFormula = encodeURIComponent(`{requestId} = '${requestId}'`);
+    const response = await fetch(`${airtableUrl}?filterByFormula=${filterFormula}&sort%5B0%5D%5Bfield%5D=createdAt&sort%5B0%5D%5Bdirection%5D=desc`, {
+      headers: {
+        'Authorization': `Bearer ${AI_CONFIG.airtableApiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Airtable query failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (data.records && data.records.length > 0) {
+      // Get the most recent record (first due to sort)
+      const record = data.records[0].fields;
+      if (record.status === 'complete') {
+        return {
+          insights: record.insights ? JSON.parse(record.insights) : [],
+          summary: record.summary || '',
+        };
+      }
+    }
+
+    // Wait before next poll
+    await new Promise(resolve => setTimeout(resolve, AI_CONFIG.pollIntervalMs));
+  }
+
+  throw new Error('AI insights timed out. Please try again.');
+}
+
+function displayAIInsights(aiResult) {
+  UI.aiInsightsSection.style.display = 'block';
+
+  // Clear previous content
+  UI.aiInsightsList.innerHTML = '';
+  UI.aiSummary.textContent = '';
+
+  // Render top 3 insights as cards
+  if (aiResult.insights && aiResult.insights.length) {
+    aiResult.insights.slice(0, 3).forEach((insight, index) => {
+      const card = document.createElement('div');
+      card.className = 'ai-insight-card';
+      card.innerHTML = `
+        <div class="ai-insight-card-number">${index + 1}</div>
+        <div class="ai-insight-card-text">${escapeHtmlForAI(insight)}</div>
+      `;
+      UI.aiInsightsList.appendChild(card);
+    });
+  }
+
+  // Render summary paragraph
+  if (aiResult.summary) {
+    UI.aiSummary.textContent = aiResult.summary;
+  }
+
+  // Scroll to top to show insights
+  UI.aiInsightsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function escapeHtmlForAI(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // ---------- Events ----------
 UI.runBtn.addEventListener('click', () => {
   if (state.dataSource === 'csv') {
@@ -1985,6 +2160,29 @@ UI.reportChecks.forEach(check => {
 
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
 UI.printBtn.addEventListener('click', doPrint);
+
+// AI Insights button - show confirmation modal
+UI.aiInsightsBtn.addEventListener('click', () => {
+  UI.aiConfirmModal.style.display = 'flex';
+});
+
+// AI Insights modal - cancel button
+UI.aiConfirmCancel.addEventListener('click', () => {
+  UI.aiConfirmModal.style.display = 'none';
+});
+
+// AI Insights modal - confirm button
+UI.aiConfirmStart.addEventListener('click', () => {
+  UI.aiConfirmModal.style.display = 'none';
+  generateAIInsights();
+});
+
+// AI Insights modal - close on overlay click
+UI.aiConfirmModal.addEventListener('click', (e) => {
+  if (e.target === UI.aiConfirmModal) {
+    UI.aiConfirmModal.style.display = 'none';
+  }
+});
 
 // Recalculate ROI with updated assumptions (without re-fetching data)
 UI.recalcRoiBtn?.addEventListener('click', () => {
