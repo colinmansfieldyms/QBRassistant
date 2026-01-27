@@ -29,7 +29,6 @@ import {
   processCSVFiles,
   renderFileList,
   renderCSVProgress,
-  renderCSVDisclaimers,
   setupDropZone,
   REPORT_TYPE_LABELS,
 } from './csv-import.js';
@@ -1007,6 +1006,7 @@ function renderAllResults() {
   const isCSVMode = inputs.csvMode === true;
   const modeBadge = isCSVMode ? 'CSV Import' : (state.mockMode ? 'Mock mode' : 'Live API');
   const modeBadgeClass = isCSVMode ? 'yellow' : (state.mockMode ? 'yellow' : 'green');
+  const csvTooltip = isCSVMode ? 'CSV mode limitations:\n• Detention "prevented" counts may be unavailable\n• Date/time values use the selected timezone' : '';
 
   // For CSV mode, use detected facilities; for API mode, use input facilities
   const facilitiesForDisplay = isCSVMode ? state.detectedFacilities : inputs.facilities;
@@ -1021,7 +1021,7 @@ function renderAllResults() {
   summary.innerHTML = `
     <div class="section-title">
       <h2>Assessment summary</h2>
-      <span class="badge ${modeBadgeClass}">${modeBadge}</span>
+      <span class="badge ${modeBadgeClass}"${csvTooltip ? ` title="${csvTooltip}"` : ''}>${modeBadge}</span>
     </div>
 
     <div class="kpi-grid">
@@ -1044,13 +1044,6 @@ function renderAllResults() {
 
   `;
   root.appendChild(summary);
-
-  // Add CSV mode disclaimers if applicable
-  if (isCSVMode) {
-    const disclaimers = document.createElement('div');
-    disclaimers.innerHTML = renderCSVDisclaimers();
-    root.appendChild(disclaimers.firstElementChild);
-  }
 
   // Create getFacilityResult function for per-facility tabbed results
   const getFacilityResult = (report, facility) => {
@@ -1940,7 +1933,7 @@ function downloadSummary() {
     warnings: state.warnings,
   });
   const stamp = DateTime.now().setZone(state.inputs.timezone).toFormat('yyyyLLdd_HHmm');
-  downloadText(`YMS_Value_Assessment_${state.inputs.tenant}_${stamp}.txt`, txt);
+  downloadText(`YardIQ_Report_${state.inputs.tenant}_${stamp}.txt`, txt);
 }
 
 function doPrint() {

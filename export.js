@@ -37,7 +37,7 @@ export function buildSummaryTxt({ inputs, results, warnings }) {
   const now = DateTime.now().setZone(inputs.timezone).toFormat('yyyy-LL-dd HH:mm:ss ZZZZ');
 
   const lines = [];
-  lines.push('YMS Customer Value Assessment — Summary');
+  lines.push('YardIQ Analysis Report');
   lines.push('='.repeat(48));
   lines.push(`Generated: ${now}`);
   lines.push(`Tenant: ${inputs.tenant}`);
