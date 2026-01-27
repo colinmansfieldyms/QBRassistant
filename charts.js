@@ -465,12 +465,13 @@ function drawHealthGaugeNeedle(chart, score) {
 }
 
 /**
- * Draw score text in center of gauge
+ * Draw score text below the gauge needle
  */
 function drawHealthGaugeText(chart, score) {
   const { ctx, chartArea } = chart;
   const centerX = (chartArea.left + chartArea.right) / 2;
-  const centerY = chartArea.bottom + 5;
+  // Position text below the needle's center dot (which is at chartArea.bottom - 10, radius 8)
+  const textStartY = chartArea.bottom + 12;
 
   const status = getHealthScoreStatus(score);
 
@@ -481,12 +482,12 @@ function drawHealthGaugeText(chart, score) {
   // Score number
   ctx.font = 'bold 32px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = status.textColor;
-  ctx.fillText(score !== null ? score : '—', centerX, centerY);
+  ctx.fillText(score !== null ? score : '—', centerX, textStartY);
 
   // Status label
   ctx.font = 'bold 10px system-ui, -apple-system, sans-serif';
   ctx.fillStyle = status.textColor;
-  ctx.fillText(status.label, centerX, centerY + 22);
+  ctx.fillText(status.label, centerX, textStartY + 22);
 
   ctx.restore();
 }
@@ -608,6 +609,10 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
 
   // Action buttons (Expand, PNG, CSV) - matching other chart button styles
   const actionButtons = [
+    el('span', {
+      class: 'drilldown-badge',
+      'data-tooltip': 'Click gauge to view score breakdown by category'
+    }, ['🔍 Drill-down']),
     el('button', { class: 'btn btn-sm', type: 'button', title: 'Expand fullscreen' }, ['⛶ Expand']),
     el('button', { class: 'btn btn-sm', type: 'button', title: 'Download as PNG' }, ['⬇ PNG']),
     el('button', { class: 'btn btn-sm', type: 'button', title: 'Download as CSV' }, ['⬇ CSV']),
@@ -617,10 +622,6 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
 
   const titleContent = [
     el('b', {}, ['Facility Health Scores']),
-    el('span', {
-      class: 'drilldown-badge',
-      'data-tooltip': 'Click gauge to view score breakdown by category'
-    }, ['🔍 Drill-down']),
     actions
   ];
 
