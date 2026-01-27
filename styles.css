@@ -2474,7 +2474,7 @@ canvas{ max-width:100%; }
 }
 
 .health-gauge-canvas-wrap {
-  height: 120px;
+  height: 160px;
   position: relative;
 }
 
@@ -2640,6 +2640,53 @@ canvas{ max-width:100%; }
   border-top: 1px solid var(--border);
   font-size: 12px;
   text-align: center;
+}
+
+/* Category and metric details in breakdown */
+.health-breakdown-category {
+  margin-bottom: 12px;
+}
+
+.health-breakdown-category-header {
+  font-weight: 600;
+}
+
+.health-breakdown-metrics {
+  margin-left: 8px;
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
+.health-breakdown-metric-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.health-breakdown-metric-label {
+  flex: 1;
+  color: var(--muted);
+}
+
+.health-breakdown-metric-value {
+  width: 70px;
+  text-align: right;
+  color: var(--text);
+}
+
+.health-breakdown-metric-score {
+  width: 30px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.health-breakdown-no-data {
+  padding: 4px 8px;
+  margin-left: 8px;
+  font-style: italic;
 }
 
 /* Responsive adjustments */
