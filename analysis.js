@@ -4516,6 +4516,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         yard_check_insert: this.errorCounts.yard_check_insert,
         spot_edited: this.errorCounts.spot_edited,
         facility_edited: this.errorCounts.facility_edited,
+        // Error rate as percentage of total events (for health score)
+        error_rate_pct: this.totalRows > 0
+          ? Math.round((totalErrors / this.totalRows) * 1000) / 10  // Round to 1 decimal
+          : null,
       },
       charts: [
         {
@@ -4703,6 +4707,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         spot_edited: bucket.errorCounts?.spot_edited || 0,
         facility_edited: bucket.errorCounts?.facility_edited || 0,
         errors_per_day: errorRate,
+        // Error rate as percentage of total events (for health score)
+        error_rate_pct: bucket.totalRows > 0
+          ? Math.round((totalErrors / bucket.totalRows) * 1000) / 10  // Round to 1 decimal
+          : null,
       },
       charts,
       findings,
