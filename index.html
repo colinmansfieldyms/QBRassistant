@@ -94,10 +94,13 @@
             </div>
           </div>
 
-          <label class="field">
-            <span>Facility codes (one per line)</span>
-            <textarea id="facilitiesInput" rows="5" placeholder="FAC1&#10;FAC2"></textarea>
-          </label>
+          <!-- Facility codes (API mode only - CSV mode auto-detects from data) -->
+          <div id="facilityCodesField">
+            <label class="field">
+              <span>Facility codes (one per line)</span>
+              <textarea id="facilitiesInput" rows="5" placeholder="FAC1&#10;FAC2"></textarea>
+            </label>
+          </div>
 
           <!-- Date Range (API mode only) -->
           <div id="dateRangeFields" class="row gap-md">

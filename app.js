@@ -87,6 +87,7 @@ const UI = {
   apiModeFields: document.querySelector('#apiModeFields'),
   csvModeFields: document.querySelector('#csvModeFields'),
   dateRangeFields: document.querySelector('#dateRangeFields'),
+  facilityCodesField: document.querySelector('#facilityCodesField'),
   // CSV import elements
   csvDropZone: document.querySelector('#csvDropZone'),
   csvFileInput: document.querySelector('#csvFileInput'),
@@ -1007,6 +1008,14 @@ function renderAllResults() {
   const modeBadge = isCSVMode ? 'CSV Import' : (state.mockMode ? 'Mock mode' : 'Live API');
   const modeBadgeClass = isCSVMode ? 'yellow' : (state.mockMode ? 'yellow' : 'green');
 
+  // For CSV mode, use detected facilities; for API mode, use input facilities
+  const facilitiesForDisplay = isCSVMode ? state.detectedFacilities : inputs.facilities;
+  const facilitiesCount = Array.isArray(facilitiesForDisplay) ? facilitiesForDisplay.length : (facilitiesForDisplay ? 1 : 0);
+  const facilitiesLabel = isCSVMode ? 'Facilities (detected)' : 'Facilities';
+  const facilitiesSub = facilitiesCount > 0
+    ? (Array.isArray(facilitiesForDisplay) ? facilitiesForDisplay.map(escapeHtml).join(', ') : escapeHtml(facilitiesForDisplay))
+    : (isCSVMode ? 'Auto-detected from CSV data' : 'None specified');
+
   const summary = document.createElement('div');
   summary.className = 'report-card';
   summary.innerHTML = `
@@ -1022,9 +1031,9 @@ function renderAllResults() {
         <div class="sub">Timezone: <b>${escapeHtml(inputs.timezone)}</b></div>
       </div>
       <div class="kpi">
-        <div class="label">Facilities</div>
-        <div class="value">${Array.isArray(inputs.facilities) ? inputs.facilities.length : 1}</div>
-        <div class="sub">${Array.isArray(inputs.facilities) ? inputs.facilities.map(escapeHtml).join(', ') : escapeHtml(inputs.facilities)}</div>
+        <div class="label">${facilitiesLabel}</div>
+        <div class="value">${facilitiesCount || '—'}</div>
+        <div class="sub">${facilitiesSub}</div>
       </div>
       <div class="kpi">
         <div class="label">Date range</div>
@@ -1811,12 +1820,15 @@ function setDataSource(source) {
     UI.csvModeFields?.classList.add('hidden');
     UI.dateRangeFields?.classList.remove('hidden');
     UI.reportsFieldset?.classList.remove('hidden');
+    UI.facilityCodesField?.classList.remove('hidden');
   } else {
     UI.apiModeFields?.classList.add('hidden');
     UI.csvModeFields?.classList.remove('hidden');
     UI.dateRangeFields?.classList.add('hidden');
     // Hide Reports fieldset in CSV mode - reports are selected via file dropdowns
     UI.reportsFieldset?.classList.add('hidden');
+    // Hide Facility codes in CSV mode - facilities are auto-detected from CSV data
+    UI.facilityCodesField?.classList.add('hidden');
   }
 
   // Initialize CSV state if needed
