@@ -1194,6 +1194,24 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
 
   selectorWrap.appendChild(label);
   selectorWrap.appendChild(select);
+
+  // "Jump to Facility Comparisons" button - only show for multi-facility
+  if (facilities.length >= 2) {
+    const jumpBtn = el('button', {
+      class: 'btn btn-ghost btn-sm',
+      type: 'button',
+      title: 'Jump to Facility Comparisons section',
+      style: 'margin-left: 12px;',
+      onClick: () => {
+        const comparisonSection = document.querySelector('.facility-comparison-section');
+        if (comparisonSection) {
+          comparisonSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+    }, ['→ Compare Facilities']);
+    selectorWrap.appendChild(jumpBtn);
+  }
+
   container.appendChild(selectorWrap);
 
   // Content panels
