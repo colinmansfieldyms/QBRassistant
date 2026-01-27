@@ -273,6 +273,13 @@ function getDynamicThresholds(metricKey, metricDef, assumptions) {
       // Yellow is 60% of target (reasonable warning zone)
       thresholds.yellow = Math.round(target * 0.6);
     }
+    if (metricKey === 'moves_per_driver_day' && Number.isFinite(assumptions.target_moves_per_driver_per_day)) {
+      // User-defined target becomes the green threshold
+      const target = assumptions.target_moves_per_driver_per_day;
+      thresholds.green = target;
+      // Yellow is 70% of target (reasonable warning zone)
+      thresholds.yellow = Math.round(target * 0.7);
+    }
   }
 
   return thresholds;
