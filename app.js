@@ -2046,12 +2046,12 @@ function buildAIPayload(requestId) {
 
 async function pollForAIResult(requestId) {
   const startTime = Date.now();
+  const requestStartTime = new Date().toISOString();
   const airtableUrl = `https://api.airtable.com/v0/${AI_CONFIG.airtableBaseId}/${AI_CONFIG.airtableTableId}`;
 
   while (Date.now() - startTime < AI_CONFIG.pollTimeoutMs) {
-    // Query Airtable for matching requestId, sorted by most recent first
-    const filterFormula = encodeURIComponent(`{requestId} = '${requestId}'`);
-    const response = await fetch(`${airtableUrl}?filterByFormula=${filterFormula}&sort%5B0%5D%5Bfield%5D=createdAt&sort%5B0%5D%5Bdirection%5D=desc`, {
+    // Get most recent record (sorted by createdTime descending)
+    const response = await fetch(`${airtableUrl}?maxRecords=1&sort%5B0%5D%5Bfield%5D=createdTime&sort%5B0%5D%5Bdirection%5D=desc`, {
       headers: {
         'Authorization': `Bearer ${AI_CONFIG.airtableApiKey}`,
       },
@@ -2064,12 +2064,23 @@ async function pollForAIResult(requestId) {
     const data = await response.json();
 
     if (data.records && data.records.length > 0) {
-      // Get the most recent record (first due to sort)
-      const record = data.records[0].fields;
-      if (record.status === 'complete') {
+      const record = data.records[0];
+      const recordTime = record.createdTime;
+
+      // Check if this record was created after we started (it's our result)
+      if (recordTime >= requestStartTime) {
+        const fields = record.fields;
+
+        // Get insights from separate columns (insight1, insight2, insight3)
+        const insights = [
+          fields.insight1,
+          fields.insight2,
+          fields.insight3,
+        ].filter(Boolean); // Remove empty/undefined
+
         return {
-          insights: record.insights ? JSON.parse(record.insights) : [],
-          summary: record.summary || '',
+          insights,
+          summary: fields.summary || '',
         };
       }
     }
