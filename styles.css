@@ -2427,11 +2427,8 @@ canvas{ max-width:100%; }
 
 .comparison-table .metric-name .tooltip-trigger:hover::after {
   content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 260px;
+  position: fixed;
+  width: 280px;
   padding: 10px 12px;
   background: var(--text);
   color: white;
@@ -2439,23 +2436,19 @@ canvas{ max-width:100%; }
   font-weight: 400;
   line-height: 1.4;
   border-radius: 6px;
-  z-index: 200;
+  z-index: 9999;
   box-shadow: 0 4px 12px rgba(0,0,0,0.2);
   text-align: left;
   white-space: normal;
   pointer-events: none;
+  /* Position tooltip to the right of the element */
+  margin-left: 20px;
+  margin-top: -40px;
 }
 
 .comparison-table .metric-name .tooltip-trigger:hover::before {
-  content: '';
-  position: absolute;
-  bottom: calc(100% + 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: var(--text);
-  z-index: 201;
-  pointer-events: none;
+  /* Hide the arrow since fixed positioning makes alignment difficult */
+  display: none;
 }
 
 @media print {
