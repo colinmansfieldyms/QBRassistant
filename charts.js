@@ -223,6 +223,570 @@ function normalizeMetricValue(value, metricDef) {
 }
 
 /**
+ * Category definitions for health score calculation.
+ * Each category has equal weight (25%).
+ */
+const HEALTH_SCORE_CATEGORIES = {
+  Productivity: {
+    weight: 0.25,
+    metrics: ['moves_per_driver_day', 'turns_per_door_day'],
+    label: 'Productivity',
+    description: 'Output volume metrics (moves/day, turns/day)',
+  },
+  Efficiency: {
+    weight: 0.25,
+    metrics: ['median_dwell_time', 'median_queue_time', 'deadhead_ratio'],
+    label: 'Efficiency',
+    description: 'Time and waste metrics (dwell, queue, deadhead)',
+  },
+  Quality: {
+    weight: 0.25,
+    metrics: ['error_rate', 'compliance_rate', 'detention_rate'],
+    label: 'Quality',
+    description: 'Accuracy and compliance metrics',
+  },
+  Utilization: {
+    weight: 0.25,
+    metrics: ['process_adoption', 'prevention_rate'],
+    label: 'Utilization',
+    description: 'System adoption metrics',
+  },
+};
+
+/**
+ * Calculate facility health score using equal category weights.
+ * Each category = 25%, metrics within category split evenly.
+ * @param {Object} facilityMetrics - Metrics for the facility
+ * @param {string[]} availableMetricKeys - Keys of metrics that have data
+ * @returns {{ score: number|null, breakdown: Object, coverage: { available: number, total: number } }}
+ */
+function calculateFacilityHealthScore(facilityMetrics, availableMetricKeys) {
+  const breakdown = {};
+  let totalWeight = 0;
+  let weightedSum = 0;
+  let totalAvailable = 0;
+  let totalMetrics = 0;
+
+  for (const [catName, catDef] of Object.entries(HEALTH_SCORE_CATEGORIES)) {
+    const catMetrics = catDef.metrics;
+    const scores = [];
+
+    for (const metricKey of catMetrics) {
+      totalMetrics++;
+      if (!availableMetricKeys.includes(metricKey)) continue;
+
+      const value = facilityMetrics[metricKey];
+      if (value === null || value === undefined || !Number.isFinite(value)) continue;
+
+      const metricDef = COMPARISON_METRICS[metricKey];
+      const normalized = normalizeMetricValue(value, metricDef);
+      scores.push({ key: metricKey, value, normalized });
+      totalAvailable++;
+    }
+
+    if (scores.length > 0) {
+      const categoryScore = Math.round(scores.reduce((sum, s) => sum + s.normalized, 0) / scores.length);
+      breakdown[catName] = {
+        score: categoryScore,
+        metrics: scores,
+        metricsAvailable: scores.length,
+        metricsTotal: catMetrics.length,
+      };
+      weightedSum += categoryScore * catDef.weight;
+      totalWeight += catDef.weight;
+    } else {
+      breakdown[catName] = {
+        score: null,
+        metrics: [],
+        metricsAvailable: 0,
+        metricsTotal: catMetrics.length,
+      };
+    }
+  }
+
+  // Require minimum 3 metrics from 2+ categories
+  const categoriesWithData = Object.values(breakdown).filter(b => b.score !== null).length;
+  if (totalAvailable < 3 || categoriesWithData < 2) {
+    return {
+      score: null,
+      breakdown,
+      coverage: { available: totalAvailable, total: totalMetrics },
+      insufficientData: true,
+    };
+  }
+
+  // Normalize if not all categories present
+  const healthScore = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : null;
+
+  return {
+    score: healthScore,
+    breakdown,
+    coverage: { available: totalAvailable, total: totalMetrics },
+    insufficientData: false,
+  };
+}
+
+/**
+ * Get health score status label and color
+ * @param {number} score - Health score 0-100
+ * @returns {{ label: string, color: string, textColor: string }}
+ */
+function getHealthScoreStatus(score) {
+  if (score === null) {
+    return { label: 'INSUFFICIENT DATA', color: '#9ca3af', textColor: '#6b7280' };
+  }
+  if (score >= 75) {
+    return { label: 'GOOD', color: '#22c55e', textColor: '#166534' };
+  }
+  if (score >= 50) {
+    return { label: 'CAUTION', color: '#eab308', textColor: '#854d0e' };
+  }
+  return { label: 'ATTENTION NEEDED', color: '#ef4444', textColor: '#991b1b' };
+}
+
+/**
+ * Create a half-circle gauge chart using Chart.js doughnut.
+ * @param {HTMLCanvasElement} canvas - Canvas element to render on
+ * @param {number|null} score - Health score 0-100
+ * @param {string} facilityName - Name of facility for labeling
+ * @returns {Chart} - Chart.js instance
+ */
+function createHealthGauge(canvas, score, facilityName) {
+  const ctx = canvas.getContext('2d');
+
+  // Gauge zone colors (muted for background arc)
+  const zoneColors = [
+    'rgba(239, 68, 68, 0.25)',   // Red zone (0-49)
+    'rgba(234, 179, 8, 0.25)',   // Yellow zone (50-74)
+    'rgba(34, 197, 94, 0.25)',   // Green zone (75-100)
+  ];
+
+  const config = {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [49, 25, 26], // Red: 0-49, Yellow: 50-74, Green: 75-100
+        backgroundColor: zoneColors,
+        borderWidth: 0,
+        circumference: 180,
+        rotation: -90,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+    },
+    plugins: [{
+      id: 'healthScoreNeedle',
+      afterDatasetDraw(chart) {
+        drawHealthGaugeNeedle(chart, score);
+        drawHealthGaugeText(chart, score);
+      }
+    }]
+  };
+
+  return new window.Chart(ctx, config);
+}
+
+/**
+ * Draw the needle on the health gauge
+ */
+function drawHealthGaugeNeedle(chart, score) {
+  if (score === null) return;
+
+  const { ctx, chartArea } = chart;
+  const centerX = (chartArea.left + chartArea.right) / 2;
+  const centerY = chartArea.bottom - 10;
+  const outerRadius = (chartArea.right - chartArea.left) / 2;
+  const radius = outerRadius * 0.60;
+
+  // Convert score (0-100) to angle (-90 to 90 degrees, or -PI/2 to PI/2)
+  const angle = ((score / 100) * Math.PI) - (Math.PI / 2);
+
+  ctx.save();
+  ctx.translate(centerX, centerY);
+  ctx.rotate(angle);
+
+  // Draw needle
+  ctx.beginPath();
+  ctx.moveTo(-3, 0);
+  ctx.lineTo(0, -radius);
+  ctx.lineTo(3, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#262262';
+  ctx.fill();
+
+  // Draw center circle
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#262262';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/**
+ * Draw score text in center of gauge
+ */
+function drawHealthGaugeText(chart, score) {
+  const { ctx, chartArea } = chart;
+  const centerX = (chartArea.left + chartArea.right) / 2;
+  const centerY = chartArea.bottom + 5;
+
+  const status = getHealthScoreStatus(score);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Score number
+  ctx.font = 'bold 32px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = status.textColor;
+  ctx.fillText(score !== null ? score : '—', centerX, centerY);
+
+  // Status label
+  ctx.font = 'bold 10px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = status.textColor;
+  ctx.fillText(status.label, centerX, centerY + 22);
+
+  ctx.restore();
+}
+
+/**
+ * Create breakdown panel HTML for a facility's health score
+ */
+function createHealthScoreBreakdown(healthData, facilityName) {
+  const panel = el('div', { class: 'health-breakdown-panel hidden' });
+
+  const header = el('div', { class: 'health-breakdown-header' }, [
+    el('span', {}, [`Score Breakdown: ${facilityName}`]),
+    el('button', { class: 'health-breakdown-close', type: 'button' }, ['×']),
+  ]);
+
+  const content = el('div', { class: 'health-breakdown-content' });
+
+  for (const [catName, catDef] of Object.entries(HEALTH_SCORE_CATEGORIES)) {
+    const catData = healthData.breakdown[catName];
+    const catScore = catData?.score;
+    const status = getHealthScoreStatus(catScore);
+
+    const row = el('div', { class: 'health-breakdown-row' });
+
+    const label = el('div', { class: 'health-breakdown-label' }, [catDef.label]);
+
+    const barContainer = el('div', { class: 'health-breakdown-bar-container' });
+    const barFill = el('div', {
+      class: 'health-breakdown-bar-fill',
+      style: `width: ${catScore ?? 0}%; background-color: ${status.color};`
+    });
+    barContainer.appendChild(barFill);
+
+    const scoreText = el('div', {
+      class: 'health-breakdown-score',
+      style: `color: ${status.textColor};`
+    }, [catScore !== null ? `${catScore}%` : '—']);
+
+    row.appendChild(label);
+    row.appendChild(barContainer);
+    row.appendChild(scoreText);
+    content.appendChild(row);
+  }
+
+  // Overall score footer
+  const status = getHealthScoreStatus(healthData.score);
+  const footer = el('div', { class: 'health-breakdown-footer' }, [
+    el('span', {}, ['Overall Score: ']),
+    el('strong', { style: `color: ${status.textColor};` }, [
+      healthData.score !== null ? `${healthData.score} (${status.label})` : 'Insufficient Data'
+    ]),
+  ]);
+
+  panel.appendChild(header);
+  panel.appendChild(content);
+  panel.appendChild(footer);
+
+  // Wire up close button
+  header.querySelector('.health-breakdown-close').addEventListener('click', () => {
+    panel.classList.add('hidden');
+  });
+
+  return panel;
+}
+
+/**
+ * Render facility health scores section with adaptive layout.
+ * Uses gauges for 1-4 facilities, horizontal bars for 5+.
+ */
+function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys, chartRegistry }) {
+  const card = el('div', { class: 'chart-card health-score-card' });
+
+  // Action buttons (Expand, PNG, CSV)
+  const actionButtons = [
+    el('button', { class: 'btn btn-sm', type: 'button', title: 'Expand fullscreen' }, ['⛶ Expand']),
+    el('button', { class: 'btn btn-sm', type: 'button', title: 'Download as PNG' }, ['📷 PNG']),
+    el('button', { class: 'btn btn-sm', type: 'button', title: 'Download as CSV' }, ['⬇ CSV']),
+  ];
+
+  const actions = el('div', { class: 'chart-actions' }, actionButtons);
+
+  const titleContent = [
+    el('b', {}, ['Facility Health Scores']),
+    el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['Click gauge for breakdown']),
+    actions
+  ];
+
+  const title = el('div', { class: 'chart-title' }, titleContent);
+  card.appendChild(title);
+
+  // Calculate health scores for all facilities
+  const healthScores = facilities.map(fac => ({
+    facility: fac,
+    ...calculateFacilityHealthScore(metricsByFacility[fac] || {}, metricKeys)
+  }));
+
+  // Choose layout based on facility count
+  if (facilities.length <= 4) {
+    // Individual gauges
+    const gaugesContainer = el('div', { class: 'health-gauges-container' });
+
+    healthScores.forEach((healthData, idx) => {
+      const gaugeItem = el('div', { class: 'health-gauge-item' });
+
+      // Facility name header
+      const facHeader = el('div', { class: 'health-gauge-header' }, [healthData.facility]);
+      gaugeItem.appendChild(facHeader);
+
+      // Canvas for gauge
+      const canvas = el('canvas', { width: 200, height: 130 });
+      const canvasWrap = el('div', { class: 'health-gauge-canvas-wrap' }, [canvas]);
+      gaugeItem.appendChild(canvasWrap);
+
+      // Coverage indicator
+      const coverage = el('div', { class: 'health-gauge-coverage muted small' }, [
+        `${healthData.coverage.available}/${healthData.coverage.total} metrics`
+      ]);
+      gaugeItem.appendChild(coverage);
+
+      // Breakdown panel (hidden by default)
+      const breakdownPanel = createHealthScoreBreakdown(healthData, healthData.facility);
+      gaugeItem.appendChild(breakdownPanel);
+
+      // Click handler to toggle breakdown
+      canvasWrap.style.cursor = 'pointer';
+      canvasWrap.addEventListener('click', () => {
+        breakdownPanel.classList.toggle('hidden');
+      });
+
+      gaugesContainer.appendChild(gaugeItem);
+
+      // Create the gauge chart after DOM is ready
+      setTimeout(() => {
+        const chart = createHealthGauge(canvas, healthData.score, healthData.facility);
+        if (chartRegistry) {
+          if (!chartRegistry.has('health_scores')) {
+            chartRegistry.set('health_scores', []);
+          }
+          chartRegistry.get('health_scores').push({ id: `gauge_${idx}`, chart });
+        }
+      }, 0);
+    });
+
+    card.appendChild(gaugesContainer);
+  } else {
+    // Horizontal bars for 5+ facilities
+    const barsContainer = el('div', { class: 'health-bars-container' });
+
+    // Sort by score descending
+    const sorted = [...healthScores].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+
+    sorted.forEach(healthData => {
+      const status = getHealthScoreStatus(healthData.score);
+
+      const row = el('div', { class: 'health-bar-row' });
+
+      const label = el('div', { class: 'health-bar-label' }, [healthData.facility]);
+
+      const track = el('div', { class: 'health-bar-track' });
+      const fill = el('div', {
+        class: 'health-bar-fill',
+        style: `width: ${healthData.score ?? 0}%; background-color: ${status.color};`
+      });
+      track.appendChild(fill);
+
+      const scoreText = el('div', {
+        class: 'health-bar-score',
+        style: `color: ${status.textColor};`
+      }, [healthData.score !== null ? String(healthData.score) : '—']);
+
+      const statusLabel = el('div', {
+        class: 'health-bar-status',
+        style: `color: ${status.textColor};`
+      }, [status.label]);
+
+      // Breakdown panel
+      const breakdownPanel = createHealthScoreBreakdown(healthData, healthData.facility);
+
+      row.appendChild(label);
+      row.appendChild(track);
+      row.appendChild(scoreText);
+      row.appendChild(statusLabel);
+      row.appendChild(breakdownPanel);
+
+      // Click handler to toggle breakdown
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.health-breakdown-panel')) return; // Don't toggle if clicking inside panel
+        breakdownPanel.classList.toggle('hidden');
+      });
+
+      barsContainer.appendChild(row);
+    });
+
+    card.appendChild(barsContainer);
+  }
+
+  // Wire up action buttons
+  actionButtons[0].addEventListener('click', () => {
+    openHealthScoresFullscreen(healthScores);
+  });
+
+  actionButtons[1].addEventListener('click', () => {
+    downloadHealthScoresPng(card, 'facility_health_scores.png');
+  });
+
+  actionButtons[2].addEventListener('click', () => {
+    downloadHealthScoresCsv(healthScores);
+  });
+
+  return card;
+}
+
+/**
+ * Open health scores in fullscreen modal
+ */
+function openHealthScoresFullscreen(healthScores) {
+  const modal = el('div', {
+    class: 'chart-modal',
+    style: 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 20px;'
+  });
+
+  const content = el('div', {
+    style: 'background: white; border-radius: 12px; padding: 24px; max-width: 90%; max-height: 90%; overflow: auto;'
+  });
+
+  const closeBtn = el('button', {
+    style: 'position: absolute; top: 20px; right: 20px; background: white; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 24px; cursor: pointer;',
+    type: 'button'
+  }, ['×']);
+
+  const title = el('h2', { style: 'margin: 0 0 16px 0;' }, ['Facility Health Scores']);
+  content.appendChild(title);
+
+  // Display all scores in expanded view
+  const grid = el('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 24px;' });
+
+  healthScores.forEach(healthData => {
+    const item = el('div', { style: 'text-align: center; padding: 16px; border: 1px solid #e5e7eb; border-radius: 8px;' });
+
+    const facName = el('h3', { style: 'margin: 0 0 12px 0;' }, [healthData.facility]);
+    item.appendChild(facName);
+
+    const status = getHealthScoreStatus(healthData.score);
+    const scoreDisplay = el('div', {
+      style: `font-size: 48px; font-weight: bold; color: ${status.textColor};`
+    }, [healthData.score !== null ? String(healthData.score) : '—']);
+    item.appendChild(scoreDisplay);
+
+    const statusDisplay = el('div', {
+      style: `font-size: 14px; font-weight: bold; color: ${status.textColor}; margin-bottom: 12px;`
+    }, [status.label]);
+    item.appendChild(statusDisplay);
+
+    // Category breakdown
+    for (const [catName, catDef] of Object.entries(HEALTH_SCORE_CATEGORIES)) {
+      const catData = healthData.breakdown[catName];
+      const catStatus = getHealthScoreStatus(catData?.score);
+
+      const catRow = el('div', { style: 'display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px;' });
+      catRow.appendChild(el('span', { style: 'width: 80px; text-align: left;' }, [catDef.label]));
+
+      const barWrap = el('div', { style: 'flex: 1; height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden;' });
+      barWrap.appendChild(el('div', {
+        style: `width: ${catData?.score ?? 0}%; height: 100%; background: ${catStatus.color};`
+      }));
+      catRow.appendChild(barWrap);
+
+      catRow.appendChild(el('span', {
+        style: `width: 35px; text-align: right; color: ${catStatus.textColor};`
+      }, [catData?.score !== null ? `${catData.score}%` : '—']));
+
+      item.appendChild(catRow);
+    }
+
+    grid.appendChild(item);
+  });
+
+  content.appendChild(grid);
+  modal.appendChild(content);
+  modal.appendChild(closeBtn);
+
+  closeBtn.addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.remove();
+  });
+
+  document.body.appendChild(modal);
+}
+
+/**
+ * Download health scores as PNG
+ */
+function downloadHealthScoresPng(card, filename) {
+  // Use html2canvas if available, otherwise fallback
+  if (window.html2canvas) {
+    window.html2canvas(card).then(canvas => {
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    });
+  } else {
+    alert('PNG export requires html2canvas library. CSV export is available.');
+  }
+}
+
+/**
+ * Download health scores as CSV
+ */
+function downloadHealthScoresCsv(healthScores) {
+  const headers = ['Facility', 'Overall Score', 'Status', 'Productivity', 'Efficiency', 'Quality', 'Utilization', 'Metrics Available'];
+  const rows = healthScores.map(h => {
+    const status = getHealthScoreStatus(h.score);
+    return [
+      h.facility,
+      h.score ?? '',
+      status.label,
+      h.breakdown.Productivity?.score ?? '',
+      h.breakdown.Efficiency?.score ?? '',
+      h.breakdown.Quality?.score ?? '',
+      h.breakdown.Utilization?.score ?? '',
+      `${h.coverage.available}/${h.coverage.total}`,
+    ];
+  });
+
+  const csvContent = [headers, ...rows].map(row => row.map(cell =>
+    typeof cell === 'string' && cell.includes(',') ? `"${cell}"` : cell
+  ).join(',')).join('\n');
+
+  downloadText('facility_health_scores.csv', csvContent);
+}
+
+/**
  * Wraps glossary terms in text with tooltip spans.
  * Returns an array of DOM nodes (text nodes and span elements).
  */
@@ -2006,6 +2570,15 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
   tableCard.appendChild(tableTitle);
   tableCard.appendChild(tableDesc);
   tableCard.appendChild(tableWrap);
+
+  // Health Scores card (first in order - quick summary)
+  const healthScoresCard = renderFacilityHealthScores({
+    facilities,
+    metricsByFacility,
+    metricKeys,
+    chartRegistry,
+  });
+  grid.appendChild(healthScoresCard);
 
   grid.appendChild(radarCard);
   grid.appendChild(tableCard);
