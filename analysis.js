@@ -734,9 +734,13 @@ function computeOverallTrend(dataByGranularity, metricName, options = {}) {
     const r2 = 1 - (ssRes / ssTot);
 
     // Calculate percentage change from start to end
-    const startValue = intercept; // predicted value at x=0
-    const endValue = slope * (n - 1) + intercept; // predicted value at x=n-1
-    const trendChangePct = ((endValue - startValue) / Math.abs(startValue)) * 100;
+    // Use actual first/last values for display (regression can extrapolate to invalid negatives)
+    const startValue = y[0];
+    const endValue = y[n - 1];
+    // Calculate trend change using actual values to avoid impossible percentages
+    const trendChangePct = startValue !== 0
+      ? ((endValue - startValue) / Math.abs(startValue)) * 100
+      : 0;
 
     // Interpret trend stability based on R²
     let stability;
@@ -2210,6 +2214,59 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Aggregate facility-level issues for "All Facilities" view
+    if (this.byFacility.size > 1) {
+      const facilityIssues = {
+        highDetention: [],
+        lowPreventionRate: []
+      };
+
+      for (const [facilityName, bucket] of this.byFacility) {
+        // Calculate facility-level metrics
+        const detentionCount = bucket.detention || 0;
+        const preventedCount = bucket.prevented || 0;
+        const totalEvents = detentionCount + preventedCount;
+        const preventionRate = totalEvents > 0 ? Math.round((preventedCount / totalEvents) * 100) : null;
+        const avgDetentionHours = bucket.detentionEventsWithDeparture > 0
+          ? Math.round((bucket.totalDetentionHours / bucket.detentionEventsWithDeparture) * 10) / 10
+          : null;
+
+        // Flag facilities with high detention counts
+        if (detentionCount > 10) {
+          facilityIssues.highDetention.push({ name: facilityName, value: detentionCount, avgHours: avgDetentionHours });
+        }
+        // Flag facilities with low prevention rates (if they have events)
+        if (preventionRate !== null && preventionRate < 30 && totalEvents >= 5) {
+          facilityIssues.lowPreventionRate.push({ name: facilityName, value: preventionRate, detentions: detentionCount });
+        }
+      }
+
+      // Add aggregated findings
+      if (facilityIssues.highDetention.length > 0) {
+        const worst = facilityIssues.highDetention.sort((a, b) => b.value - a.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: worst[0].value > 50 ? 'red' : 'yellow',
+          text: `${facilityIssues.highDetention.length} of ${this.byFacility.size} facilities have elevated detention events: ${names}. Highest: ${worst[0].name} with ${worst[0].value} events${worst[0].avgHours ? ` (avg ${worst[0].avgHours} hrs)` : ''}.`,
+          confidence: 'high',
+          confidenceReason: 'Based on detention event counts per facility.'
+        });
+        recs.push(`Investigate detention drivers at high-detention facilities: ${names}.`);
+      }
+
+      if (facilityIssues.lowPreventionRate.length > 0) {
+        const worst = facilityIssues.lowPreventionRate.sort((a, b) => a.value - b.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: 'yellow',
+          text: `${facilityIssues.lowPreventionRate.length} of ${this.byFacility.size} facilities have low detention prevention rates (<30%): ${names}. Lowest: ${worst[0].name} at ${worst[0].value}%.`,
+          confidence: 'medium',
+          confidenceReason: 'Based on prevention rate per facility.'
+        });
+        recs.push(`Review detention prevention workflows at: ${names}.`);
+      }
+    }
+
     const dqBase = this.dataQualityScore();
     const dq = Math.round(0.6 * dqBase + 0.4 * coverage);
     const badge = scoreToBadge(dq);
@@ -2888,6 +2945,69 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         confidenceReason: generateConfidenceReason('medium', { ...dqFactors, sampleSize: totalReq, isRatioBased: true })
       });
       recs.push('If end-user adoption is expected, review requester workflows, roles, and training (goal: requests driven by ops users).');
+    }
+
+    // Aggregate facility-level issues for "All Facilities" view
+    if (this.byFacility.size > 1) {
+      const facilityIssues = {
+        highDwell: [],
+        lowProcessAdoption: [],
+        lowDoorUtilization: []
+      };
+
+      for (const [facilityName, bucket] of this.byFacility) {
+        const medDwell = bucket.dwellQuantile?.value() ?? null;
+        const processCoveragePct = bucket.processCoverage.total > 0
+          ? Math.round((bucket.processCoverage.ok / bucket.processCoverage.total) * 100)
+          : null;
+        const turnsPerDoorPerDay = this.calculateFacilityTurnsPerDoorPerDay(bucket);
+
+        if (medDwell !== null && medDwell > 120) {
+          facilityIssues.highDwell.push({ name: facilityName, value: Math.round(medDwell) });
+        }
+        if (processCoveragePct !== null && processCoveragePct < 70) {
+          facilityIssues.lowProcessAdoption.push({ name: facilityName, value: processCoveragePct });
+        }
+        if (turnsPerDoorPerDay !== null && turnsPerDoorPerDay < 5) {
+          facilityIssues.lowDoorUtilization.push({ name: facilityName, value: turnsPerDoorPerDay });
+        }
+      }
+
+      // Add aggregated findings
+      if (facilityIssues.highDwell.length > 0) {
+        const worst = facilityIssues.highDwell.sort((a, b) => b.value - a.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: worst[0].value > 180 ? 'red' : 'yellow',
+          text: `${facilityIssues.highDwell.length} of ${this.byFacility.size} facilities have high dwell times (>120 min): ${names}. Worst: ${worst[0].name} at ${worst[0].value} min.`,
+          confidence: 'high',
+          confidenceReason: 'Based on median dwell times per facility.'
+        });
+        recs.push(`Focus dock optimization efforts on high-dwell facilities: ${names}.`);
+      }
+
+      if (facilityIssues.lowProcessAdoption.length > 0) {
+        const worst = facilityIssues.lowProcessAdoption.sort((a, b) => a.value - b.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: worst[0].value < 50 ? 'red' : 'yellow',
+          text: `${facilityIssues.lowProcessAdoption.length} of ${this.byFacility.size} facilities have low process feature adoption (<70%): ${names}. Lowest: ${worst[0].name} at ${worst[0].value}%.`,
+          confidence: 'high',
+          confidenceReason: 'Based on process coverage percentage per facility.'
+        });
+        recs.push(`Prioritize YMS process feature training at: ${names}.`);
+      }
+
+      if (facilityIssues.lowDoorUtilization.length > 0) {
+        const worst = facilityIssues.lowDoorUtilization.sort((a, b) => a.value - b.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: 'yellow',
+          text: `${facilityIssues.lowDoorUtilization.length} of ${this.byFacility.size} facilities have low door utilization (<5 turns/door/day): ${names}.`,
+          confidence: 'medium',
+          confidenceReason: 'Based on average door turns per facility.'
+        });
+      }
     }
 
     const dqBase = this.dataQualityScore();
@@ -3742,6 +3862,71 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     // Compliance recommendation (linked to data quality issue)
     if (compliancePct !== null && compliancePct < 30) {
       recs.push('Recommend retraining on driver workflow (accept/start/complete), and validate device connectivity + timestamp capture.');
+    }
+
+    // Aggregate facility-level issues for "All Facilities" view
+    if (this.byFacility.size > 1) {
+      const facilityIssues = {
+        lowCompliance: [],
+        highDeadhead: [],
+        highQueueTime: []
+      };
+
+      for (const [facilityName, bucket] of this.byFacility) {
+        // Calculate facility metrics
+        const facCompliancePct = bucket.complianceTotal > 0
+          ? Math.round((bucket.complianceOk / bucket.complianceTotal) * 100)
+          : null;
+        const facDeadheadPct = this.calculateFacilityDeadheadPct(bucket);
+        const facQueueMed = bucket.queueTotal > 0 ? bucket.queueMedian?.value() : null;
+
+        if (facCompliancePct !== null && facCompliancePct < 70) {
+          facilityIssues.lowCompliance.push({ name: facilityName, value: facCompliancePct });
+        }
+        if (facDeadheadPct !== null && facDeadheadPct > 40) {
+          facilityIssues.highDeadhead.push({ name: facilityName, value: facDeadheadPct });
+        }
+        if (facQueueMed !== null && facQueueMed > 15) {
+          facilityIssues.highQueueTime.push({ name: facilityName, value: Math.round(facQueueMed) });
+        }
+      }
+
+      // Add aggregated findings
+      if (facilityIssues.lowCompliance.length > 0) {
+        const worst = facilityIssues.lowCompliance.sort((a, b) => a.value - b.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: worst[0].value < 50 ? 'red' : 'yellow',
+          text: `${facilityIssues.lowCompliance.length} of ${this.byFacility.size} facilities have low compliance rates (<70%): ${names}. Lowest: ${worst[0].name} at ${worst[0].value}%.`,
+          confidence: 'high',
+          confidenceReason: 'Based on compliance rate per facility.'
+        });
+        recs.push(`Prioritize driver training at low-compliance facilities: ${names}.`);
+      }
+
+      if (facilityIssues.highDeadhead.length > 0) {
+        const worst = facilityIssues.highDeadhead.sort((a, b) => b.value - a.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: 'yellow',
+          text: `${facilityIssues.highDeadhead.length} of ${this.byFacility.size} facilities have high deadhead percentages (>40%): ${names}. Highest: ${worst[0].name} at ${worst[0].value}%.`,
+          confidence: 'medium',
+          confidenceReason: 'Based on deadhead percentage per facility.'
+        });
+        recs.push(`Review dispatch optimization at high-deadhead facilities: ${names}.`);
+      }
+
+      if (facilityIssues.highQueueTime.length > 0) {
+        const worst = facilityIssues.highQueueTime.sort((a, b) => b.value - a.value);
+        const names = worst.map(f => f.name).join(', ');
+        findings.push({
+          level: 'yellow',
+          text: `${facilityIssues.highQueueTime.length} of ${this.byFacility.size} facilities have high queue times (>15 min): ${names}. Highest: ${worst[0].name} at ${worst[0].value} min.`,
+          confidence: 'medium',
+          confidenceReason: 'Based on median queue time per facility.'
+        });
+        recs.push(`Investigate queue bottlenecks at: ${names}.`);
+      }
     }
 
     const dqBase = this.dataQualityScore();
