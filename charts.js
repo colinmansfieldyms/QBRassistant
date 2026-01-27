@@ -254,13 +254,39 @@ const HEALTH_SCORE_CATEGORIES = {
 };
 
 /**
+ * Get dynamic thresholds for a metric, using ROI assumptions if available.
+ * @param {string} metricKey - The metric key
+ * @param {Object} metricDef - The metric definition from COMPARISON_METRICS
+ * @param {Object} assumptions - ROI assumptions object (optional)
+ * @returns {Object} - Thresholds { green, yellow } possibly adjusted from assumptions
+ */
+function getDynamicThresholds(metricKey, metricDef, assumptions) {
+  // Start with default thresholds
+  const thresholds = { ...metricDef.thresholds };
+
+  // Override with ROI assumptions if available
+  if (assumptions) {
+    if (metricKey === 'turns_per_door_day' && Number.isFinite(assumptions.target_turns_per_door_per_day)) {
+      // User-defined target becomes the green threshold
+      const target = assumptions.target_turns_per_door_per_day;
+      thresholds.green = target;
+      // Yellow is 60% of target (reasonable warning zone)
+      thresholds.yellow = Math.round(target * 0.6);
+    }
+  }
+
+  return thresholds;
+}
+
+/**
  * Calculate facility health score using equal category weights.
  * Each category = 25%, metrics within category split evenly.
  * @param {Object} facilityMetrics - Metrics for the facility
  * @param {string[]} availableMetricKeys - Keys of metrics that have data
+ * @param {Object} assumptions - ROI assumptions object (optional) for dynamic thresholds
  * @returns {{ score: number|null, breakdown: Object, coverage: { available: number, total: number } }}
  */
-function calculateFacilityHealthScore(facilityMetrics, availableMetricKeys) {
+function calculateFacilityHealthScore(facilityMetrics, availableMetricKeys, assumptions = null) {
   const breakdown = {};
   let totalWeight = 0;
   let weightedSum = 0;
@@ -279,7 +305,10 @@ function calculateFacilityHealthScore(facilityMetrics, availableMetricKeys) {
       if (value === null || value === undefined || !Number.isFinite(value)) continue;
 
       const metricDef = COMPARISON_METRICS[metricKey];
-      const normalized = normalizeMetricValue(value, metricDef);
+      // Use dynamic thresholds based on assumptions
+      const dynamicThresholds = getDynamicThresholds(metricKey, metricDef, assumptions);
+      const metricDefWithDynamicThresholds = { ...metricDef, thresholds: dynamicThresholds };
+      const normalized = normalizeMetricValue(value, metricDefWithDynamicThresholds);
       scores.push({ key: metricKey, value, normalized });
       totalAvailable++;
     }
@@ -376,6 +405,11 @@ function createHealthGauge(canvas, score, facilityName) {
       responsive: true,
       maintainAspectRatio: false,
       cutout: '70%',
+      layout: {
+        padding: {
+          bottom: 50, // Reserve space for score text below the arc
+        },
+      },
       plugins: {
         legend: { display: false },
         tooltip: { enabled: false },
@@ -569,7 +603,7 @@ function createHealthScoreBreakdown(healthData, facilityName) {
  * Render facility health scores section with adaptive layout.
  * Uses gauges for 1-4 facilities, horizontal bars for 5+.
  */
-function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys, chartRegistry }) {
+function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys, chartRegistry, assumptions }) {
   const card = el('div', { class: 'chart-card health-score-card' });
 
   // Action buttons (Expand, PNG, CSV) - matching other chart button styles
@@ -583,7 +617,10 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
 
   const titleContent = [
     el('b', {}, ['Facility Health Scores']),
-    el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['Click gauge for breakdown']),
+    el('span', {
+      class: 'drilldown-badge',
+      'data-tooltip': 'Click gauge to view score breakdown by category'
+    }, ['🔍 Drill-down']),
     actions
   ];
 
@@ -593,7 +630,7 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
   // Calculate health scores for all facilities
   const healthScores = facilities.map(fac => ({
     facility: fac,
-    ...calculateFacilityHealthScore(metricsByFacility[fac] || {}, metricKeys)
+    ...calculateFacilityHealthScore(metricsByFacility[fac] || {}, metricKeys, assumptions)
   }));
 
   // Choose layout based on facility count
@@ -2405,6 +2442,21 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
     return null; // Don't render for single facility
   }
 
+  // Extract assumptions from any available result's meta
+  let assumptions = null;
+  for (const reportType of Object.keys(results)) {
+    const reportResults = results[reportType];
+    if (Array.isArray(reportResults)) {
+      for (const res of reportResults) {
+        if (res?.meta?.assumptions) {
+          assumptions = res.meta.assumptions;
+          break;
+        }
+      }
+    }
+    if (assumptions) break;
+  }
+
   const section = el('div', { class: 'report-card facility-comparison-section' });
 
   // Collapsible header
@@ -2680,6 +2732,7 @@ export function renderFacilityComparisons({ facilities, results, chartRegistry, 
     metricsByFacility,
     metricKeys,
     chartRegistry,
+    assumptions,
   });
   grid.appendChild(healthScoresCard);
 
