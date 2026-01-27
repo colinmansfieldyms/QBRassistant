@@ -1975,15 +1975,15 @@ async function generateAIInsights() {
     // Build and send payload to Zapier
     const payload = buildAIPayload(requestId);
 
-    const webhookResponse = await fetch(AI_CONFIG.zapierWebhookUrl, {
+    // Use no-cors mode since Zapier webhooks don't support CORS from browsers.
+    // This sends the request but returns an opaque response (we can't read status).
+    // We rely on Airtable polling to confirm the webhook was processed.
+    await fetch(AI_CONFIG.zapierWebhookUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' }, // no-cors restricts to simple headers
       body: JSON.stringify(payload),
     });
-
-    if (!webhookResponse.ok) {
-      throw new Error(`Webhook failed: ${webhookResponse.status}`);
-    }
 
     // Poll Airtable for results
     const result = await pollForAIResult(requestId);
