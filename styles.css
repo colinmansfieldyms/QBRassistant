@@ -2422,6 +2422,40 @@ canvas{ max-width:100%; }
 .comparison-table .metric-name .tooltip-trigger {
   cursor: help;
   border-bottom: 1px dotted var(--muted);
+  position: relative;
+}
+
+.comparison-table .metric-name .tooltip-trigger:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  padding: 10px 12px;
+  background: var(--text);
+  color: white;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  border-radius: 6px;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.comparison-table .metric-name .tooltip-trigger:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  z-index: 201;
+  pointer-events: none;
 }
 
 @media print {

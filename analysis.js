@@ -1773,9 +1773,57 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       charts.push({
         id: 'move_type',
         kind: 'pie',
-        title: 'Move Types',
+        title: `Move Types - ${facility}`,
         data: moveTypeTop,
       });
+    }
+
+    // Generate findings and recommendations for this facility
+    const findings = [];
+    const recs = [];
+
+    // Outbound/inbound ratio findings
+    if (outboundInboundRatio !== null) {
+      if (outboundInboundRatio > 2) {
+        findings.push({
+          level: 'yellow',
+          text: `${facility} has outbound-heavy inventory ratio (${outboundInboundRatio.toFixed(1)}:1 outbound to inbound).`,
+          confidence: 'medium',
+        });
+        recs.push(`Review if outbound staging at ${facility} is backing up or if inbound flow is constrained.`);
+      } else if (outboundInboundRatio < 0.5) {
+        findings.push({
+          level: 'yellow',
+          text: `${facility} has inbound-heavy inventory ratio (${(1/outboundInboundRatio).toFixed(1)}:1 inbound to outbound).`,
+          confidence: 'medium',
+        });
+      } else {
+        findings.push({
+          level: 'green',
+          text: `${facility} has balanced outbound/inbound inventory ratio.`,
+          confidence: 'medium',
+        });
+      }
+    }
+
+    // SCAC placeholder findings
+    if (placeholderRate >= 10) {
+      findings.push({
+        level: 'yellow',
+        text: `${placeholderRate}% of trailers at ${facility} have placeholder SCAC codes.`,
+        confidence: 'high',
+      });
+      recs.push(`Enforce SCAC validation at ${facility} to reduce UNKNOWN/XXXX records.`);
+    }
+
+    // Missing driver contact findings
+    if (missingDriverRate !== null && missingDriverRate >= 30) {
+      findings.push({
+        level: 'yellow',
+        text: `${missingDriverRate}% of live loads at ${facility} are missing driver contact information.`,
+        confidence: 'high',
+      });
+      recs.push(`Confirm driver contact capture at ${facility} and train staff to populate contact fields.`);
     }
 
     return {
@@ -1795,9 +1843,9 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         live_load_missing_driver_contact_pct: missingDriverRate,
       },
       charts,
-      findings: [],
-      recommendations: [],
-      roi: null,
+      findings,
+      recommendations: recs,
+      roi: null, // current inventory doesn't drive ROI directly
     };
   }
 }
@@ -2363,6 +2411,44 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       });
     }
 
+    // Generate findings and recommendations for this facility
+    const findings = [];
+    const recs = [];
+
+    // Prevention rate findings
+    if (preventionRate !== null) {
+      if (preventionRate >= 80) {
+        findings.push({
+          level: 'green',
+          text: `${facility} has excellent detention prevention rate of ${preventionRate}%.`,
+          confidence: 'high',
+        });
+      } else if (preventionRate >= 50) {
+        findings.push({
+          level: 'yellow',
+          text: `${facility} has moderate detention prevention rate of ${preventionRate}%.`,
+          confidence: 'high',
+        });
+        recs.push(`Review carrier scheduling at ${facility} to improve detention prevention.`);
+      } else if (preventionRate < 50 && totalEvents > 0) {
+        findings.push({
+          level: 'red',
+          text: `${facility} has low detention prevention rate of ${preventionRate}%.`,
+          confidence: 'high',
+        });
+        recs.push(`Investigate carrier compliance and scheduling practices at ${facility}.`);
+      }
+    }
+
+    // Detention event findings
+    if (bucket.detention > 10) {
+      findings.push({
+        level: 'yellow',
+        text: `${facility} has ${bucket.detention} detention events that may incur carrier charges.`,
+        confidence: 'high',
+      });
+    }
+
     return {
       report: 'detention_history',
       facility,
@@ -2382,9 +2468,9 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         drop_load_count: bucket.detentionDrop,
       },
       charts,
-      findings: [],
-      recommendations: [],
-      roi: null,
+      findings,
+      recommendations: recs,
+      roi: computeDetentionROIIfEnabled({ meta, metrics: { prevented: bucket.prevented }, assumptions: meta.assumptions }),
     };
   }
 }
@@ -2512,6 +2598,9 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         // Add dwell quantile for per-facility metrics
         if (facBucket && facBucket.dwellQuantile) {
           facBucket.dwellQuantile.add(mins);
+          // Also track time series for per-facility charts
+          this.getEstimators(facBucket.dwellByDay, dk).median.add(mins);
+          facBucket.daysWithData.add(dk);
         }
 
         // Collect drilldown data if enabled (store by day for outlier lookup)
@@ -2557,6 +2646,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         // Add process quantile for per-facility metrics
         if (facBucket && facBucket.processQuantile) {
           facBucket.processQuantile.add(mins);
+          // Also track time series for per-facility charts
+          this.getEstimators(facBucket.processByDay, dk).median.add(mins);
         }
       }
     }
@@ -3079,22 +3170,42 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       const labels = Array.from(bucket.dwellByDay.keys()).sort();
       const dwellData = labels.map(l => {
         const val = bucket.dwellByDay.get(l);
-        return val?.median || 0;
+        return val?.median?.value() ?? 0;
       });
       const processData = labels.map(l => {
         const val = bucket.processByDay?.get(l);
-        return val?.median || 0;
+        return val?.median?.value() ?? 0;
       });
 
       charts.push({
         id: 'dwell_process_daily',
-        title: 'Median Dwell vs Process Time (Daily)',
+        title: `Median Dwell vs Process Time (Daily) - ${facility}`,
         kind: 'line',
+        description: 'Median minutes per day for this facility.',
         data: {
           labels,
           datasets: [
-            { label: 'Dwell time (min)', data: dwellData },
-            { label: 'Process time (min)', data: processData },
+            { label: 'Dwell median (min)', data: dwellData },
+            { label: 'Process median (min)', data: processData },
+          ]
+        }
+      });
+    }
+
+    // Door turns chart if available
+    if (bucket.turnsByDay && bucket.turnsByDay.map && bucket.turnsByDay.map.size > 0) {
+      const turnsLabels = Array.from(bucket.turnsByDay.map.keys()).sort();
+      const turnsCounts = turnsLabels.map(l => bucket.turnsByDay.map.get(l) || 0);
+
+      charts.push({
+        id: 'door_turns_daily',
+        title: `Door Turns (Daily) - ${facility}`,
+        kind: 'bar',
+        description: 'Number of door turns per day.',
+        data: {
+          labels: turnsLabels,
+          datasets: [
+            { label: 'Door turns', data: turnsCounts }
           ]
         }
       });
@@ -3121,7 +3232,16 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       charts,
       findings: this.generateFacilityFindings(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay),
       recommendations: this.generateFacilityRecommendations(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay),
-      roi: null,
+      roi: computeDockDoorROIIfEnabled({
+        meta,
+        metrics: {
+          turnsPerDoorPerDay,
+          uniqueDoors: bucket.uniqueDoors?.size || 0,
+          totalTurns: bucket.totalTurns || 0,
+          totalDays: bucket.daysWithData?.size || 0,
+        },
+        assumptions: meta.assumptions
+      }),
     };
   }
 
@@ -3182,26 +3302,17 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
 
     // Recommendation for high dwell time
     if (medDwell !== null && medDwell > 180) {
-      recommendations.push({
-        text: `Investigate dock operations at ${facility} to identify bottlenecks causing excessive dwell times.`,
-        benefit: 'Reducing dwell time improves dock throughput and carrier satisfaction.',
-      });
+      recommendations.push(`Investigate dock operations at ${facility} to identify bottlenecks causing excessive dwell times.`);
     }
 
     // Recommendation for low process adoption
     if (processCoveragePct !== null && processCoveragePct < 70) {
-      recommendations.push({
-        text: `Provide training to drivers at ${facility} on using the YMS process feature for dock door visits.`,
-        benefit: 'Higher adoption improves visibility and operational efficiency.',
-      });
+      recommendations.push(`Provide training to drivers at ${facility} on using the YMS process feature for dock door visits.`);
     }
 
     // Recommendation for low door utilization
     if (turnsPerDoorPerDay !== null && turnsPerDoorPerDay < 5) {
-      recommendations.push({
-        text: `Review dock door allocation at ${facility} to optimize utilization or consider reducing active door count.`,
-        benefit: 'Better door utilization reduces operational costs.',
-      });
+      recommendations.push(`Review dock door allocation at ${facility} to optimize utilization or consider reducing active door count.`);
     }
 
     return recommendations;
@@ -3791,6 +3902,58 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       });
     }
 
+    // Generate findings and recommendations
+    const findings = [];
+    const recs = [];
+
+    // Compliance findings
+    if (compliancePct !== null) {
+      if (compliancePct >= 90) {
+        findings.push({
+          level: 'green',
+          text: `${facility} has excellent compliance rate of ${compliancePct}%.`,
+          confidence: 'high',
+        });
+      } else if (compliancePct >= 70) {
+        findings.push({
+          level: 'yellow',
+          text: `${facility} has moderate compliance rate of ${compliancePct}%.`,
+          confidence: 'high',
+        });
+        recs.push(`Review driver training at ${facility} to improve compliance.`);
+      } else {
+        findings.push({
+          level: 'red',
+          text: `${facility} has low compliance rate of ${compliancePct}%.`,
+          confidence: 'high',
+        });
+        recs.push(`Investigate compliance issues at ${facility} and consider additional training.`);
+      }
+    }
+
+    // Deadhead findings
+    if (deadheadPct !== null && deadheadPct > 40) {
+      findings.push({
+        level: 'yellow',
+        text: `${facility} has high deadhead percentage of ${deadheadPct}% indicating inefficient dispatching.`,
+        confidence: 'medium',
+      });
+      recs.push(`Optimize dispatching at ${facility} to reduce deadhead time.`);
+    }
+
+    // Queue time findings
+    if (medQueue !== null && medQueue > 15) {
+      findings.push({
+        level: 'yellow',
+        text: `${facility} has median queue time of ${Math.round(medQueue)} minutes.`,
+        confidence: 'medium',
+      });
+      recs.push(`Review queue management at ${facility} to reduce driver wait times.`);
+    }
+
+    // Get top drivers for ROI calculation
+    const topDrivers = bucket.movesByDriver ? bucket.movesByDriver.top(10) : [];
+
     return {
       report: 'driver_history',
       facility,
@@ -3809,9 +3972,21 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
         deadhead_pct: deadheadPct,
       },
       charts,
-      findings: [],
-      recommendations: [],
-      roi: null,
+      findings,
+      recommendations: recs,
+      roi: computeLaborROIIfEnabled({
+        meta,
+        metrics: {
+          movesTotal: bucket.movesTotal,
+          avgMovesPerDriverPerDay,
+          topDrivers,
+          movesByDriver: bucket.movesByDriver,
+          movesByDay: bucket.movesByDay,
+          activeDriversByDay: bucket.activeDriversByDay,
+          totalDays: bucket.movesByDay?.map?.size || 0,
+        },
+        assumptions: meta.assumptions
+      }),
     };
   }
 
@@ -4283,6 +4458,49 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       });
     }
 
+    // Generate findings and recommendations
+    const findings = [];
+    const recs = [];
+
+    // Lost trailer findings
+    const lostCount = bucket.errorCounts?.trailer_marked_lost || 0;
+    if (lostCount > 5) {
+      findings.push({
+        level: 'red',
+        text: `${facility} has ${lostCount} trailers marked as lost.`,
+        confidence: 'high',
+      });
+      recs.push(`Investigate lost trailer events at ${facility} and review tracking procedures.`);
+    } else if (lostCount > 0) {
+      findings.push({
+        level: 'yellow',
+        text: `${facility} has ${lostCount} trailer(s) marked as lost.`,
+        confidence: 'high',
+      });
+    }
+
+    // Error rate findings
+    if (errorRate !== null && errorRate > 5) {
+      findings.push({
+        level: 'yellow',
+        text: `${facility} has elevated error rate of ${errorRate} errors per day.`,
+        confidence: 'medium',
+      });
+      recs.push(`Review data entry practices at ${facility} to reduce error events.`);
+    } else if (errorRate !== null && errorRate <= 1) {
+      findings.push({
+        level: 'green',
+        text: `${facility} has low error rate of ${errorRate} errors per day.`,
+        confidence: 'medium',
+      });
+    }
+
+    // Get errors by period array for ROI
+    const errorsByPeriodArray = bucket.errorsByPeriod ?
+      Array.from(bucket.errorsByPeriod.map.entries())
+        .map(([period, count]) => ({ period, count }))
+        .sort((a, b) => a.period.localeCompare(b.period)) : [];
+
     return {
       report: 'trailer_history',
       facility,
@@ -4302,9 +4520,17 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         errors_per_day: errorRate,
       },
       charts,
-      findings: [],
-      recommendations: [],
-      roi: null,
+      findings,
+      recommendations: recs,
+      roi: computeTrailerErrorRateAnalysis({
+        metrics: {
+          errorCounts: bucket.errorCounts || {},
+          errorsByPeriod: errorsByPeriodArray,
+          totalRows: bucket.totalRows,
+          totalDays: daysWithData,
+          granularity: 'day',
+        },
+      }),
     };
   }
 }
