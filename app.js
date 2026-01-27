@@ -1104,9 +1104,9 @@ function renderAllResults() {
       },
       onWarning: addWarning,
       chartRegistry: state.chartRegistry,
-      // Multi-facility support
-      isMultiFacility: state.isMultiFacility,
-      facilities: state.detectedFacilities,
+      // Multi-facility support - use per-report facilities, not global list
+      isMultiFacility: facilityRegistry.getFacilitiesForReport(report).length >= 2,
+      facilities: facilityRegistry.getFacilitiesForReport(report),
       getFacilityResult: (facility) => getFacilityResult(report, facility),
     });
     root.appendChild(card);
@@ -2041,9 +2041,9 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
       partialPeriodInfo: state.partialPeriodInfo,
       enableDrilldown: state.enableDrilldown,
       chartRegistry: state.chartRegistry,
-      // Multi-facility support
-      isMultiFacility: state.isMultiFacility,
-      facilities: state.detectedFacilities,
+      // Multi-facility support - use per-report facilities, not global list
+      isMultiFacility: facilityRegistry.getFacilitiesForReport(report).length >= 2,
+      facilities: facilityRegistry.getFacilitiesForReport(report),
       getFacilityResult: (facility) => getFacilityResultForRecalc(report, facility),
     });
     UI.resultsRoot.appendChild(card);
