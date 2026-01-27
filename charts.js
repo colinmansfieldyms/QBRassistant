@@ -2434,8 +2434,8 @@ function extractFacilityMetrics(results, facilities, getFacilityResult) {
           // Calculate detentions per day if not already calculated
           if (metrics.detentions_per_day !== undefined) {
             metricsByFacility[fac].detention_rate = metrics.detentions_per_day;
-          } else if (metrics.detention_events !== undefined && facResult.meta) {
-            const totalDetentions = metrics.detention_events ?? 0;
+          } else if (metrics.detention_count !== undefined && facResult.meta) {
+            const totalDetentions = metrics.detention_count ?? 0;
             const daysInPeriod = calculateDaysInPeriod(facResult.meta);
             metricsByFacility[fac].detention_rate = daysInPeriod > 0
               ? Math.round((totalDetentions / daysInPeriod) * 10) / 10
