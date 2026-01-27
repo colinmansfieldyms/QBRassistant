@@ -3061,8 +3061,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     if (!bucket) return null;
 
     // Calculate key metrics from bucket
-    const medDwell = bucket.dwellQuantile?.estimate() || null;
-    const medProcess = bucket.processQuantile?.estimate() || null;
+    const medDwell = bucket.dwellQuantile?.value() ?? null;
+    const medProcess = bucket.processQuantile?.value() ?? null;
     const turnsPerDoorPerDay = this.calculateFacilityTurnsPerDoorPerDay(bucket);
     const processCoveragePct = bucket.processCoverage.total > 0
       ? Math.round((bucket.processCoverage.ok / bucket.processCoverage.total) * 100)
@@ -3744,7 +3744,7 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     const compliancePct = bucket.complianceTotal > 0
       ? Math.round((bucket.complianceOk / bucket.complianceTotal) * 100)
       : null;
-    const medQueue = bucket.queueTotal > 0 ? bucket.queueMedian.estimate() : null;
+    const medQueue = bucket.queueTotal > 0 ? bucket.queueMedian.value() : null;
     const deadheadPct = bucket.dispatchTotal > 0
       ? this.calculateFacilityDeadheadPct(bucket)
       : null;
@@ -3818,8 +3818,8 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
   // Calculate deadhead percentage for a facility bucket
   calculateFacilityDeadheadPct(bucket) {
     if (!bucket.dispatchTotal || bucket.dispatchTotal === 0) return null;
-    const medDeadhead = bucket.deadheadMedian?.estimate() || 0;
-    const medExecution = bucket.executionMedian?.estimate() || 0;
+    const medDeadhead = bucket.deadheadMedian?.value() ?? 0;
+    const medExecution = bucket.executionMedian?.value() ?? 0;
     const total = medDeadhead + medExecution;
     if (total === 0) return null;
     return Math.round((medDeadhead / total) * 100);
