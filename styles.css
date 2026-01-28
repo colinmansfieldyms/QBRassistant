@@ -2939,15 +2939,6 @@ canvas{ max-width:100%; }
   border-radius: 50%;
   background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
   animation: ai-ring-pulse 2s ease-in-out infinite;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ai-loading-ring-inner::after {
-  content: '✨';
-  font-size: 24px;
-  animation: ai-sparkle 2s ease-in-out infinite;
 }
 
 @keyframes ai-ring-spin {
@@ -2967,17 +2958,6 @@ canvas{ max-width:100%; }
   50% {
     transform: scale(0.92);
     opacity: 0.85;
-  }
-}
-
-@keyframes ai-sparkle {
-  0%, 100% {
-    transform: scale(1) rotate(0deg);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.1) rotate(10deg);
-    opacity: 0.9;
   }
 }
 

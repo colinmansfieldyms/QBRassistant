@@ -70,7 +70,10 @@ const UI = {
   mockModeToggle: document.querySelector('#mockModeToggle'),
   runBtn: document.querySelector('#runBtn'),
   cancelBtn: document.querySelector('#cancelBtn'),
-  resetAllBtn: document.querySelector('#resetAllBtn'),
+  startFreshBtn: document.querySelector('#startFreshBtn'),
+  startFreshModal: document.querySelector('#startFreshModal'),
+  startFreshCancel: document.querySelector('#startFreshCancel'),
+  startFreshConfirm: document.querySelector('#startFreshConfirm'),
   inputErrors: document.querySelector('#inputErrors'),
   progressPanel: document.querySelector('#progressPanel'),
   warningsPanel: document.querySelector('#warningsPanel'),
@@ -440,7 +443,7 @@ function setRunningUI(running) {
   state.running = running;
   UI.runBtn.disabled = running;
   UI.cancelBtn.disabled = !running;
-  UI.resetAllBtn.disabled = running;
+  UI.startFreshBtn.disabled = running;
   UI.mockModeToggle.disabled = running;
   UI.downloadSummaryBtn.disabled = running || Object.keys(state.results).length === 0;
   UI.printBtn.disabled = running || Object.keys(state.results).length === 0;
@@ -2003,7 +2006,7 @@ async function generateAIInsights() {
     UI.aiLoadingText.offsetHeight; // Force reflow
     UI.aiLoadingText.textContent = AI_LOADING_MESSAGES[messageIndex];
     UI.aiLoadingText.style.animation = 'ai-text-fade 0.5s ease-in-out';
-  }, 2500);
+  }, 5000);
 
   try {
     // Build and send payload to Zapier
@@ -2201,7 +2204,27 @@ UI.clearTokenBtn.addEventListener('click', () => {
   setBanner('info', 'Token cleared (memory + input) and in-flight requests aborted.');
 });
 
-UI.resetAllBtn.addEventListener('click', resetAll);
+// Start Fresh button - show confirmation modal
+UI.startFreshBtn.addEventListener('click', () => {
+  UI.startFreshModal.style.display = 'flex';
+});
+
+// Start Fresh modal - cancel/back button
+UI.startFreshCancel.addEventListener('click', () => {
+  UI.startFreshModal.style.display = 'none';
+});
+
+// Start Fresh modal - confirm button (refresh the page)
+UI.startFreshConfirm.addEventListener('click', () => {
+  location.reload();
+});
+
+// Close Start Fresh modal on overlay click
+UI.startFreshModal.addEventListener('click', (e) => {
+  if (e.target === UI.startFreshModal) {
+    UI.startFreshModal.style.display = 'none';
+  }
+});
 
 UI.mockModeToggle.addEventListener('change', () => {
   state.mockMode = UI.mockModeToggle.checked;
