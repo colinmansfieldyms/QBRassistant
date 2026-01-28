@@ -47,7 +47,7 @@ const AI_CONFIG = {
   airtableBaseId: 'appz7ZJHREJozRaOX',
   airtableTableId: 'tblINCl9ApdmosvJV',
   pollIntervalMs: 2000,
-  pollTimeoutMs: 60000,
+  pollTimeoutMs: 120000, // 2 minutes
 };
 
 const REPORTS = [
