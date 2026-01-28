@@ -85,15 +85,15 @@ code{ font-family:var(--mono); font-size:0.92em; }
 .export-dropdown-menu{
   display: none;
   position: absolute;
-  top: 100%;
+  top: calc(100% - 4px); /* Overlap slightly with trigger */
   right: 0;
-  margin-top: 4px;
+  padding-top: 8px; /* Visual gap via padding (maintains hover zone) */
+  min-width: 180px;
+  z-index: 100;
   background: white;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
-  min-width: 180px;
-  z-index: 100;
   overflow: hidden;
 }
 
@@ -2723,6 +2723,43 @@ canvas{ max-width:100%; }
   .facility-selector-wrap{ display:none !important; }
   .facility-tab-panel{ display:block !important; }
   .facility-tab-panel:not([data-tab-panel="all"]){ display:none !important; }
+
+  /* AI Insights: show results, hide loading state and modals */
+  .ai-insights-section{
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .ai-insights-section.loading{ display: none !important; }
+  .ai-loading-state{ display: none !important; }
+  .ai-results-state{ display: block !important; }
+  .modal-overlay{ display: none !important; }
+
+  /* AI insight cards: ensure they print well */
+  .ai-insights-grid{
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+  .ai-insight-card{
+    box-shadow: none !important;
+    border: 1px solid #e2e8f0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .ai-summary{
+    box-shadow: none !important;
+    border: 1px solid #e2e8f0;
+  }
+
+  /* Facility comparisons: ensure they print */
+  .facility-comparison-section{
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .comparison-grid{
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
 }
 
 /* ========== AI Insights ========== */

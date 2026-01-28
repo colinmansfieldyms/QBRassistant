@@ -33,83 +33,286 @@ export function printReport() {
   window.print();
 }
 
-export function buildSummaryTxt({ inputs, results, warnings }) {
+export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMultiFacility, detectedFacilities }) {
   const now = DateTime.now().setZone(inputs.timezone).toFormat('yyyy-LL-dd HH:mm:ss ZZZZ');
+  const LINE_WIDTH = 64;
+  const DIVIDER = '═'.repeat(LINE_WIDTH);
+  const SECTION_DIVIDER = '─'.repeat(LINE_WIDTH);
 
   const lines = [];
-  lines.push('YardIQ Analysis Report');
-  lines.push('='.repeat(48));
-  lines.push(`Generated: ${now}`);
-  lines.push(`Tenant: ${inputs.tenant}`);
-  lines.push(`Facilities: ${inputs.facilities.join(', ')}`);
-  lines.push(`Date range: ${inputs.startDate} → ${inputs.endDate}`);
-  lines.push(`Timezone: ${inputs.timezone}`);
-  lines.push(`Mode: ${inputs.mockMode ? 'MOCK (no API calls)' : 'LIVE API'}`);
+
+  // ═══════════════════════════════════════════════════════════════
+  // HEADER
+  // ═══════════════════════════════════════════════════════════════
+  lines.push(DIVIDER);
+  lines.push(centerText('YARDIQ ANALYSIS REPORT', LINE_WIDTH));
+  lines.push(DIVIDER);
+  lines.push('');
+  lines.push(`Generated:   ${now}`);
+  lines.push(`Tenant:      ${inputs.tenant || 'N/A'}`);
+  lines.push(`Facilities:  ${(inputs.facilities || []).join(', ') || 'N/A'}`);
+  lines.push(`Date Range:  ${inputs.startDate} → ${inputs.endDate}`);
+  lines.push(`Timezone:    ${inputs.timezone}`);
+  if (isMultiFacility && detectedFacilities?.length > 1) {
+    lines.push(`Analysis:    Multi-facility (${detectedFacilities.length} facilities detected)`);
+  }
   lines.push('');
 
-  lines.push('Assumptions (ROI)');
-  lines.push('-'.repeat(48));
-  const a = inputs.assumptions || {};
-  lines.push(`detention_cost_per_hour: ${a.detention_cost_per_hour ?? '(not set)'}`);
-  lines.push(`labor_fully_loaded_rate_per_hour: ${a.labor_fully_loaded_rate_per_hour ?? '(not set)'}`);
-  lines.push(`target_moves_per_driver_per_day: ${a.target_moves_per_driver_per_day ?? 50}`);
-  lines.push('');
-
-  for (const [report, res] of Object.entries(results)) {
-    lines.push(report);
-    lines.push('-'.repeat(48));
-    lines.push(`Data quality score: ${res.dataQuality?.score ?? '—'} (${res.dataQuality?.label ?? '—'})`);
-    lines.push(`Rows processed: ${res.dataQuality?.totalRows ?? 0}`);
+  // ═══════════════════════════════════════════════════════════════
+  // AI INSIGHTS (if generated)
+  // ═══════════════════════════════════════════════════════════════
+  if (aiInsights && (aiInsights.insights?.length || aiInsights.summary)) {
+    lines.push(DIVIDER);
+    lines.push(centerText('✨ YARDIQ AI INSIGHTS', LINE_WIDTH));
+    lines.push(DIVIDER);
     lines.push('');
 
-    lines.push('Key metrics:');
-    for (const [k, v] of Object.entries(res.metrics || {})) {
-      lines.push(`- ${k}: ${formatValue(v)}`);
+    if (aiInsights.insights?.length) {
+      lines.push('TOP INSIGHTS:');
+      lines.push('');
+      aiInsights.insights.forEach((insight, i) => {
+        lines.push(`  ${i + 1}. ${wrapText(insight, LINE_WIDTH - 5, '     ')}`);
+        lines.push('');
+      });
     }
-    lines.push('');
 
-    lines.push('Findings:');
-    if ((res.findings || []).length) {
-      for (const f of res.findings) {
-        lines.push(`- [${(f.level || '').toUpperCase()}] (${f.confidence || 'medium'}) ${f.text}`);
-      }
-    } else {
-      lines.push('- (none)');
-    }
-    lines.push('');
-
-    lines.push('Recommendations:');
-    if ((res.recommendations || []).length) {
-      for (const r of res.recommendations) lines.push(`- ${r}`);
-    } else {
-      lines.push('- (none)');
-    }
-    lines.push('');
-
-    lines.push('ROI (estimates):');
-    if (res.roi) {
-      lines.push(`- ${res.roi.label}`);
-      lines.push(`- Disclaimer: ${res.roi.disclaimer}`);
-      lines.push(`- Assumptions used: ${JSON.stringify(res.roi.assumptionsUsed || {}, null, 2)}`);
-      lines.push(`- Estimate: ${JSON.stringify(res.roi.estimate || {}, null, 2)}`);
-    } else {
-      lines.push('- (not enabled / insufficient data)');
+    if (aiInsights.summary) {
+      lines.push('SUMMARY:');
+      lines.push('');
+      lines.push(wrapText(aiInsights.summary, LINE_WIDTH, '  '));
+      lines.push('');
     }
     lines.push('');
   }
 
-  lines.push('Warnings');
-  lines.push('-'.repeat(48));
-  if (warnings && warnings.length) lines.push(...warnings);
-  else lines.push('None.');
+  // ═══════════════════════════════════════════════════════════════
+  // EXECUTIVE SUMMARY - All Findings & Recommendations
+  // ═══════════════════════════════════════════════════════════════
+  const allFindings = [];
+  const allRecommendations = [];
+  const allROIInsights = [];
 
+  for (const [report, res] of Object.entries(results)) {
+    if (res.findings?.length) {
+      for (const f of res.findings) {
+        allFindings.push({ report, ...f });
+      }
+    }
+    if (res.recommendations?.length) {
+      for (const r of res.recommendations) {
+        allRecommendations.push({ report, text: r });
+      }
+    }
+    if (res.roi?.insights?.length) {
+      for (const insight of res.roi.insights) {
+        allROIInsights.push({ report, text: insight });
+      }
+    }
+  }
+
+  lines.push(DIVIDER);
+  lines.push(centerText('EXECUTIVE SUMMARY', LINE_WIDTH));
+  lines.push(DIVIDER);
   lines.push('');
-  lines.push('PII Policy');
-  lines.push('-'.repeat(48));
-  lines.push('Driver cell numbers are never displayed or exported. Any field name containing "cell" or "phone" is dropped during normalization.');
-  lines.push('Only presence/absence of driver contact fields may be used as an adoption metric.');
+
+  // Findings grouped by severity
+  const criticalFindings = allFindings.filter(f => f.level === 'critical');
+  const warningFindings = allFindings.filter(f => f.level === 'warning');
+  const infoFindings = allFindings.filter(f => f.level === 'info' || !f.level);
+
+  if (criticalFindings.length) {
+    lines.push('⚠️  CRITICAL FINDINGS:');
+    lines.push('');
+    for (const f of criticalFindings) {
+      lines.push(`    • [${f.report}] ${wrapText(f.text, LINE_WIDTH - 6, '      ')}`);
+    }
+    lines.push('');
+  }
+
+  if (warningFindings.length) {
+    lines.push('⚡ WARNINGS:');
+    lines.push('');
+    for (const f of warningFindings) {
+      lines.push(`    • [${f.report}] ${wrapText(f.text, LINE_WIDTH - 6, '      ')}`);
+    }
+    lines.push('');
+  }
+
+  if (infoFindings.length) {
+    lines.push('ℹ️  INSIGHTS:');
+    lines.push('');
+    for (const f of infoFindings) {
+      lines.push(`    • [${f.report}] ${wrapText(f.text, LINE_WIDTH - 6, '      ')}`);
+    }
+    lines.push('');
+  }
+
+  if (!allFindings.length) {
+    lines.push('No significant findings detected.');
+    lines.push('');
+  }
+
+  // Recommendations
+  lines.push(SECTION_DIVIDER);
+  lines.push('');
+  lines.push('📋 RECOMMENDATIONS:');
+  lines.push('');
+  if (allRecommendations.length) {
+    for (const r of allRecommendations) {
+      lines.push(`    • ${wrapText(r.text, LINE_WIDTH - 6, '      ')}`);
+    }
+  } else {
+    lines.push('    No recommendations at this time.');
+  }
+  lines.push('');
+
+  // ROI Insights
+  if (allROIInsights.length) {
+    lines.push(SECTION_DIVIDER);
+    lines.push('');
+    lines.push('💰 ROI INSIGHTS:');
+    lines.push('');
+    for (const r of allROIInsights) {
+      lines.push(`    • ${wrapText(r.text, LINE_WIDTH - 6, '      ')}`);
+    }
+    lines.push('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // DETAILED REPORT BREAKDOWN
+  // ═══════════════════════════════════════════════════════════════
+  lines.push(DIVIDER);
+  lines.push(centerText('DETAILED REPORT BREAKDOWN', LINE_WIDTH));
+  lines.push(DIVIDER);
+  lines.push('');
+
+  for (const [report, res] of Object.entries(results)) {
+    lines.push(`▶ ${formatReportName(report)}`);
+    lines.push(SECTION_DIVIDER);
+    lines.push('');
+
+    // Data quality
+    lines.push(`  Data Quality: ${res.dataQuality?.score ?? '—'}/100 (${res.dataQuality?.label ?? '—'})`);
+    lines.push(`  Rows Processed: ${(res.dataQuality?.totalRows ?? 0).toLocaleString()}`);
+    lines.push('');
+
+    // Key metrics (formatted nicely)
+    if (res.metrics && Object.keys(res.metrics).length) {
+      lines.push('  KEY METRICS:');
+      for (const [k, v] of Object.entries(res.metrics)) {
+        // Skip complex objects in the summary
+        if (typeof v === 'object' && v !== null && !Array.isArray(v)) continue;
+        const formattedKey = formatMetricKey(k);
+        lines.push(`    • ${formattedKey}: ${formatValue(v)}`);
+      }
+      lines.push('');
+    }
+
+    // ROI estimates
+    if (res.roi?.estimate) {
+      lines.push('  ROI ESTIMATES:');
+      lines.push(`    Label: ${res.roi.label || 'N/A'}`);
+      for (const [k, v] of Object.entries(res.roi.estimate)) {
+        if (v !== null && v !== undefined) {
+          const formattedKey = formatMetricKey(k);
+          lines.push(`    • ${formattedKey}: ${formatValue(v)}`);
+        }
+      }
+      if (res.roi.disclaimer) {
+        lines.push('');
+        lines.push(`    Note: ${wrapText(res.roi.disclaimer, LINE_WIDTH - 10, '          ')}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ASSUMPTIONS USED
+  // ═══════════════════════════════════════════════════════════════
+  lines.push(DIVIDER);
+  lines.push(centerText('ASSUMPTIONS USED', LINE_WIDTH));
+  lines.push(DIVIDER);
+  lines.push('');
+  const a = inputs.assumptions || {};
+  lines.push(`  Detention Cost ($/hr):           ${a.detention_cost_per_hour ?? '(not set)'}`);
+  lines.push(`  Labor Rate ($/hr, fully loaded): ${a.labor_fully_loaded_rate_per_hour ?? '(not set)'}`);
+  lines.push(`  Target Moves/Driver/Day:         ${a.target_moves_per_driver_per_day ?? 50}`);
+  lines.push(`  Target Turns/Door/Day:           ${a.target_turns_per_door_per_day ?? '(not set)'}`);
+  lines.push(`  Cost per Dock Door Hour:         ${a.cost_per_dock_door_hour ?? '(not set)'}`);
+  lines.push('');
+
+  // ═══════════════════════════════════════════════════════════════
+  // WARNINGS
+  // ═══════════════════════════════════════════════════════════════
+  if (warnings?.length) {
+    lines.push(DIVIDER);
+    lines.push(centerText('WARNINGS', LINE_WIDTH));
+    lines.push(DIVIDER);
+    lines.push('');
+    for (const w of warnings) {
+      lines.push(`  ⚠ ${wrapText(w, LINE_WIDTH - 4, '    ')}`);
+    }
+    lines.push('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // FOOTER
+  // ═══════════════════════════════════════════════════════════════
+  lines.push(DIVIDER);
+  lines.push('');
+  lines.push('PII POLICY: Driver cell numbers are never displayed or exported.');
+  lines.push('Only presence/absence of driver contact fields may be used as an');
+  lines.push('adoption metric.');
+  lines.push('');
+  lines.push(centerText('Generated by YardIQ', LINE_WIDTH));
+  lines.push(centerText('https://yardiq.com', LINE_WIDTH));
+  lines.push(DIVIDER);
 
   return lines.join('\n');
+}
+
+// Helper: Center text within a given width
+function centerText(text, width) {
+  const padding = Math.max(0, Math.floor((width - text.length) / 2));
+  return ' '.repeat(padding) + text;
+}
+
+// Helper: Wrap long text with continuation indent
+function wrapText(text, maxWidth, indent = '') {
+  if (!text) return '';
+  const words = text.split(' ');
+  const lines = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    if (currentLine.length + word.length + 1 <= maxWidth) {
+      currentLine += (currentLine ? ' ' : '') + word;
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+
+  return lines.join('\n' + indent);
+}
+
+// Helper: Format report names nicely
+function formatReportName(report) {
+  return report
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Helper: Format metric keys nicely
+function formatMetricKey(key) {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    .replace(/Pct/g, '%')
+    .replace(/Avg/g, 'Average');
 }
 
 function formatValue(v) {

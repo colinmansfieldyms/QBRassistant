@@ -185,6 +185,8 @@ const state = {
   isMultiFacility: false, // True when 2+ facilities detected
   detectedFacilities: [], // Array of facility names from data
   analyzers: null, // Store analyzers reference for facility result retrieval
+  // AI Insights (populated when user generates them)
+  aiInsights: null, // { insights: string[], summary: string }
   perf: {
     enabled: PERF_DEBUG,
     startedAt: null,
@@ -1969,6 +1971,9 @@ function downloadSummary() {
     inputs: state.inputs,
     results: state.results,
     warnings: state.warnings,
+    aiInsights: state.aiInsights,
+    isMultiFacility: state.isMultiFacility,
+    detectedFacilities: state.detectedFacilities,
   });
   const stamp = DateTime.now().setZone(state.inputs.timezone).toFormat('yyyyLLdd_HHmm');
   downloadText(`YardIQ_Report_${state.inputs.tenant}_${stamp}.txt`, txt);
@@ -2141,6 +2146,12 @@ async function pollForAIResult(requestId) {
 }
 
 function displayAIInsights(aiResult) {
+  // Store AI insights in state for export
+  state.aiInsights = {
+    insights: aiResult.insights || [],
+    summary: aiResult.summary || '',
+  };
+
   // Transition from loading to results
   UI.aiInsightsSection.classList.remove('loading');
   UI.aiLoadingState.style.display = 'none';
