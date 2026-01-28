@@ -240,14 +240,14 @@
     <section class="right">
       <section id="statusBanner" class="callout hidden" role="status"></section>
 
-      <section id="resultsRoot" class="results">
-        <!-- AI Insights Section (populated dynamically) -->
-        <div id="aiInsightsSection" class="ai-insights-section" style="display:none;">
-          <h2 class="ai-insights-title">✨ AI Insights</h2>
-          <div id="aiInsightsList" class="ai-insights-grid"></div>
-          <div id="aiSummary" class="ai-summary"></div>
-        </div>
+      <!-- AI Insights Section (outside resultsRoot so it persists) -->
+      <div id="aiInsightsSection" class="ai-insights-section" style="display:none;">
+        <h2 class="ai-insights-title">✨ AI Insights</h2>
+        <div id="aiInsightsList" class="ai-insights-grid"></div>
+        <div id="aiSummary" class="ai-summary"></div>
+      </div>
 
+      <section id="resultsRoot" class="results">
         <div class="empty-state">
           <div class="empty-title">Ready when you are.</div>
           <div class="empty-subtitle" id="emptyStateSubtitle">
