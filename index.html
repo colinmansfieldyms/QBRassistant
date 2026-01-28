@@ -20,7 +20,7 @@
 
     <div class="header-actions">
       <button id="aiInsightsBtn" class="btn btn-primary" type="button" disabled>
-        AI Insights
+        ✨ AI Insights
       </button>
 
       <div class="export-dropdown" id="exportDropdown">
@@ -242,9 +242,19 @@
 
       <!-- AI Insights Section (outside resultsRoot so it persists) -->
       <div id="aiInsightsSection" class="ai-insights-section" style="display:none;">
-        <h2 class="ai-insights-title">✨ AI Insights</h2>
-        <div id="aiInsightsList" class="ai-insights-grid"></div>
-        <div id="aiSummary" class="ai-summary"></div>
+        <!-- Loading State -->
+        <div id="aiLoadingState" class="ai-loading-state">
+          <div class="ai-loading-ring">
+            <div class="ai-loading-ring-inner"></div>
+          </div>
+          <div id="aiLoadingText" class="ai-loading-text">YardIQ AI is thinking...</div>
+        </div>
+        <!-- Results State (hidden during loading) -->
+        <div id="aiResultsState" class="ai-results-state" style="display:none;">
+          <h2 class="ai-insights-title">✨ AI Insights</h2>
+          <div id="aiInsightsList" class="ai-insights-grid"></div>
+          <div id="aiSummary" class="ai-summary"></div>
+        </div>
       </div>
 
       <section id="resultsRoot" class="results">

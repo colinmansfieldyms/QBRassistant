@@ -1,6 +1,6 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
 import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI, facilityRegistry } from './analysis.js?v=2025.01.07.0';
-import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons } from './charts.js?v=2025.01.07.0';
+import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons, wrapGlossaryTerms } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
@@ -136,9 +136,24 @@ const UI = {
   aiConfirmCancel: document.querySelector('#aiConfirmCancel'),
   aiConfirmStart: document.querySelector('#aiConfirmStart'),
   aiInsightsSection: document.querySelector('#aiInsightsSection'),
+  aiLoadingState: document.querySelector('#aiLoadingState'),
+  aiLoadingText: document.querySelector('#aiLoadingText'),
+  aiResultsState: document.querySelector('#aiResultsState'),
   aiInsightsList: document.querySelector('#aiInsightsList'),
   aiSummary: document.querySelector('#aiSummary'),
 };
+
+// AI Loading messages that rotate during generation
+const AI_LOADING_MESSAGES = [
+  'YardIQ AI is thinking...',
+  'Parsing your results...',
+  'Gathering insights...',
+  'Comparing data...',
+  'Analyzing patterns...',
+  'Finding opportunities...',
+  'Crafting recommendations...',
+  'Almost there...',
+];
 
 const state = {
   running: false,
@@ -1971,6 +1986,25 @@ async function generateAIInsights() {
   UI.aiInsightsBtn.textContent = 'Generating...';
   UI.aiInsightsBtn.classList.add('generating');
 
+  // Show loading state in the AI insights section
+  UI.aiInsightsSection.style.display = 'block';
+  UI.aiInsightsSection.classList.add('loading');
+  UI.aiLoadingState.style.display = 'flex';
+  UI.aiResultsState.style.display = 'none';
+
+  // Scroll to show the loading animation
+  UI.aiInsightsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  // Start rotating loading messages
+  let messageIndex = 0;
+  const messageInterval = setInterval(() => {
+    messageIndex = (messageIndex + 1) % AI_LOADING_MESSAGES.length;
+    UI.aiLoadingText.style.animation = 'none';
+    UI.aiLoadingText.offsetHeight; // Force reflow
+    UI.aiLoadingText.textContent = AI_LOADING_MESSAGES[messageIndex];
+    UI.aiLoadingText.style.animation = 'ai-text-fade 0.5s ease-in-out';
+  }, 2500);
+
   try {
     // Build and send payload to Zapier
     const payload = buildAIPayload(requestId);
@@ -1988,15 +2022,22 @@ async function generateAIInsights() {
     // Poll Airtable for results
     const result = await pollForAIResult(requestId);
 
-    // Display results
+    // Stop the message rotation
+    clearInterval(messageInterval);
+
+    // Display results with transition
     displayAIInsights(result);
 
   } catch (error) {
     console.error('AI insights error:', error);
     setBanner('error', `AI insights failed: ${error.message}`);
+    clearInterval(messageInterval);
+    // Hide the section on error
+    UI.aiInsightsSection.style.display = 'none';
+    UI.aiInsightsSection.classList.remove('loading');
   } finally {
     UI.aiInsightsBtn.disabled = false;
-    UI.aiInsightsBtn.textContent = 'AI Insights';
+    UI.aiInsightsBtn.textContent = '✨ AI Insights';
     UI.aiInsightsBtn.classList.remove('generating');
   }
 }
@@ -2097,38 +2138,47 @@ async function pollForAIResult(requestId) {
 }
 
 function displayAIInsights(aiResult) {
-  UI.aiInsightsSection.style.display = 'block';
+  // Transition from loading to results
+  UI.aiInsightsSection.classList.remove('loading');
+  UI.aiLoadingState.style.display = 'none';
+  UI.aiResultsState.style.display = 'block';
 
   // Clear previous content
   UI.aiInsightsList.innerHTML = '';
-  UI.aiSummary.textContent = '';
+  UI.aiSummary.innerHTML = '';
 
-  // Render top 3 insights as cards
+  // Render top 3 insights as cards with glossary term tooltips
   if (aiResult.insights && aiResult.insights.length) {
     aiResult.insights.slice(0, 3).forEach((insight, index) => {
       const card = document.createElement('div');
       card.className = 'ai-insight-card';
-      card.innerHTML = `
-        <div class="ai-insight-card-number">${index + 1}</div>
-        <div class="ai-insight-card-text">${escapeHtmlForAI(insight)}</div>
-      `;
+
+      const numberDiv = document.createElement('div');
+      numberDiv.className = 'ai-insight-card-number';
+      numberDiv.textContent = index + 1;
+
+      const textDiv = document.createElement('div');
+      textDiv.className = 'ai-insight-card-text';
+      // Apply glossary term tooltips
+      for (const node of wrapGlossaryTerms(insight)) {
+        textDiv.appendChild(node);
+      }
+
+      card.appendChild(numberDiv);
+      card.appendChild(textDiv);
       UI.aiInsightsList.appendChild(card);
     });
   }
 
-  // Render summary paragraph
+  // Render summary paragraph with glossary term tooltips
   if (aiResult.summary) {
-    UI.aiSummary.textContent = aiResult.summary;
+    for (const node of wrapGlossaryTerms(aiResult.summary)) {
+      UI.aiSummary.appendChild(node);
+    }
   }
 
   // Scroll to top to show insights
   UI.aiInsightsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function escapeHtmlForAI(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 // ---------- Events ----------

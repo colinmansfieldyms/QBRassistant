@@ -938,7 +938,7 @@ function downloadHealthScoresCsv(healthScores) {
  * Wraps glossary terms in text with tooltip spans.
  * Returns an array of DOM nodes (text nodes and span elements).
  */
-function wrapGlossaryTerms(text) {
+export function wrapGlossaryTerms(text) {
   const nodes = [];
   let remaining = text;
 

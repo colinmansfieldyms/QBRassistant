@@ -5104,6 +5104,90 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     }
   }
 
+  // 6. Driver headcount trend analysis (first half vs second half of period)
+  if (activeDriversByDay && activeDriversByDay.size >= 14) {
+    // Need at least 14 days for meaningful comparison (7 days each half)
+    const sortedDays = Array.from(activeDriversByDay.keys()).sort();
+    const midpoint = Math.floor(sortedDays.length / 2);
+
+    const firstHalfDays = sortedDays.slice(0, midpoint);
+    const secondHalfDays = sortedDays.slice(midpoint);
+
+    // Calculate average driver count for each half
+    let firstHalfTotal = 0;
+    for (const day of firstHalfDays) {
+      firstHalfTotal += activeDriversByDay.get(day)?.estimate() || 0;
+    }
+    const firstHalfAvg = round1(firstHalfTotal / firstHalfDays.length);
+
+    let secondHalfTotal = 0;
+    for (const day of secondHalfDays) {
+      secondHalfTotal += activeDriversByDay.get(day)?.estimate() || 0;
+    }
+    const secondHalfAvg = round1(secondHalfTotal / secondHalfDays.length);
+
+    // Store trend data
+    staffingAnalysis.driverTrend = {
+      firstHalfAvg,
+      secondHalfAvg,
+      firstHalfPeriod: `${firstHalfDays[0]} to ${firstHalfDays[firstHalfDays.length - 1]}`,
+      secondHalfPeriod: `${secondHalfDays[0]} to ${secondHalfDays[secondHalfDays.length - 1]}`,
+    };
+
+    // Only highlight decreases (per user request - don't mention increases)
+    if (firstHalfAvg > secondHalfAvg && secondHalfAvg > 0) {
+      const reduction = round1(firstHalfAvg - secondHalfAvg);
+      const reductionPct = Math.round(((firstHalfAvg - secondHalfAvg) / firstHalfAvg) * 100);
+
+      // Only report if meaningful reduction (>10%)
+      if (reductionPct >= 10) {
+        insights.push(`Driver headcount decreased from ~${firstHalfAvg} to ~${secondHalfAvg} drivers/day (${reductionPct}% reduction) between first and second half of the period`);
+
+        // Calculate labor savings if labor rate is provided (not using default)
+        const hasLaborRate = Number.isFinite(a.labor_fully_loaded_rate_per_hour);
+        if (hasLaborRate) {
+          // Annual savings = reduction in drivers × hours/day × rate × working days/year
+          const workingDaysPerYear = 260; // ~5 days/week × 52 weeks
+          const annualSavings = Math.round(reduction * driverDayHours * laborRate * workingDaysPerYear);
+          const formattedSavings = annualSavings.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+          insights.push(`Estimated annual labor savings from ${round1(reduction)} fewer drivers: ${formattedSavings} (${reduction} drivers × ${driverDayHours} hrs × $${laborRate}/hr × ${workingDaysPerYear} days/yr)`);
+        }
+
+        // Check if productivity was maintained despite fewer drivers
+        if (movesByDay && movesByDay.map.size >= 14) {
+          let firstHalfMoves = 0;
+          for (const day of firstHalfDays) {
+            firstHalfMoves += movesByDay.map.get(day) || 0;
+          }
+          const firstHalfMovesPerDay = round1(firstHalfMoves / firstHalfDays.length);
+
+          let secondHalfMoves = 0;
+          for (const day of secondHalfDays) {
+            secondHalfMoves += movesByDay.map.get(day) || 0;
+          }
+          const secondHalfMovesPerDay = round1(secondHalfMoves / secondHalfDays.length);
+
+          staffingAnalysis.driverTrend.firstHalfMovesPerDay = firstHalfMovesPerDay;
+          staffingAnalysis.driverTrend.secondHalfMovesPerDay = secondHalfMovesPerDay;
+
+          // Calculate moves per driver for each period
+          const firstHalfMovesPerDriver = firstHalfAvg > 0 ? round1(firstHalfMovesPerDay / firstHalfAvg) : 0;
+          const secondHalfMovesPerDriver = secondHalfAvg > 0 ? round1(secondHalfMovesPerDay / secondHalfAvg) : 0;
+
+          if (secondHalfMovesPerDriver >= firstHalfMovesPerDriver * 0.95) {
+            // Productivity maintained or improved
+            if (secondHalfMovesPerDriver > firstHalfMovesPerDriver * 1.05) {
+              const improvementPct = Math.round(((secondHalfMovesPerDriver / firstHalfMovesPerDriver) - 1) * 100);
+              insights.push(`Productivity improved ${improvementPct}% (${firstHalfMovesPerDriver} → ${secondHalfMovesPerDriver} moves/driver/day) despite fewer drivers`);
+            } else {
+              insights.push(`Productivity maintained at ~${secondHalfMovesPerDriver} moves/driver/day despite fewer drivers`);
+            }
+          }
+        }
+      }
+    }
+  }
+
   return {
     label: 'Driver Performance & Staffing Analysis',
     assumptionsUsed: {
