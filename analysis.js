@@ -4682,7 +4682,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     // Data quality findings (move to tooltip)
     const dataQualityFindings = [];
     if (this.lostCount === 0) {
-      dataQualityFindings.push({ level: 'green', text: 'No "Trailer marked lost" events found.' });
+      dataQualityFindings.push({ level: 'info', text: 'No "Trailer marked lost" events found.' });
       recs.push('If lost events are expected but missing, confirm event strings and report configuration match local processes.');
     }
 
@@ -4770,7 +4770,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       } else {
         findings.push({
           level: 'green',
-          text: `${this.lostCount} "Trailer marked lost" events detected.`,
+          text: `Excellent: Only ${this.lostCount} "Trailer marked lost" ${this.lostCount === 1 ? 'event' : 'events'} detected - low count indicates good location tracking.`,
           confidence: 'high',
           confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: this.lostCount })
         });
