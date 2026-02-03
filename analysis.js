@@ -2180,13 +2180,8 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
             }
           }
 
-          // Determine trailer type
-          let trailerType = '';
-          if (live === true) {
-            trailerType = 'Live';
-          } else if (live === false) {
-            trailerType = 'Drop';
-          }
+          // Get trailer type (Container, Trailer, etc.)
+          const trailerType = safeStr(row.trailer_type || '');
 
           if (!this.detentionByScacDrilldown.has(scac)) {
             this.detentionByScacDrilldown.set(scac, []);
