@@ -2715,6 +2715,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
           detentionEvents: this.detentionEventsWithDeparture,
           totalDetentionHours: this.totalDetentionHours,
           actualDetentionCount: this.detention,  // True count of detention events (for PM note)
+          detentionHoursArray: this.detentionHoursArray,  // Individual hours for outlier detection
         },
         assumptions: meta.assumptions,
       }),
@@ -5205,17 +5206,47 @@ function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
   let calculationNote = '';
 
   if (detentionHoursArray.length > 0) {
-    // Calculate median
+    // Use IQR (Interquartile Range) method to detect and filter outliers
+    // This statistically adapts to the actual data distribution rather than using a hardcoded threshold
+    // Note: Actual detention spend still uses real hours, this only affects prevention estimates
     const sorted = [...detentionHoursArray].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    medianDetentionHours = sorted.length % 2 === 0
-      ? (sorted[mid - 1] + sorted[mid]) / 2
-      : sorted[mid];
 
-    // Calculate average
+    // Calculate quartiles
+    const q1Index = Math.floor(sorted.length * 0.25);
+    const q3Index = Math.floor(sorted.length * 0.75);
+    const q1 = sorted[q1Index];
+    const q3 = sorted[q3Index];
+    const iqr = q3 - q1;
+
+    // Standard outlier definition: values beyond Q3 + 1.5*IQR
+    // This is the same method used in box plots
+    const upperBound = q3 + (1.5 * iqr);
+
+    // Filter outliers
+    const filtered = detentionHoursArray.filter(h => h <= upperBound);
+    const outlierCount = detentionHoursArray.length - filtered.length;
+
+    // Calculate median from filtered data (or full data if filtering removed too much)
+    // Require at least 50% of original data to use filtered set
+    const dataForMedian = filtered.length >= detentionHoursArray.length * 0.5
+      ? filtered
+      : detentionHoursArray;
+
+    const sortedForMedian = [...dataForMedian].sort((a, b) => a - b);
+    const mid = Math.floor(sortedForMedian.length / 2);
+    medianDetentionHours = sortedForMedian.length % 2 === 0
+      ? (sortedForMedian[mid - 1] + sortedForMedian[mid]) / 2
+      : sortedForMedian[mid];
+
+    // Calculate average from all events
     avgDetentionHours = totalDetentionHours / detentionEventsWithDeparture;
 
-    calculationNote = `Based on ${detentionEventsWithDeparture} actual detention events (median: ${round1(medianDetentionHours)} hrs, avg: ${round1(avgDetentionHours)} hrs)`;
+    // Build calculation note
+    if (outlierCount > 0 && filtered.length >= detentionHoursArray.length * 0.5) {
+      calculationNote = `Based on ${filtered.length} detention events (${outlierCount} outliers >${round1(upperBound)}hrs excluded using IQR method). Median: ${round1(medianDetentionHours)} hrs, Avg: ${round1(avgDetentionHours)} hrs`;
+    } else {
+      calculationNote = `Based on ${detentionEventsWithDeparture} actual detention events (median: ${round1(medianDetentionHours)} hrs, avg: ${round1(avgDetentionHours)} hrs)`;
+    }
   } else {
     // Fallback: use 2 hours as reasonable estimate if no actual detention data
     medianDetentionHours = 2.0;
@@ -5271,9 +5302,7 @@ function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
     insights.push(`Median detention duration: ${round1(medianDetentionHours)} hours (from actual detention events)`);
     insights.push(`Estimated detention hours avoided: ${round1(hoursAvoided)} hours`);
     insights.push(`Detention cost avoided: $${Math.round(costAvoided).toLocaleString()} (${prevented} events × ${round1(medianDetentionHours)} hrs × $${costPerHour}/hr)`);
-
     if (calculationNote) {
-      insights.push(''); // Blank line for readability
       insights.push(calculationNote);
     }
   } else {
@@ -5875,7 +5904,49 @@ function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
   // Normal case: we have detention events and can calculate spend
   const detentionSpend = (totalDetentionHours || 0) * costPerHour;
 
+  // Apply IQR method to identify outliers
+  const detentionHoursArray = metrics.detentionHoursArray || [];
+  let outlierInfo = null;
+
+  if (detentionHoursArray.length > 0) {
+    const sorted = [...detentionHoursArray].sort((a, b) => a - b);
+
+    // Calculate quartiles
+    const q1Index = Math.floor(sorted.length * 0.25);
+    const q3Index = Math.floor(sorted.length * 0.75);
+    const q1 = sorted[q1Index];
+    const q3 = sorted[q3Index];
+    const iqr = q3 - q1;
+    const upperBound = q3 + (1.5 * iqr);
+
+    // Identify outliers
+    const outliers = detentionHoursArray.filter(h => h > upperBound);
+
+    if (outliers.length > 0) {
+      const filteredHours = detentionHoursArray.filter(h => h <= upperBound);
+      const totalFilteredHours = filteredHours.reduce((sum, h) => sum + h, 0);
+      const spendWithoutOutliers = totalFilteredHours * costPerHour;
+      const outlierHours = outliers.reduce((sum, h) => sum + h, 0);
+
+      outlierInfo = {
+        count: outliers.length,
+        upperBound: round1(upperBound),
+        totalOutlierHours: round1(outlierHours),
+        spendWithoutOutliers: Math.round(spendWithoutOutliers),
+        filteredCount: filteredHours.length
+      };
+    }
+  }
+
+  // Build insights with actual and adjusted spend
   insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
+
+  if (outlierInfo) {
+    insights.push(`  • Actual spend (including outliers): $${Math.round(detentionSpend).toLocaleString()}`);
+    insights.push(`  • Adjusted spend (excluding ${outlierInfo.count} outliers >${outlierInfo.upperBound}hrs): $${outlierInfo.spendWithoutOutliers.toLocaleString()}`);
+    insights.push(`  • Outlier impact: ${outlierInfo.count} trailers with ${outlierInfo.totalOutlierHours} hours = $${Math.round(detentionSpend - outlierInfo.spendWithoutOutliers).toLocaleString()} additional cost`);
+  }
+
   insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
 
   return {
