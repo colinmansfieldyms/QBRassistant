@@ -5955,9 +5955,9 @@ function computeDetentionSpendIfEnabled({ metrics, assumptions }) {
   insights.push(`Detention spend this period: $${Math.round(detentionSpend).toLocaleString()} (${detentionEvents} trailers, ${round1(totalDetentionHours)} total hours)`);
 
   if (outlierInfo) {
-    insights.push(`  • Actual spend (including outliers): $${Math.round(detentionSpend).toLocaleString()}`);
-    insights.push(`  • Adjusted spend (excluding ${outlierInfo.count} outliers >${outlierInfo.upperBound}hrs): $${outlierInfo.spendWithoutOutliers.toLocaleString()}`);
-    insights.push(`  • Outlier impact: ${outlierInfo.count} trailers with ${outlierInfo.totalOutlierHours} hours = $${Math.round(detentionSpend - outlierInfo.spendWithoutOutliers).toLocaleString()} additional cost`);
+    insights.push(`    - Actual spend (including outliers): $${Math.round(detentionSpend).toLocaleString()}`);
+    insights.push(`    - Adjusted spend (excluding ${outlierInfo.count} outliers >${outlierInfo.upperBound}hrs): $${outlierInfo.spendWithoutOutliers.toLocaleString()}`);
+    insights.push(`    - Outlier impact: ${outlierInfo.count} trailers with ${outlierInfo.totalOutlierHours} hours = $${Math.round(detentionSpend - outlierInfo.spendWithoutOutliers).toLocaleString()} additional cost`);
   }
 
   insights.push(`Average detention duration: ${round1(totalDetentionHours / detentionEvents)} hours per event`);
