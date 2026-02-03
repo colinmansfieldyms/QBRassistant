@@ -185,6 +185,19 @@ export function normalizeRowStrict(rawRow, { report, timezone, onWarning } = {})
   return { row: clean, flags, report, timezone };
 }
 
+// ---------- Detention Status Types ----------
+/**
+ * Detention status types for accurate detection.
+ * These represent the ACTUAL status determined by comparing departure times against thresholds.
+ */
+const DETENTION_STATUS = {
+  IN_DETENTION: 'IN_DETENTION',       // Departed after detention_start_time
+  PREVENTED: 'PREVENTED',             // Departed after pre_detention but before detention
+  NO_DETENTION: 'NO_DETENTION',       // Departed before pre_detention
+  STILL_IN_YARD: 'STILL_IN_YARD',    // No departure yet
+  UNKNOWN: 'UNKNOWN'                  // Missing threshold data
+};
+
 // ---------- Stats helpers ----------
 class CounterMap {
   constructor() { this.map = new Map(); }
@@ -1857,9 +1870,16 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
 class DetentionHistoryAnalyzer extends BaseAnalyzer {
   constructor(opts) {
     super(opts);
-    this.preDetention = 0;
-    this.detention = 0;
-    this.prevented = 0;
+
+    // Actual detention event counters (based on departure vs thresholds)
+    this.detention = 0;          // Departed after detention threshold
+    this.prevented = 0;          // Departed after pre-detention but before detention
+    this.preDetention = 0;       // Approached pre-detention (includes prevented)
+
+    // Tracking for non-events (data quality and status tracking)
+    this.stillInYard = 0;        // No departure yet - status pending
+    this.unknownStatus = 0;      // Missing threshold data
+    this.skippedNoArrival = 0;   // Skipped because no arrival_time
 
     // Track live/drop for ALL rows (for general coverage)
     this.live = 0;
@@ -1897,9 +1917,12 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
   createFacilityBucket() {
     return {
       totalRows: 0,
-      preDetention: 0,
       detention: 0,
       prevented: 0,
+      preDetention: 0,
+      stillInYard: 0,
+      unknownStatus: 0,
+      skippedNoArrival: 0,
       live: 0,
       drop: 0,
       detentionLive: 0,
@@ -1909,6 +1932,75 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       totalDetentionHours: 0,
       dailyDetention: new CounterMap(),
       dailyPrevented: new CounterMap(),
+    };
+  }
+
+  /**
+   * Determines the actual detention status based on arrival, departure, and thresholds.
+   *
+   * IMPORTANT: Detention Date/Time fields represent the SCHEDULED detention threshold
+   * (when detention is set to begin), not whether detention has actually occurred.
+   * We must compare actual departure time against these thresholds to determine status.
+   *
+   * @param {Object} params
+   * @param {DateTime} params.arrival - When trailer arrived (required)
+   * @param {DateTime|null} params.departure - When trailer departed (null if still in yard)
+   * @param {DateTime|null} params.preDetentionThreshold - When pre-detention begins
+   * @param {DateTime|null} params.detentionThreshold - When detention begins
+   *
+   * @returns {Object} Status object with:
+   *   - type: 'IN_DETENTION' | 'PREVENTED' | 'NO_DETENTION' | 'STILL_IN_YARD' | 'UNKNOWN'
+   *   - detentionHours: number | null (hours spent in detention, if applicable)
+   *   - reason: string (explanation for debugging/logging)
+   */
+  determineDetentionStatus({ arrival, departure, preDetentionThreshold, detentionThreshold }) {
+    // Case 1: No departure yet - trailer still in yard
+    // Don't count in metrics until trailer completes its cycle
+    if (!departure) {
+      return {
+        type: DETENTION_STATUS.STILL_IN_YARD,
+        detentionHours: null,
+        reason: 'Trailer has not departed yet'
+      };
+    }
+
+    // Case 2: Both thresholds are missing - cannot determine detention
+    if (!preDetentionThreshold && !detentionThreshold) {
+      return {
+        type: DETENTION_STATUS.UNKNOWN,
+        detentionHours: null,
+        reason: 'No detention thresholds configured for this trailer'
+      };
+    }
+
+    // Case 3: Departed after detention threshold = IN_DETENTION
+    // This is actual detention - trailer left after the detention threshold time
+    if (detentionThreshold && departure > detentionThreshold) {
+      const hours = departure.diff(detentionThreshold, 'hours').hours;
+      return {
+        type: DETENTION_STATUS.IN_DETENTION,
+        detentionHours: Number.isFinite(hours) && hours > 0 ? hours : null,
+        reason: `Departed after detention threshold`
+      };
+    }
+
+    // Case 4: Departed after pre-detention but before detention = PREVENTED
+    // This means an intervention worked - trailer left after pre-detention warning
+    // but before actual detention began
+    if (preDetentionThreshold && departure > preDetentionThreshold) {
+      return {
+        type: DETENTION_STATUS.PREVENTED,
+        detentionHours: null,
+        reason: `Departed after pre-detention but before detention`
+      };
+    }
+
+    // Case 5: Departed before any thresholds = NO_DETENTION
+    // Trailer left before even approaching detention - no issue
+    return {
+      type: DETENTION_STATUS.NO_DETENTION,
+      detentionHours: null,
+      reason: `Departed before any detention thresholds`
     };
   }
 
@@ -1922,34 +2014,105 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       facBucket.totalRows++;
     }
 
-    const pre = parseTimestamp(row.pre_detention_start_time, {
-      timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
+    // CRITICAL: Skip rows without arrival_time
+    // A trailer cannot be in detention if it never checked in.
+    // Arrival date/time is required to determine actual detention status.
+    if (isNil(row.arrival_time)) {
+      this.skippedNoArrival++;
+      if (facBucket) facBucket.skippedNoArrival++;
+      return;
+    }
+
+    // Parse all required timestamps
+    const arrival = parseTimestamp(row.arrival_time, {
+      timezone: this.timezone,
+      treatAsLocal: true,
+      onFail: () => { this.parseFails++; }
     });
-    const det = parseTimestamp(row.detention_start_time, {
-      timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
+
+    const preDetentionThreshold = parseTimestamp(row.pre_detention_start_time, {
+      timezone: this.timezone,
+      assumeUTC: true,
+      onFail: () => { this.parseFails++; }
     });
 
-    // For trend grouping, pick a best event time
-    const eventDt = det || pre;
+    const detentionThreshold = parseTimestamp(row.detention_start_time, {
+      timezone: this.timezone,
+      assumeUTC: true,
+      onFail: () => { this.parseFails++; }
+    });
 
-    if (pre) {
-      this.preDetention++;
-      if (facBucket) facBucket.preDetention++;
-      this.parseOk++;
-      this.trackDate(pre);
-    }
-    if (det) {
-      this.detention++;
-      if (facBucket) facBucket.detention++;
-      this.parseOk++;
-      this.trackDate(det);
-    }
-    if (pre && !det) {
-      this.prevented++;
-      if (facBucket) facBucket.prevented++;
+    // Try to find departure datetime (may be null if still in yard)
+    const departureRaw = firstPresent(row, [
+      'departure_datetime',
+      'depart_datetime',
+      'yard_out_time',
+      'left_yard_time',
+      'checkout_time',
+      'actual_departure_time'
+    ]);
+
+    let departure = null;
+    if (departureRaw) {
+      departure = parseTimestamp(departureRaw, {
+        timezone: this.timezone,
+        treatAsLocal: true
+      });
     }
 
-    // Track live/drop for ALL rows (general coverage metrics)
+    // Validate arrival parsed successfully
+    if (!arrival) {
+      this.parseFails++;
+      return;
+    }
+
+    this.parseOk++;
+    this.trackDate(arrival);
+
+    // Determine ACTUAL detention status by comparing timestamps.
+    // This is the key fix: we compare actual departure time against scheduled thresholds
+    // to determine what actually happened (not just whether thresholds were set).
+    const status = this.determineDetentionStatus({
+      arrival,
+      departure,
+      preDetentionThreshold,
+      detentionThreshold
+    });
+
+    // Update counters based on ACTUAL status (not just presence of threshold fields)
+    switch(status.type) {
+      case DETENTION_STATUS.IN_DETENTION:
+        this.detention++;
+        if (facBucket) facBucket.detention++;
+        break;
+
+      case DETENTION_STATUS.PREVENTED:
+        this.prevented++;
+        this.preDetention++;
+        if (facBucket) {
+          facBucket.prevented++;
+          facBucket.preDetention++;
+        }
+        break;
+
+      case DETENTION_STATUS.NO_DETENTION:
+        // Departed before thresholds - nothing to count
+        break;
+
+      case DETENTION_STATUS.STILL_IN_YARD:
+        // No departure yet - don't count in metrics
+        this.stillInYard++;
+        if (facBucket) facBucket.stillInYard++;
+        break;
+
+      case DETENTION_STATUS.UNKNOWN:
+        // Missing threshold data
+        this.unknownStatus++;
+        if (facBucket) facBucket.unknownStatus++;
+        break;
+    }
+
+    // Track live/drop for ALL rows (general coverage)
     const live = normalizeBoolish(row.live_load) ?? (row.live_load == 1);
     if (live === true) {
       this.live++;
@@ -1959,11 +2122,35 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       if (facBucket) facBucket.drop++;
     }
 
-    // Track live/drop and SCAC ONLY for detention events (for charts)
-    // A detention event is when det is not null (detention_start_time exists)
-    // OR for CSV mode, also consider pre-detention (pre_detention_start_time exists)
-    const isDetentionEvent = det || pre;
-    if (isDetentionEvent) {
+    // Only track events for ACTUAL detention or prevention (not potential)
+    const isCountableEvent =
+      status.type === DETENTION_STATUS.IN_DETENTION ||
+      status.type === DETENTION_STATUS.PREVENTED;
+
+    if (isCountableEvent) {
+      // Use the appropriate threshold timestamp for time series grouping
+      const eventDt = status.type === DETENTION_STATUS.IN_DETENTION
+        ? detentionThreshold
+        : preDetentionThreshold;
+
+      // Update time series
+      const mk = monthKey(eventDt, this.timezone);
+      const wk = weekKey(eventDt, this.timezone);
+      const dk = dayKey(eventDt, this.timezone);
+
+      if (status.type === DETENTION_STATUS.IN_DETENTION) {
+        this.monthlyDetention.inc(mk);
+        this.weeklyDetention.inc(wk);
+        this.dailyDetention.inc(dk);
+        if (facBucket) facBucket.dailyDetention.inc(dk);
+      } else if (status.type === DETENTION_STATUS.PREVENTED) {
+        this.monthlyPrevented.inc(mk);
+        this.weeklyPrevented.inc(wk);
+        this.dailyPrevented.inc(dk);
+        if (facBucket) facBucket.dailyPrevented.inc(dk);
+      }
+
+      // Track live/drop for detention events only (for pie chart)
       if (live === true) {
         this.detentionLive++;
         if (facBucket) facBucket.detentionLive++;
@@ -1972,88 +2159,40 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
         if (facBucket) facBucket.detentionDrop++;
       }
 
+      // Track SCAC for detention events only (for bar chart)
       const scac = row.scac ?? row.carrier_scac ?? row.scac_code;
       if (!isNil(scac)) {
         this.detentionByScac.inc(scac);
         if (facBucket) facBucket.detentionByScac.inc(scac);
 
-        // Collect drilldown data if enabled
+        // Collect drilldown data
         if (this.enableDrilldown) {
           const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
-          const detentionDate = (det || pre)?.toFormat('yyyy-MM-dd HH:mm') || '';
-          // Calculate detention hours if departure info available
+          const detentionDate = eventDt?.toFormat('yyyy-MM-dd HH:mm') || '';
+
           let detentionHours = '';
-          const detentionDuration = row.detention_hours || row.detention_time_hours;
-          if (detentionDuration !== undefined && detentionDuration !== null) {
-            detentionHours = parseFloat(detentionDuration);
-            if (!Number.isFinite(detentionHours)) detentionHours = '';
-            else detentionHours = Math.round(detentionHours * 10) / 10;
+          if (status.detentionHours !== null) {
+            detentionHours = Math.round(status.detentionHours * 10) / 10;
           }
+
           if (!this.detentionByScacDrilldown.has(scac)) {
             this.detentionByScacDrilldown.set(scac, []);
           }
-          this.detentionByScacDrilldown.get(scac).push({ trailer, detentionHours, detentionDate });
-        }
-      }
-    }
-
-    if (eventDt) {
-      const mk = monthKey(eventDt, this.timezone);
-      const wk = weekKey(eventDt, this.timezone);
-      const dk = dayKey(eventDt, this.timezone);
-      if (det) {
-        this.monthlyDetention.inc(mk);
-        this.weeklyDetention.inc(wk);
-        this.dailyDetention.inc(dk);
-        if (facBucket) facBucket.dailyDetention.inc(dk);
-      }
-      if (pre && !det) {
-        this.monthlyPrevented.inc(mk);
-        this.weeklyPrevented.inc(wk);
-        this.dailyPrevented.inc(dk);
-        if (facBucket) facBucket.dailyPrevented.inc(dk);
-      }
-    }
-
-    // Track detention spend: detention time to departure time
-    // After CSV normalization: detention_start_time and departure_datetime are combined timestamps
-    // API mode: same fields exist directly
-
-    // Use already-parsed `det` for detention start (from detention_start_time)
-    if (det) {
-      // Try to find departure datetime
-      // CSV normalization creates 'departure_datetime' from "Departure Date" + "Departure Time"
-      // API may have the same or similar fields
-      const depRaw = firstPresent(row, [
-        'departure_datetime',  // CSV normalized field
-        'depart_datetime', 'yard_out_time', 'left_yard_time',
-        'checkout_time', 'actual_departure_time'
-      ]);
-
-      let depDt = null;
-      if (depRaw) {
-        // CSV departure_datetime is in local time format like "12-04-2025 11:39"
-        depDt = parseTimestamp(depRaw, { timezone: this.timezone, treatAsLocal: true });
-      }
-
-      // Fallback: try separate date + time columns (in case normalization didn't happen)
-      if (!depDt) {
-        const depDate = firstPresent(row, ['csv_departure_date', 'departure_date', 'depart_date', 'out_date']);
-        const depTime = firstPresent(row, ['csv_departure_time', 'departure_time', 'depart_time', 'out_time']);
-        if (!isNil(depDate) && !isNil(depTime)) {
-          depDt = parseTimestamp(`${depDate} ${depTime}`, { timezone: this.timezone, treatAsLocal: true });
+          this.detentionByScacDrilldown.get(scac).push({
+            trailer,
+            detentionHours,
+            detentionDate
+          });
         }
       }
 
-      if (depDt && depDt > det) {
-        const hours = depDt.diff(det, 'hours').hours;
-        if (Number.isFinite(hours) && hours > 0) {
-          this.detentionEventsWithDeparture++;
-          this.totalDetentionHours += hours;
-          if (facBucket) {
-            facBucket.detentionEventsWithDeparture++;
-            facBucket.totalDetentionHours += hours;
-          }
+      // Calculate detention spend (for IN_DETENTION only)
+      if (status.type === DETENTION_STATUS.IN_DETENTION && status.detentionHours !== null) {
+        this.detentionEventsWithDeparture++;
+        this.totalDetentionHours += status.detentionHours;
+        if (facBucket) {
+          facBucket.detentionEventsWithDeparture++;
+          facBucket.totalDetentionHours += status.detentionHours;
         }
       }
     }
@@ -2063,17 +2202,51 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     const findings = [];
     const recs = [];
 
-    // Data quality findings (move to tooltip)
+    // Data quality findings
     const dataQualityFindings = [];
-    if (this.detention === 0 && this.preDetention === 0) {
-      // Add to main findings (not just tooltip) so user clearly sees the issue
+
+    // Report skipped rows due to missing arrival data
+    if (this.skippedNoArrival > 0) {
+      const pct = Math.round((this.skippedNoArrival / this.totalRows) * 100);
       findings.push({
         level: 'yellow',
-        text: 'No detention events found in this data. Detention rules may not be configured in YMS.',
+        text: `${pct}% of rows (${this.skippedNoArrival}) are missing arrival date/time and were excluded from detention analysis.`,
         confidence: 'high',
-        confidenceReason: 'No detention or pre-detention signals detected in the uploaded data.'
+        confidenceReason: 'Arrival date/time is required to determine actual detention status.'
       });
-      recs.push('Verify detention rules are configured in YMS. If detention tracking is not needed, this finding can be ignored.');
+      recs.push('Ensure arrival date/time fields are populated in YMS for accurate detention tracking.');
+    }
+
+    // Report trailers still in yard (for informational purposes)
+    if (this.stillInYard > 0) {
+      findings.push({
+        level: 'blue',
+        text: `${this.stillInYard} trailers are still in the yard with detention rules triggered (no departure recorded yet).`,
+        confidence: 'high',
+        confidenceReason: 'These trailers have not completed their cycle yet, so detention status is pending.'
+      });
+    }
+
+    // Update "no detention events" message to account for actual vs potential
+    if (this.detention === 0 && this.prevented === 0) {
+      if (this.stillInYard > 0) {
+        // Some trailers have potential detention but none have completed
+        findings.push({
+          level: 'yellow',
+          text: 'No completed detention events found in this data. Detention rules are triggered but all trailers are still in the yard.',
+          confidence: 'high',
+          confidenceReason: 'Detention thresholds are configured, but no trailers have departed yet to determine actual status.'
+        });
+      } else {
+        // No detention events at all
+        findings.push({
+          level: 'yellow',
+          text: 'No detention events found in this data. Detention rules may not be configured in YMS.',
+          confidence: 'high',
+          confidenceReason: 'No detention or pre-detention signals detected in the uploaded data.'
+        });
+        recs.push('Verify detention rules are configured in YMS. If detention tracking is not needed, this finding can be ignored.');
+      }
     }
 
     // CSV mode warning about prevented detention data
