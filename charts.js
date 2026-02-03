@@ -2015,7 +2015,8 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
       const badgeMeta = {
         green: { label: 'GOOD', tooltip: 'Illustrates improvement in a key area.' },
         yellow: { label: 'CAUTION', tooltip: 'Potential issue related to system use or configuration. PM should investigate.' },
-        red: { label: 'BAD', tooltip: 'Illustrates an issue or negative trend in a key area.' }
+        red: { label: 'BAD', tooltip: 'Illustrates an issue or negative trend in a key area.' },
+        info: { label: 'INFO', tooltip: 'General information - not necessarily good or bad.' }
       }[f.level] || { label: f.level.toUpperCase(), tooltip: '' };
 
       // Build finding text with glossary term tooltips
