@@ -1906,6 +1906,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // Detention spend tracking
     this.detentionEventsWithDeparture = 0;
     this.totalDetentionHours = 0;
+    this.detentionHoursArray = [];  // Individual detention hours for median calculation
 
     // Track data source for CSV mode warning
     this.isCSVMode = opts.isCSVMode || false;
@@ -2190,6 +2191,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       if (status.type === DETENTION_STATUS.IN_DETENTION && status.detentionHours !== null) {
         this.detentionEventsWithDeparture++;
         this.totalDetentionHours += status.detentionHours;
+        this.detentionHoursArray.push(status.detentionHours);  // Track for median calculation
         if (facBucket) {
           facBucket.detentionEventsWithDeparture++;
           facBucket.totalDetentionHours += status.detentionHours;
@@ -2694,7 +2696,19 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       ],
       findings,
       recommendations: recs,
-      roi: computeDetentionROIIfEnabled({ meta, metrics: { prevented: this.prevented }, assumptions: meta.assumptions }),
+      roi: computeDetentionROIIfEnabled({
+        meta,
+        metrics: {
+          prevented: this.prevented,
+          detentionHoursArray: this.detentionHoursArray,
+          detentionEventsWithDeparture: this.detentionEventsWithDeparture,
+          totalDetentionHours: this.totalDetentionHours,
+          monthlyPrevented: this.monthlyPrevented,
+          weeklyPrevented: this.weeklyPrevented,
+          dailyPrevented: this.dailyPrevented,
+        },
+        assumptions: meta.assumptions
+      }),
       // Additional ROI for detention spend
       detentionSpend: computeDetentionSpendIfEnabled({
         metrics: {
@@ -2822,7 +2836,21 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       charts,
       findings,
       recommendations: recs,
-      roi: computeDetentionROIIfEnabled({ meta, metrics: { prevented: bucket.prevented }, assumptions: meta.assumptions }),
+      roi: computeDetentionROIIfEnabled({
+        meta,
+        metrics: {
+          prevented: bucket.prevented,
+          // Use overall detention hours for median calculation (not facility-specific)
+          detentionHoursArray: this.detentionHoursArray,
+          detentionEventsWithDeparture: this.detentionEventsWithDeparture,
+          totalDetentionHours: this.totalDetentionHours,
+          // Use facility-specific prevention time series
+          monthlyPrevented: bucket.monthlyPrevented,
+          weeklyPrevented: bucket.weeklyPrevented,
+          dailyPrevented: bucket.dailyPrevented,
+        },
+        assumptions: meta.assumptions
+      }),
     };
   }
 }
@@ -5161,30 +5189,116 @@ function deriveMovesPerDriverPerDay(movesByDay, activeDriversByDay) {
 // ---------- ROI (MVP: conservative, labeled as estimates) ----------
 function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
   const a = assumptions || {};
-  const enabled =
-    Number.isFinite(a.detention_cost_per_hour) &&
-    Number.isFinite(a.labor_fully_loaded_rate_per_hour) &&
-    Number.isFinite(a.target_moves_per_driver_per_day);
+  const costPerHour = a.detention_cost_per_hour;
 
-  if (!enabled) return null;
+  // Only need detention cost per hour for this calculation
+  if (!Number.isFinite(costPerHour)) return null;
 
-  // MVP: prevented detention count * 1 hour saved (placeholder). This is explicitly an estimate.
   const prevented = metrics.prevented || 0;
-  const estHoursSaved = prevented * 1.0;
-  const estValue = estHoursSaved * a.detention_cost_per_hour;
+  const detentionHoursArray = metrics.detentionHoursArray || [];
+  const detentionEventsWithDeparture = metrics.detentionEventsWithDeparture || 0;
+  const totalDetentionHours = metrics.totalDetentionHours || 0;
+
+  // Calculate median detention hours from actual detention events
+  let medianDetentionHours = 0;
+  let avgDetentionHours = 0;
+  let calculationNote = '';
+
+  if (detentionHoursArray.length > 0) {
+    // Calculate median
+    const sorted = [...detentionHoursArray].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    medianDetentionHours = sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
+
+    // Calculate average
+    avgDetentionHours = totalDetentionHours / detentionEventsWithDeparture;
+
+    calculationNote = `Based on ${detentionEventsWithDeparture} actual detention events (median: ${round1(medianDetentionHours)} hrs, avg: ${round1(avgDetentionHours)} hrs)`;
+  } else {
+    // Fallback: use 2 hours as reasonable estimate if no actual detention data
+    medianDetentionHours = 2.0;
+    calculationNote = 'No completed detention events yet. Using estimated 2 hours per event as baseline.';
+  }
+
+  // Calculate hours avoided by using median
+  const hoursAvoided = prevented * medianDetentionHours;
+  const costAvoided = hoursAvoided * costPerHour;
+
+  // Get time period breakdown
+  const monthlyPrevented = metrics.monthlyPrevented;
+  const weeklyPrevented = metrics.weeklyPrevented;
+  const dailyPrevented = metrics.dailyPrevented;
+
+  // Determine which granularity to show
+  let periodBreakdown = [];
+  if (monthlyPrevented && monthlyPrevented.map && monthlyPrevented.map.size > 0) {
+    const sorted = Array.from(monthlyPrevented.map.entries())
+      .sort(([a], [b]) => a.localeCompare(b));
+    periodBreakdown = sorted.map(([period, count]) => ({
+      period,
+      count,
+      hoursAvoided: round1(count * medianDetentionHours),
+      costAvoided: Math.round(count * medianDetentionHours * costPerHour)
+    }));
+  } else if (weeklyPrevented && weeklyPrevented.map && weeklyPrevented.map.size > 0) {
+    const sorted = Array.from(weeklyPrevented.map.entries())
+      .sort(([a], [b]) => a.localeCompare(b));
+    periodBreakdown = sorted.map(([period, count]) => ({
+      period,
+      count,
+      hoursAvoided: round1(count * medianDetentionHours),
+      costAvoided: Math.round(count * medianDetentionHours * costPerHour)
+    }));
+  } else if (dailyPrevented && dailyPrevented.map && dailyPrevented.map.size > 0) {
+    const sorted = Array.from(dailyPrevented.map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-30); // Show last 30 days max
+    periodBreakdown = sorted.map(([period, count]) => ({
+      period,
+      count,
+      hoursAvoided: round1(count * medianDetentionHours),
+      costAvoided: Math.round(count * medianDetentionHours * costPerHour)
+    }));
+  }
+
+  // Build insights array (not wall of text)
+  const insights = [];
+
+  if (prevented > 0) {
+    insights.push(`Prevention success: ${prevented} detention events prevented this period`);
+    insights.push(`Median detention duration: ${round1(medianDetentionHours)} hours (from actual detention events)`);
+    insights.push(`Estimated detention hours avoided: ${round1(hoursAvoided)} hours`);
+    insights.push(`Detention cost avoided: $${Math.round(costAvoided).toLocaleString()} (${prevented} events × ${round1(medianDetentionHours)} hrs × $${costPerHour}/hr)`);
+
+    if (calculationNote) {
+      insights.push(''); // Blank line for readability
+      insights.push(calculationNote);
+    }
+  } else {
+    insights.push('No prevented detention events recorded this period.');
+    insights.push('Prevented detention occurs when trailers depart after pre-detention alert but before detention threshold.');
+  }
 
   return {
-    label: 'Detention avoidance estimate',
+    label: 'Prevented Detention Value',
     assumptionsUsed: {
-      detention_cost_per_hour: a.detention_cost_per_hour,
-      prevented_detention_hours_saved_each: 1.0,
+      detention_cost_per_hour: costPerHour,
+      median_detention_hours: round1(medianDetentionHours),
     },
     estimate: {
       prevented_detention_events: prevented,
-      estimated_hours_saved: round1(estHoursSaved),
-      estimated_value: Math.round(estValue * 100) / 100,
+      median_detention_hours: round1(medianDetentionHours),
+      avg_detention_hours: round1(avgDetentionHours),
+      estimated_hours_avoided: round1(hoursAvoided),
+      estimated_cost_avoided: Math.round(costAvoided * 100) / 100,
     },
-    disclaimer: 'Estimate only. Assumes each prevented detention event corresponds to ~1 hour avoided. Replace with customer-specific model when available.',
+    insights,
+    periodBreakdown, // Array of { period, count, hoursAvoided, costAvoided }
+    disclaimer: detentionHoursArray.length > 0
+      ? 'Calculation uses median detention duration from actual detention events to estimate value of prevention.'
+      : 'No completed detention events yet. Using estimated baseline for prevention value calculation.',
   };
 }
 
