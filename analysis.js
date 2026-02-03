@@ -2220,7 +2220,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     // Report trailers still in yard (for informational purposes)
     if (this.stillInYard > 0) {
       findings.push({
-        level: 'blue',
+        level: 'info',
         text: `${this.stillInYard} trailers are still in the yard with detention rules triggered (no departure recorded yet).`,
         confidence: 'high',
         confidenceReason: 'These trailers have not completed their cycle yet, so detention status is pending.'
@@ -2290,16 +2290,57 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       'Detention events',
       { significantChangePct: 20 }
     );
-    if (detentionPeriodComparison?.isSignificant) {
-      const finding = formatPeriodComparisonFinding(detentionPeriodComparison, {
-        increaseLevel: 'yellow',
-        decreaseLevel: 'green',
-        dataQualityFactors: dqFactors
-      });
-      if (finding) findings.push(finding);
 
-      if (detentionPeriodComparison.direction === 'increased') {
-        recs.push('Detention events increased over the period - investigate carrier performance trends and dock scheduling changes.');
+    // Also check prevented detention for the same period to detect offsetting
+    const preventedPeriodComparison = computePeriodComparison(
+      { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
+      'Prevented detention',
+      { significantChangePct: 20 }
+    );
+
+    if (detentionPeriodComparison?.isSignificant) {
+      // Check if prevention is offsetting detention increases
+      if (detentionPeriodComparison.direction === 'increased' &&
+          preventedPeriodComparison?.isSignificant &&
+          preventedPeriodComparison.direction === 'increased') {
+
+        const detentionIncreaseRate = Math.abs(detentionPeriodComparison.changePct || 0);
+        const preventionIncreaseRate = Math.abs(preventedPeriodComparison.changePct || 0);
+
+        // Prevention is keeping pace (increased by at least 80% of detention increase rate)
+        if (preventionIncreaseRate >= detentionIncreaseRate * 0.8) {
+          findings.push({
+            level: 'green',
+            text: `Detention events increased by ${detentionIncreaseRate}%, but prevention efforts also increased by ${preventionIncreaseRate}%, effectively mitigating the rise.`,
+            confidence: detentionPeriodComparison.confidence || 'high',
+            confidenceReason: generateConfidenceReason(detentionPeriodComparison.confidence || 'high', dqFactors)
+          });
+          recs.push('Detention prevention is scaling effectively with volume. Continue and document current prevention strategies.');
+        } else {
+          // Prevention increased but not enough to offset
+          const finding = formatPeriodComparisonFinding(detentionPeriodComparison, {
+            increaseLevel: 'yellow',
+            decreaseLevel: 'green',
+            dataQualityFactors: dqFactors
+          });
+          if (finding) {
+            finding.text += ` Prevention also increased by ${preventionIncreaseRate}%, but not enough to fully offset.`;
+            findings.push(finding);
+          }
+          recs.push('Detention events increased faster than prevention - review pre-detention alert workflows and early departure processes.');
+        }
+      } else {
+        // Standard finding when no offsetting detected
+        const finding = formatPeriodComparisonFinding(detentionPeriodComparison, {
+          increaseLevel: 'yellow',
+          decreaseLevel: 'green',
+          dataQualityFactors: dqFactors
+        });
+        if (finding) findings.push(finding);
+
+        if (detentionPeriodComparison.direction === 'increased') {
+          recs.push('Detention events increased over the period - investigate carrier performance trends and dock scheduling changes.');
+        }
       }
     }
 
@@ -2329,15 +2370,50 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       'Detention events (recent)',
       { significantChangePct: 20 }
     );
+
+    const preventedRecentState = computeTrendAnalysis(
+      { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
+      'Prevented detention (recent)',
+      { significantChangePct: 20 }
+    );
+
     if (detentionRecentState?.isSignificant) {
-      const finding = formatTrendFinding(detentionRecentState, {
-        increaseLevel: 'yellow',
-        decreaseLevel: 'green',
-        dataQualityFactors: dqFactors
-      });
-      if (finding) {
-        finding.text = `Recent state: ${finding.text}`;
-        findings.push(finding);
+      // Check if recent prevention trends are offsetting detention trends
+      if (detentionRecentState.direction === 'increased' &&
+          preventedRecentState?.isSignificant &&
+          preventedRecentState.direction === 'increased') {
+
+        const detentionRate = Math.abs(detentionRecentState.changePct || 0);
+        const preventionRate = Math.abs(preventedRecentState.changePct || 0);
+
+        if (preventionRate >= detentionRate * 0.8) {
+          findings.push({
+            level: 'green',
+            text: `Recent state: Detention up ${detentionRate}%, but prevention up ${preventionRate}% - mitigating impact.`,
+            confidence: detentionRecentState.confidence || 'high',
+            confidenceReason: generateConfidenceReason(detentionRecentState.confidence || 'high', dqFactors)
+          });
+        } else {
+          const finding = formatTrendFinding(detentionRecentState, {
+            increaseLevel: 'yellow',
+            decreaseLevel: 'green',
+            dataQualityFactors: dqFactors
+          });
+          if (finding) {
+            finding.text = `Recent state: ${finding.text} (prevention up ${preventionRate}%, but not keeping pace)`;
+            findings.push(finding);
+          }
+        }
+      } else {
+        const finding = formatTrendFinding(detentionRecentState, {
+          increaseLevel: 'yellow',
+          decreaseLevel: 'green',
+          dataQualityFactors: dqFactors
+        });
+        if (finding) {
+          finding.text = `Recent state: ${finding.text}`;
+          findings.push(finding);
+        }
       }
     }
 
@@ -2355,13 +2431,59 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       if (finding) findings.push(finding);
     }
 
+    // QBR Analysis: Prevention success rate
+    // Calculate overall prevention effectiveness
+    if (this.detention > 0 || this.prevented > 0) {
+      const totalDetentionAttempts = this.detention + this.prevented;
+      const preventionRate = Math.round((this.prevented / totalDetentionAttempts) * 100);
+
+      // Strong prevention rate (60%+) with sufficient sample size
+      if (preventionRate >= 60 && totalDetentionAttempts >= 10) {
+        findings.push({
+          level: 'green',
+          text: `Strong detention prevention: ${preventionRate}% prevention rate (${this.prevented} prevented out of ${totalDetentionAttempts} potential detentions).`,
+          confidence: 'high',
+          confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: totalDetentionAttempts })
+        });
+        recs.push('Detention prevention efforts are effective. Document and replicate successful workflows.');
+      }
+      // Low prevention rate (<30%) - needs attention
+      else if (preventionRate < 30 && totalDetentionAttempts >= 10) {
+        findings.push({
+          level: 'yellow',
+          text: `Low detention prevention rate: ${preventionRate}% (only ${this.prevented} prevented out of ${totalDetentionAttempts} potential detentions).`,
+          confidence: 'high',
+          confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: totalDetentionAttempts })
+        });
+        recs.push('Review pre-detention alerts and workflows to improve early departure rates.');
+      }
+      // Moderate prevention rate (30-59%) - show as info
+      else if (totalDetentionAttempts >= 10) {
+        findings.push({
+          level: 'info',
+          text: `Detention prevention rate: ${preventionRate}% (${this.prevented} prevented, ${this.detention} entered detention).`,
+          confidence: 'high',
+          confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: totalDetentionAttempts })
+        });
+      }
+    }
+
     // Summary finding when no trends available but data exists
     if (!detentionRecentState && !preventedOverallTrend && (this.detention > 0 || this.preDetention > 0)) {
+      const totalAttempts = this.detention + this.prevented;
+      const preventionRate = totalAttempts > 0 ? Math.round((this.prevented / totalAttempts) * 100) : 0;
+
+      let summaryText = `Detention: ${this.detention} events, Prevented: ${this.prevented}`;
+      if (totalAttempts >= 5) {
+        summaryText += ` (${preventionRate}% prevention rate)`;
+      }
+      summaryText += '.';
+
       findings.push({
-        level: 'green',
-        text: `Detention: ${this.detention} events, Prevented: ${this.prevented}.`,
+        level: preventionRate >= 50 ? 'green' : 'info',
+        text: summaryText,
         confidence: 'high',
-        confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: this.detention + this.preDetention })
+        confidenceReason: generateConfidenceReason('high', { ...dqFactors, sampleSize: totalAttempts })
       });
     }
 
