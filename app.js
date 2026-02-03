@@ -2051,29 +2051,93 @@ async function generateAIInsights() {
 }
 
 function buildAIPayload(requestId) {
-  const allFindings = [];
-  const allRecommendations = [];
-  const allROI = {};
-  const allMetrics = {};
+  // Organize insights by report with categorized findings
+  const reportInsights = {};
 
   for (const [reportName, result] of Object.entries(state.results)) {
+    const reportData = {
+      good: [],      // Green findings (positive outcomes)
+      caution: [],   // Yellow findings (potential issues)
+      bad: [],       // Red findings (problems/negative trends)
+      info: [],      // Info findings (general information)
+      recommendations: result.recommendations || [],
+      roi: null,
+      keySummary: {},  // Only high-level metrics with context
+    };
+
+    // Categorize findings by level
     if (result.findings) {
-      allFindings.push(...result.findings.map(f => ({
-        report: reportName,
-        level: f.level,
-        text: f.text,
-        confidence: f.confidence,
-      })));
+      result.findings.forEach(f => {
+        const finding = {
+          text: f.text,
+          confidence: f.confidence,
+        };
+
+        switch (f.level) {
+          case 'green':
+            reportData.good.push(finding);
+            break;
+          case 'yellow':
+            reportData.caution.push(finding);
+            break;
+          case 'red':
+            reportData.bad.push(finding);
+            break;
+          case 'info':
+            reportData.info.push(finding);
+            break;
+        }
+      });
     }
-    if (result.recommendations) {
-      allRecommendations.push(...result.recommendations);
-    }
+
+    // Include ROI if available (already has context)
     if (result.roi) {
-      allROI[reportName] = result.roi;
+      reportData.roi = {
+        label: result.roi.label,
+        insights: result.roi.insights,
+        estimate: result.roi.estimate,
+      };
     }
+
+    // Extract only high-level summary metrics (not raw data)
     if (result.metrics) {
-      allMetrics[reportName] = result.metrics;
+      const m = result.metrics;
+
+      // Detention History summary
+      if (reportName === 'detention_history') {
+        reportData.keySummary = {
+          totalDetentionEvents: m.detention,
+          preventedDetentionEvents: m.prevented,
+          preventionRate: m.prevented > 0 ? `${Math.round((m.prevented / (m.detention + m.prevented)) * 100)}%` : '0%',
+        };
+      }
+
+      // Dock Door History summary
+      if (reportName === 'dockdoor_history') {
+        reportData.keySummary = {
+          medianDwellTime: m.medianDwell ? `${Math.round(m.medianDwell)} min` : 'N/A',
+          medianProcessTime: m.medianProcess ? `${Math.round(m.medianProcess)} min` : 'N/A',
+        };
+      }
+
+      // Current Inventory summary
+      if (reportName === 'current_inventory') {
+        reportData.keySummary = {
+          totalTrailers: m.total,
+          aged30Days: m.aged30,
+        };
+      }
+
+      // Trailer History summary
+      if (reportName === 'trailer_history') {
+        reportData.keySummary = {
+          totalMoves: m.totalMoves,
+          averageMovesPerDay: m.avgMovesPerDay ? Math.round(m.avgMovesPerDay * 10) / 10 : 'N/A',
+        };
+      }
     }
+
+    reportInsights[reportName] = reportData;
   }
 
   return {
@@ -2086,10 +2150,7 @@ function buildAIPayload(requestId) {
     facilities: state.detectedFacilities.length
       ? state.detectedFacilities
       : (state.inputs?.facilities || []),
-    findings: allFindings,
-    recommendations: allRecommendations,
-    roi: allROI,
-    metrics: allMetrics,
+    reportInsights,  // Organized by report, then by finding level
   };
 }
 
