@@ -1901,7 +1901,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
     this.detentionByScac = new CounterMap();
 
     // Drilldown data for detention by carrier (only collected when enableDrilldown is true)
-    this.detentionByScacDrilldown = new Map(); // carrier -> array of { trailer, detentionHours, detentionDate }
+    this.detentionByScacDrilldown = new Map(); // carrier -> array of { trailer, timeInYard, trailerType, detentionDate }
 
     // Detention spend tracking
     this.detentionEventsWithDeparture = 0;
@@ -2171,9 +2171,21 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
           const trailer = safeStr(row.trailer_number || row.trailer_id || row.equipment_number || '');
           const detentionDate = eventDt?.toFormat('yyyy-MM-dd HH:mm') || '';
 
-          let detentionHours = '';
-          if (status.detentionHours !== null) {
-            detentionHours = Math.round(status.detentionHours * 10) / 10;
+          // Calculate time in yard (arrival to departure)
+          let timeInYard = '';
+          if (departure && arrival) {
+            const hours = departure.diff(arrival, 'hours').hours;
+            if (Number.isFinite(hours) && hours > 0) {
+              timeInYard = Math.round(hours * 10) / 10;
+            }
+          }
+
+          // Determine trailer type
+          let trailerType = '';
+          if (live === true) {
+            trailerType = 'Live';
+          } else if (live === false) {
+            trailerType = 'Drop';
           }
 
           if (!this.detentionByScacDrilldown.has(scac)) {
@@ -2181,7 +2193,8 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
           }
           this.detentionByScacDrilldown.get(scac).push({
             trailer,
-            detentionHours,
+            timeInYard,
+            trailerType,
             detentionDate
           });
         }
@@ -2686,8 +2699,8 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
             rows: this.detentionByScac.top(10).map(x => ({ carrier_scac: x.key, detention_events: x.value }))
           },
           drilldown: this.enableDrilldown ? {
-            columns: ['trailer', 'detentionHours', 'detentionDate'],
-            columnLabels: ['Trailer #', 'Detention Hours', 'Detention Date'],
+            columns: ['trailer', 'timeInYard', 'trailerType', 'detentionDate'],
+            columnLabels: ['Trailer #', 'Time in Yard (Hours)', 'Trailer Type', 'Detention Date'],
             byLabel: Object.fromEntries(
               this.detentionByScac.top(10).map(x => [x.key, this.detentionByScacDrilldown.get(x.key) || []])
             )
