@@ -2277,7 +2277,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       { monthly: this.monthlyDetention, weekly: this.weeklyDetention, daily: this.dailyDetention },
       'Detention events'
     );
-    if (detentionOverallTrend) {
+    if (detentionOverallTrend && detentionOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(detentionOverallTrend, {
         increaseLevel: 'yellow',
         decreaseLevel: 'green',
@@ -2424,7 +2424,7 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       { monthly: this.monthlyPrevented, weekly: this.weeklyPrevented, daily: this.dailyPrevented },
       'Prevented detention'
     );
-    if (preventedOverallTrend && preventedOverallTrend.trendDirection !== 'stable') {
+    if (preventedOverallTrend && preventedOverallTrend.trendDirection !== 'stable' && preventedOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(preventedOverallTrend, {
         increaseLevel: 'green',   // More prevented is good
         decreaseLevel: 'yellow',
@@ -3123,7 +3123,7 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       { monthly: this.dwellByMonth, weekly: this.dwellByWeek, daily: this.dwellByDay },
       'Median dwell time'
     );
-    if (dwellOverallTrend) {
+    if (dwellOverallTrend && dwellOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(dwellOverallTrend, {
         unit: ' min',
         increaseLevel: 'yellow',
@@ -3194,7 +3194,7 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
       { monthly: this.processByMonth, weekly: this.processByWeek, daily: this.processByDay },
       'Median process time'
     );
-    if (processOverallTrend) {
+    if (processOverallTrend && processOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(processOverallTrend, {
         unit: ' min',
         increaseLevel: 'yellow',
@@ -4078,7 +4078,7 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       { weekly: this.movesByWeek, daily: this.movesByDay },
       'Weekly moves'
     );
-    if (movesOverallTrend) {
+    if (movesOverallTrend && movesOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(movesOverallTrend, {
         increaseLevel: 'green',   // More moves is generally good (activity)
         decreaseLevel: 'yellow',
@@ -4678,7 +4678,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       { monthly: this.byMonth, weekly: this.byWeek, daily: this.byDay },
       'Lost trailer events'
     );
-    if (lostOverallTrend) {
+    if (lostOverallTrend && lostOverallTrend.stability !== 'volatile') {
       const finding = formatOverallTrendFinding(lostOverallTrend, {
         increaseLevel: 'red',     // More lost is bad
         decreaseLevel: 'green',
