@@ -32,6 +32,39 @@ function safeStr(v) {
   return (v === null || v === undefined) ? '' : String(v).trim();
 }
 
+/**
+ * Normalizes dock door names for consistent unique counting.
+ * Handles variations like "Door 1", "door 1", "DOOR 1", "D-1", "D1", "Zone A - Door 1", etc.
+ * @param {string} doorStr - Raw door identifier string
+ * @returns {string} Normalized door identifier (uppercase)
+ */
+function normalizeDoorName(doorStr) {
+  if (!doorStr) return '';
+  let s = String(doorStr).trim().toUpperCase();
+
+  // If the string contains " - " (e.g., "Zone A - Door 1"), extract the last part
+  if (s.includes(' - ')) {
+    const parts = s.split(' - ');
+    s = parts[parts.length - 1].trim();
+  }
+
+  // Try to extract door number patterns:
+  // "DOOR 123", "DOOR123", "D-123", "D123", "DR123", "DR-123"
+  const doorMatch = s.match(/(?:DOOR\s*|DR?\s*-?\s*)(\d+[A-Z]?)/i);
+  if (doorMatch) {
+    return 'DOOR ' + doorMatch[1];
+  }
+
+  // If it's just a number (possibly with letter suffix like "1A"), normalize as door number
+  const numMatch = s.match(/^(\d+[A-Z]?)$/);
+  if (numMatch) {
+    return 'DOOR ' + numMatch[1];
+  }
+
+  // Return uppercase trimmed string as-is if no pattern matched
+  return s;
+}
+
 function normalizeBoolish(v) {
   if (typeof v === 'boolean') return v;
   const s = safeStr(v).toLowerCase();
@@ -3052,7 +3085,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Track dock door turns for throughput ROI
-    const door = safeStr(firstPresent(row, ['door', 'door_name', 'dock_door', 'dock_door_name', 'door_id', 'location', 'location_name']));
+    const rawDoor = safeStr(firstPresent(row, ['door', 'door_name', 'dock_door', 'dock_door_name', 'door_id', 'location', 'location_name']));
+    const door = normalizeDoorName(rawDoor);
     const eventDt = dwellStart || procStart;
     if (door && eventDt) {
       const dk = dayKey(eventDt, this.timezone);
