@@ -3726,7 +3726,10 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         process_adoption_pct: processCoveragePct,
         unique_doors: bucket.uniqueDoors?.size || 0,
         total_turns: bucket.totalTurns || 0,
-        // Debug: list all unique door values to diagnose counting issues
+        // Debug: facility info to verify correct bucket is being used
+        _debug_facility: normalized,
+        _debug_bucket_rows: bucket.totalRows || 0,
+        _debug_global_doors: this.uniqueDoors?.size || 0,
         _debug_door_list: bucket.uniqueDoors ? [...bucket.uniqueDoors].sort() : [],
       },
       charts,
