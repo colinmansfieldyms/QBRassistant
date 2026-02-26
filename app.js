@@ -2051,106 +2051,107 @@ async function generateAIInsights() {
 }
 
 function buildAIPayload(requestId) {
-  // Organize insights by report with categorized findings
-  const reportInsights = {};
+  // Format as structured text for easy Zapier mapping and AI parsing
+  const lines = [];
 
+  // Helper to format report names nicely
+  const formatReportName = (name) => {
+    return name.replace(/_/g, ' ').toUpperCase();
+  };
+
+  // Process each report
   for (const [reportName, result] of Object.entries(state.results)) {
-    const reportData = {
-      good: [],      // Green findings (positive outcomes)
-      caution: [],   // Yellow findings (potential issues)
-      bad: [],       // Red findings (problems/negative trends)
-      info: [],      // Info findings (general information)
-      recommendations: result.recommendations || [],
-      roi: null,
-      keySummary: {},  // Only high-level metrics with context
-    };
+    const reportTitle = formatReportName(reportName);
+    lines.push(`\n${'='.repeat(60)}`);
+    lines.push(`${reportTitle} REPORT`);
+    lines.push('='.repeat(60));
 
     // Categorize findings by level
+    const goodFindings = [];
+    const cautionFindings = [];
+    const badFindings = [];
+    const infoFindings = [];
+
     if (result.findings) {
       result.findings.forEach(f => {
-        const finding = {
-          text: f.text,
-          confidence: f.confidence,
-        };
-
+        const findingText = `${f.text} [${f.confidence || 'medium'} confidence]`;
         switch (f.level) {
-          case 'green':
-            reportData.good.push(finding);
-            break;
-          case 'yellow':
-            reportData.caution.push(finding);
-            break;
-          case 'red':
-            reportData.bad.push(finding);
-            break;
-          case 'info':
-            reportData.info.push(finding);
-            break;
+          case 'green': goodFindings.push(findingText); break;
+          case 'yellow': cautionFindings.push(findingText); break;
+          case 'red': badFindings.push(findingText); break;
+          case 'info': infoFindings.push(findingText); break;
         }
       });
     }
 
-    // Include ROI if available (already has context)
-    if (result.roi) {
-      reportData.roi = {
-        label: result.roi.label,
-        insights: result.roi.insights,
-        estimate: result.roi.estimate,
-      };
+    // Add findings by category
+    if (goodFindings.length > 0) {
+      lines.push('\nGOOD (Positive Outcomes):');
+      goodFindings.forEach(f => lines.push(`  ✓ ${f}`));
     }
 
-    // Extract only high-level summary metrics (not raw data)
+    if (cautionFindings.length > 0) {
+      lines.push('\nCAUTION (Potential Issues):');
+      cautionFindings.forEach(f => lines.push(`  ⚠ ${f}`));
+    }
+
+    if (badFindings.length > 0) {
+      lines.push('\nBAD (Problems/Negative Trends):');
+      badFindings.forEach(f => lines.push(`  ✗ ${f}`));
+    }
+
+    if (infoFindings.length > 0) {
+      lines.push('\nINFO (General Information):');
+      infoFindings.forEach(f => lines.push(`  ℹ ${f}`));
+    }
+
+    // Add key metrics summary
     if (result.metrics) {
       const m = result.metrics;
+      lines.push('\nKEY METRICS:');
 
-      // Detention History summary
       if (reportName === 'detention_history') {
-        reportData.keySummary = {
-          totalDetentionEvents: m.detention,
-          preventedDetentionEvents: m.prevented,
-          preventionRate: m.prevented > 0 ? `${Math.round((m.prevented / (m.detention + m.prevented)) * 100)}%` : '0%',
-        };
-      }
-
-      // Dock Door History summary
-      if (reportName === 'dockdoor_history') {
-        reportData.keySummary = {
-          medianDwellTime: m.medianDwell ? `${Math.round(m.medianDwell)} min` : 'N/A',
-          medianProcessTime: m.medianProcess ? `${Math.round(m.medianProcess)} min` : 'N/A',
-        };
-      }
-
-      // Current Inventory summary
-      if (reportName === 'current_inventory') {
-        reportData.keySummary = {
-          totalTrailers: m.total,
-          aged30Days: m.aged30,
-        };
-      }
-
-      // Trailer History summary
-      if (reportName === 'trailer_history') {
-        reportData.keySummary = {
-          totalMoves: m.totalMoves,
-          averageMovesPerDay: m.avgMovesPerDay ? Math.round(m.avgMovesPerDay * 10) / 10 : 'N/A',
-        };
+        lines.push(`  • Total Detention Events: ${m.detention || 0}`);
+        lines.push(`  • Prevented Detention Events: ${m.prevented || 0}`);
+        const total = (m.detention || 0) + (m.prevented || 0);
+        const rate = total > 0 ? Math.round(((m.prevented || 0) / total) * 100) : 0;
+        lines.push(`  • Prevention Rate: ${rate}%`);
+      } else if (reportName === 'dockdoor_history') {
+        lines.push(`  • Median Dwell Time: ${m.medianDwell ? Math.round(m.medianDwell) + ' min' : 'N/A'}`);
+        lines.push(`  • Median Process Time: ${m.medianProcess ? Math.round(m.medianProcess) + ' min' : 'N/A'}`);
+      } else if (reportName === 'current_inventory') {
+        lines.push(`  • Total Trailers: ${m.total || 0}`);
+        lines.push(`  • Aged 30+ Days: ${m.aged30 || 0}`);
+      } else if (reportName === 'trailer_history') {
+        lines.push(`  • Total Moves: ${m.totalMoves || 0}`);
+        if (m.avgMovesPerDay) {
+          lines.push(`  • Average Moves/Day: ${Math.round(m.avgMovesPerDay * 10) / 10}`);
+        }
       }
     }
 
-    reportInsights[reportName] = reportData;
+    // Add recommendations
+    if (result.recommendations && result.recommendations.length > 0) {
+      lines.push('\nRECOMMENDATIONS:');
+      result.recommendations.forEach(rec => lines.push(`  → ${rec}`));
+    }
+
+    // Add ROI
+    if (result.roi && result.roi.insights && result.roi.insights.length > 0) {
+      lines.push(`\nROI - ${result.roi.label || 'Analysis'}:`);
+      result.roi.insights.forEach(insight => lines.push(`  ${insight}`));
+    }
+
+    lines.push(''); // Blank line between reports
   }
 
+  // Build simple flat structure for Zapier (only 5 fields!)
   return {
     requestId,
-    dateRange: {
-      start: state.inputs?.startDate,
-      end: state.inputs?.endDate,
-    },
-    timezone: state.timezone,
-    facilities: state.detectedFacilities.length
-      ? state.detectedFacilities
-      : (state.inputs?.facilities || []),
-    reportInsights,  // Organized by report, then by finding level
+    dateRange: `${state.inputs?.startDate || 'N/A'} to ${state.inputs?.endDate || 'N/A'}`,
+    timezone: state.timezone || 'UTC',
+    facilities: (state.detectedFacilities.length ? state.detectedFacilities : (state.inputs?.facilities || [])).join(', ') || 'Not specified',
+    insights: lines.join('\n'),  // Single formatted text field with all insights
   };
 }
 
