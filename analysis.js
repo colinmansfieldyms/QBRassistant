@@ -4580,6 +4580,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       },
       errorsByPeriod: new CounterMap(),
       daysWithData: new Set(),
+      lostByCarrier: new CounterMap(),
     };
   }
 
@@ -4618,6 +4619,7 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       }
       const carrierKey = isNil(carrier) ? 'Unknown' : carrier;
       if (!isNil(carrier)) this.lostByCarrier.inc(carrier);
+      if (!isNil(carrier) && facBucket) facBucket.lostByCarrier.inc(carrier);
       if (dt) {
         const dk = dayKey(dt, this.timezone);
         this.byWeek.inc(weekKey(dt, this.timezone));
@@ -4989,6 +4991,25 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
             label: 'Errors',
             data: errorData
           }]
+        }
+      });
+    }
+
+    // Top carriers by lost events (matching "All Facilities" format)
+    if (bucket.lostByCarrier && bucket.lostByCarrier.map.size > 0) {
+      const topCarriers = bucket.lostByCarrier.top(8);
+      charts.push({
+        id: 'top_carriers_lost_events',
+        title: 'Top carriers by lost events',
+        kind: 'bar',
+        description: 'Carriers most associated with "lost" events.',
+        data: {
+          labels: topCarriers.map(x => x.key),
+          datasets: [{ label: 'Lost events', data: topCarriers.map(x => x.value) }]
+        },
+        csv: {
+          columns: ['carrier_scac', 'lost_events'],
+          rows: topCarriers.map(x => ({ carrier_scac: x.key, lost_events: x.value }))
         }
       });
     }
