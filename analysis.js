@@ -34,9 +34,10 @@ function safeStr(v) {
 
 /**
  * Normalizes dock door names for consistent unique counting.
- * Handles variations like "Door 1", "door 1", "DOOR 1", "D-1", "D1", "Zone A - Door 1", etc.
+ * Only counts actual dock doors (DR##, DOOR ##, D##, etc.) - returns empty string for
+ * non-door locations (parking spots, staging areas, etc.) so they're not counted.
  * @param {string} doorStr - Raw door identifier string
- * @returns {string} Normalized door identifier (uppercase)
+ * @returns {string} Normalized door identifier, or empty string if not a dock door
  */
 function normalizeDoorName(doorStr) {
   if (!doorStr) return '';
@@ -48,20 +49,31 @@ function normalizeDoorName(doorStr) {
     s = parts[parts.length - 1].trim();
   }
 
-  // Try to extract door number patterns:
-  // "DOOR 123", "DOOR123", "D-123", "D123", "DR123", "DR-123"
-  const doorMatch = s.match(/(?:DOOR\s*|DR?\s*-?\s*)(\d+[A-Z]?)/i);
+  // Match dock door patterns: DR01, DR1, DOOR 1, DOOR1, D-1, D1, etc.
+  // Captures the numeric part (with optional letter suffix like "1A")
+  const doorMatch = s.match(/^(?:DOCK\s*)?(?:DOOR|DR|D)\s*-?\s*(\d+[A-Z]?)$/i);
   if (doorMatch) {
-    return 'DOOR ' + doorMatch[1];
+    // Normalize: pad single digits with leading zero for consistency (1 -> 01, but 10 stays 10)
+    let num = doorMatch[1];
+    if (/^\d$/.test(num)) {
+      num = '0' + num;
+    }
+    return 'DOOR ' + num;
   }
 
-  // If it's just a number (possibly with letter suffix like "1A"), normalize as door number
-  const numMatch = s.match(/^(\d+[A-Z]?)$/);
+  // If it's just a number (1-999, possibly with letter suffix), treat as door number
+  const numMatch = s.match(/^(\d{1,3}[A-Z]?)$/);
   if (numMatch) {
-    return 'DOOR ' + numMatch[1];
+    let num = numMatch[1];
+    if (/^\d$/.test(num)) {
+      num = '0' + num;
+    }
+    return 'DOOR ' + num;
   }
 
-  // Return uppercase trimmed string as-is if no pattern matched
+  // Not a recognized dock door pattern - return the normalized string as-is
+  // This preserves other naming conventions (BAY 1, DOCK A, etc.) while still
+  // normalizing case and trimming whitespace for deduplication
   return s;
 }
 
