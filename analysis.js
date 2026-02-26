@@ -4384,21 +4384,31 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     // Build simple charts
     const charts = [];
 
-    // Moves over time if available
+    // Active drivers & moves over time (matching "All Facilities" format)
     if (bucket.movesByDay && bucket.movesByDay.map.size > 0) {
       const labels = Array.from(bucket.movesByDay.map.keys()).sort();
       const movesData = labels.map(l => bucket.movesByDay.map.get(l) || 0);
+      const activeData = labels.map(l => bucket.activeDriversByDay?.get(l)?.estimate() || 0);
 
       charts.push({
-        id: 'moves_daily',
-        title: 'Moves per Day',
-        kind: 'bar',
+        id: 'active_drivers_and_moves_daily',
+        title: 'Active drivers & moves (daily)',
+        kind: 'line',
+        description: 'Daily trend using approximate distinct counting (no raw driver lists stored).',
         data: {
           labels,
-          datasets: [{
-            label: 'Moves',
-            data: movesData
-          }]
+          datasets: [
+            { label: 'Active drivers (approx)', data: activeData },
+            { label: 'Moves', data: movesData }
+          ]
+        },
+        csv: {
+          columns: ['day', 'active_drivers_approx', 'moves'],
+          rows: labels.map((t, i) => ({
+            day: t,
+            active_drivers_approx: activeData[i],
+            moves: movesData[i]
+          }))
         }
       });
     }
