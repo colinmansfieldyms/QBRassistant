@@ -4373,9 +4373,10 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
       ? Math.round((bucket.complianceOk / bucket.complianceTotal) * 100)
       : null;
     const medQueue = bucket.queueTotal > 0 ? bucket.queueMedian.value() : null;
-    const deadheadPct = bucket.dispatchTotal > 0
-      ? this.calculateFacilityDeadheadPct(bucket)
-      : null;
+    const queueP90 = bucket.queueTotal > 0 ? bucket.queueP90.value() : null;
+    const deadheadMed = bucket.dispatchTotal > 0 ? bucket.deadheadMedian.value() : null;
+    const executionMed = bucket.dispatchTotal > 0 ? bucket.executionMedian.value() : null;
+    const deadheadRatio = this.calculateFacilityDeadheadPct(bucket);
 
     // Simplified data quality
     const dq = bucket.totalRows > 0 ? 75 : 0;
@@ -4449,10 +4450,10 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     }
 
     // Deadhead findings
-    if (deadheadPct !== null && deadheadPct > 40) {
+    if (deadheadRatio !== null && deadheadRatio > 40) {
       findings.push({
         level: 'yellow',
-        text: `${facility} has high deadhead percentage of ${deadheadPct}% indicating inefficient dispatching.`,
+        text: `${facility} has high deadhead percentage of ${deadheadRatio}% indicating inefficient dispatching.`,
         confidence: 'medium',
       });
       recs.push(`Optimize dispatching at ${facility} to reduce deadhead time.`);
@@ -4482,11 +4483,14 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
         totalRows: bucket.totalRows,
       },
       metrics: {
-        total_moves: bucket.movesTotal,
+        moves_total: bucket.movesTotal,
+        compliance_pct: compliancePct,
+        queue_median_minutes: Number.isFinite(medQueue) ? Math.round(medQueue * 10) / 10 : null,
+        queue_p90_minutes: Number.isFinite(queueP90) ? Math.round(queueP90 * 10) / 10 : null,
+        deadhead_median_minutes: Number.isFinite(deadheadMed) ? Math.round(deadheadMed * 10) / 10 : null,
+        execution_median_minutes: Number.isFinite(executionMed) ? Math.round(executionMed * 10) / 10 : null,
+        deadhead_ratio_pct: deadheadRatio,
         avg_moves_per_driver_per_day: avgMovesPerDriverPerDay,
-        compliance_rate: compliancePct,
-        median_queue_time_min: medQueue !== null ? Math.round(medQueue * 10) / 10 : null,
-        deadhead_pct: deadheadPct,
       },
       charts,
       findings,

@@ -2410,11 +2410,11 @@ function extractFacilityMetrics(results, facilities, getFacilityResult) {
           metricsByFacility[fac].moves_per_driver_day =
             metrics.avg_moves_per_driver_per_day ?? metrics.avgMovesPerDriverPerDay ?? null;
           metricsByFacility[fac].median_queue_time =
-            metrics.median_queue_time_min ?? metrics.medianQueueTimeMin ?? null;
+            metrics.queue_median_minutes ?? metrics.median_queue_time_min ?? metrics.medianQueueTimeMin ?? null;
           metricsByFacility[fac].deadhead_ratio =
-            metrics.deadhead_pct ?? metrics.deadheadPct ?? null;
+            metrics.deadhead_ratio_pct ?? metrics.deadhead_pct ?? metrics.deadheadPct ?? null;
           metricsByFacility[fac].compliance_rate =
-            metrics.compliance_rate ?? metrics.complianceRate ?? null;
+            metrics.compliance_pct ?? metrics.compliance_rate ?? metrics.complianceRate ?? null;
           break;
 
         case 'dockdoor_history':
