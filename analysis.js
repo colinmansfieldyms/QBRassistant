@@ -3726,6 +3726,8 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
         process_adoption_pct: processCoveragePct,
         unique_doors: bucket.uniqueDoors?.size || 0,
         total_turns: bucket.totalTurns || 0,
+        // Debug: list all unique door values to diagnose counting issues
+        _debug_door_list: bucket.uniqueDoors ? [...bucket.uniqueDoors].sort() : [],
       },
       charts,
       findings: this.generateFacilityFindings(facility, bucket, medDwell, medProcess, processCoveragePct, turnsPerDoorPerDay),
