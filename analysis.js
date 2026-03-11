@@ -1891,7 +1891,14 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
         id: 'move_type',
         kind: 'pie',
         title: `Move Types - ${facility}`,
-        data: moveTypeTop,
+        data: {
+          labels: Object.keys(moveTypeTop),
+          datasets: [{ label: 'Count', data: Object.values(moveTypeTop) }],
+        },
+        csv: {
+          columns: ['move_type_name', 'count'],
+          rows: Object.entries(moveTypeTop).map(([k, v]) => ({ move_type_name: k, count: v })),
+        },
       });
     }
 
