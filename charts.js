@@ -10,6 +10,11 @@ document.addEventListener('yardiq:globalfacilityfilter', (event) => {
   });
 });
 
+// Tracks Chart.js instances created inside the Facility Comparisons section so they
+// can be destroyed when the section re-renders in response to a filter change.
+let _comparisonCharts = [];
+let _comparisonFilterCleanup = null;
+
 /**
  * Chart.js rendering + export PNG + provide chart datasets for CSV export.
  * NOTE: Chart.js is loaded via CDN and available as window.Chart.
@@ -620,7 +625,7 @@ function createHealthScoreBreakdown(healthData, facilityName) {
  * Render facility health scores section with adaptive layout.
  * Uses gauges for 1-4 facilities, horizontal bars for 5+.
  */
-function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys, chartRegistry, assumptions }) {
+function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys, chartRegistry, assumptions, onChartCreated }) {
   const card = el('div', { class: 'chart-card health-score-card' });
 
   // Action buttons (Expand, PNG, CSV) - matching other chart button styles
@@ -688,10 +693,9 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
       // Create the gauge chart after DOM is ready
       setTimeout(() => {
         const chart = createHealthGauge(canvas, healthData.score, healthData.facility);
+        onChartCreated?.(chart);
         if (chartRegistry) {
-          if (!chartRegistry.has('health_scores')) {
-            chartRegistry.set('health_scores', []);
-          }
+          if (!chartRegistry.has('health_scores')) chartRegistry.set('health_scores', []);
           chartRegistry.get('health_scores').push({ id: `gauge_${idx}`, chart });
         }
       }, 0);
@@ -1379,19 +1383,55 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
 }
 
 /**
- * Creates the top-level "Filter All Sections" facility multi-select bar.
- * Dispatches a 'yardiq:globalfacilityfilter' event that all createFacilityTabs instances listen to.
+ * Creates the top-level "Filter All Sections" facility multi-select bar,
+ * including the Campus Operation toggle.
  */
 export function createGlobalFacilityFilter(facilities) {
   const wrap = el('div', { class: 'global-facility-filter' });
+
+  // ---- Facility multi-select ----
+  const filterGroup = el('div', { class: 'global-filter-group' });
   const label = el('span', { class: 'global-facility-label' }, ['Filter All Sections:']);
 
+  let currentSelection = ['all'];
+  let campusMode = false;
+
   const multiselect = createMultiselectDropdown(facilities, ['all'], (selected) => {
+    if (campusMode) return; // campus mode locks the selector
+    currentSelection = selected;
     document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected } }));
   });
 
-  wrap.appendChild(label);
-  wrap.appendChild(multiselect);
+  filterGroup.appendChild(label);
+  filterGroup.appendChild(multiselect);
+
+  // ---- Campus Operation toggle ----
+  const campusGroup = el('div', { class: 'global-campus-group' });
+
+  const campusToggleLabel = el('label', { class: 'global-campus-toggle', title: 'Combine all selected facilities into one aggregated view. Toggle off to view individual facility cards.' });
+  const campusCheckbox = el('input', { type: 'checkbox', class: 'global-campus-checkbox' });
+  campusToggleLabel.appendChild(campusCheckbox);
+  campusToggleLabel.appendChild(document.createTextNode(' Campus Operation'));
+
+  campusCheckbox.addEventListener('change', () => {
+    campusMode = campusCheckbox.checked;
+    if (campusMode) {
+      // Lock multi-select and apply aggregate view to all sections
+      multiselect.style.opacity = '0.45';
+      multiselect.style.pointerEvents = 'none';
+      document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: ['all'] } }));
+    } else {
+      // Restore multi-select and re-apply individual selection
+      multiselect.style.opacity = '';
+      multiselect.style.pointerEvents = '';
+      document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: currentSelection } }));
+    }
+  });
+
+  campusGroup.appendChild(campusToggleLabel);
+
+  wrap.appendChild(filterGroup);
+  wrap.appendChild(campusGroup);
   return wrap;
 }
 
@@ -2582,313 +2622,233 @@ function calculateDaysInPeriod(meta) {
 
 /**
  * Render the Facility Comparisons section.
- * Only renders if 2+ facilities are detected.
+ * Reacts to 'yardiq:globalfacilityfilter' events and re-renders its content
+ * with only the currently selected facilities.
  */
 export function renderFacilityComparisons({ facilities, results, chartRegistry, getFacilityResult }) {
-  if (!facilities || facilities.length < 2) {
-    return null; // Don't render for single facility
+  if (!facilities || facilities.length < 2) return null;
+
+  // Clean up any listener from a previous full render
+  if (_comparisonFilterCleanup) {
+    _comparisonFilterCleanup();
+    _comparisonFilterCleanup = null;
   }
+  // Destroy any charts from the previous render cycle
+  _comparisonCharts.forEach(c => { try { c.destroy(); } catch (_) {} });
+  _comparisonCharts = [];
+
+  const allFacilities = [...facilities]; // full set, for 'all' filter case
 
   // Extract assumptions from any available result's meta
   let assumptions = null;
   for (const reportType of Object.keys(results)) {
-    const result = results[reportType];
-    if (result?.meta?.assumptions) {
-      assumptions = result.meta.assumptions;
-      break;
-    }
+    const r = results[reportType];
+    if (r?.meta?.assumptions) { assumptions = r.meta.assumptions; break; }
   }
 
-  const section = el('div', { class: 'report-card facility-comparison-section' });
-
-  // Collapsible header
-  const header = el('details', { open: true });
-  const summary = el('summary', { class: 'section-title', style: 'cursor: pointer;' }, [
-    el('h2', {}, ['Facility Comparisons']),
-    el('span', { class: 'badge blue' }, [`${facilities.length} facilities`]),
-  ]);
-  header.appendChild(summary);
-
-  const content = el('div', { class: 'comparison-content', style: 'margin-top: 16px;' });
-
-  // Extract metrics for comparison
-  const metricsByFacility = extractFacilityMetrics(results, facilities, getFacilityResult);
-
-  // Grid: radar chart + summary table
-  const grid = el('div', { class: 'comparison-grid' });
-
-  // Radar Chart
-  const radarCard = el('div', { class: 'chart-card comparison-card radar-card' });
-
-  // Action buttons for radar chart
-  const actionButtons = [];
-
-  actionButtons.push(
-    el('button', {
-      class: 'btn btn-ghost',
-      type: 'button',
-      title: 'View fullscreen'
-    }, ['⛶ Expand']),
-
-    el('button', {
-      class: 'btn btn-ghost',
-      type: 'button',
-      title: 'Download as PNG'
-    }, ['⬇ PNG']),
-
-    el('button', {
-      class: 'btn btn-ghost',
-      type: 'button',
-      title: 'Download as CSV'
-    }, ['⬇ CSV'])
-  );
-
-  const actions = el('div', { class: 'chart-actions' }, actionButtons);
-
-  const titleContent = [
-    el('b', {}, ['Performance Radar']),
-    el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['Normalized scores (0-100)']),
-    actions
-  ];
-
-  const radarTitle = el('div', { class: 'chart-title' }, titleContent);
-  const radarCanvas = el('canvas', { width: 400, height: 400 });
-  const radarWrap = el('div', { class: 'canvas-wrap', style: 'height: 400px;' }, [radarCanvas]);
-
-  radarCard.appendChild(radarTitle);
-  radarCard.appendChild(radarWrap);
-
-  // Build radar chart data - only include metrics from uploaded report types
+  // Available metric keys (filtered to uploaded report types)
   const availableReportTypes = new Set(Object.keys(results));
-  const radarLabels = [];
   const metricKeys = [];
   for (const [key, def] of Object.entries(COMPARISON_METRICS)) {
-    // Only include metrics whose source report type is present in uploaded data
-    if (availableReportTypes.has(def.source)) {
-      radarLabels.push(def.label);
-      metricKeys.push(key);
-    }
+    if (availableReportTypes.has(def.source)) metricKeys.push(key);
   }
 
-  // Generate distinct colors for facilities
-  const facilityColors = [
-    { bg: 'rgba(99, 102, 241, 0.2)', border: 'rgb(99, 102, 241)' },   // Indigo
-    { bg: 'rgba(34, 197, 94, 0.2)', border: 'rgb(34, 197, 94)' },     // Green
-    { bg: 'rgba(249, 115, 22, 0.2)', border: 'rgb(249, 115, 22)' },   // Orange
-    { bg: 'rgba(236, 72, 153, 0.2)', border: 'rgb(236, 72, 153)' },   // Pink
-    { bg: 'rgba(14, 165, 233, 0.2)', border: 'rgb(14, 165, 233)' },   // Sky
-    { bg: 'rgba(168, 85, 247, 0.2)', border: 'rgb(168, 85, 247)' },   // Purple
-  ];
-
-  const radarDatasets = facilities.slice(0, 10).map((fac, idx) => {
-    const colorIdx = idx % facilityColors.length;
-    const data = metricKeys.map(key => {
-      const value = metricsByFacility[fac]?.[key];
-      const def = COMPARISON_METRICS[key];
-      // Use dynamic thresholds based on ROI assumptions
-      const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
-      return normalizeMetricValue(value, { ...def, thresholds: dynamicThresholds });
-    });
-
-    return {
-      label: fac,
-      data,
-      backgroundColor: facilityColors[colorIdx].bg,
-      borderColor: facilityColors[colorIdx].border,
-      borderWidth: 2,
-      pointBackgroundColor: facilityColors[colorIdx].border,
-    };
-  });
-
-  const radarConfig = {
-    type: 'radar',
-    data: {
-      labels: radarLabels,
-      datasets: radarDatasets,
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        r: {
-          beginAtZero: true,
-          max: 100,
-          ticks: {
-            stepSize: 25,
-            display: false,
-          },
-          pointLabels: {
-            font: { size: 11 },
-          },
-        },
-      },
-      plugins: {
-        legend: {
-          position: 'bottom',
-          labels: { usePointStyle: true, padding: 12 },
-        },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}/100`,
-          },
-        },
-      },
-    },
-  };
-
-  // Create radar chart
-  const radarChart = new window.Chart(radarCanvas.getContext('2d'), radarConfig);
-  if (chartRegistry) {
-    if (!chartRegistry.has('facility_comparison')) {
-      chartRegistry.set('facility_comparison', []);
-    }
-    chartRegistry.get('facility_comparison').push({ id: 'radar', chart: radarChart });
-  }
-
-  // Wire up action button handlers
-  actionButtons[0].addEventListener('click', () => {
-    try {
-      openRadarChartFullscreen(radarCanvas, facilities, metricsByFacility, metricKeys, assumptions);
-    } catch (e) {
-      console.error('Fullscreen failed:', e);
-    }
-  });
-
-  actionButtons[1].addEventListener('click', () => {
-    try {
-      downloadPngFromCanvas(radarCanvas, 'facility_comparison_radar.png');
-    } catch (e) {
-      console.error('PNG export failed:', e);
-    }
-  });
-
-  actionButtons[2].addEventListener('click', () => {
-    try {
-      const csvText = buildRadarChartCsvText(facilities, metricsByFacility, metricKeys, assumptions);
-      downloadText('facility_comparison_scores.csv', csvText);
-    } catch (e) {
-      console.error('CSV export failed:', e);
-    }
-  });
-
-  // Summary Table
-  const tableCard = el('div', { class: 'chart-card' });
-  const tableTitle = el('div', { class: 'chart-title' }, [el('b', {}, ['Metric Summary'])]);
-  const tableDesc = el('div', { class: 'muted small', style: 'margin-bottom: 8px;' }, [
-    'Traffic light scoring: ',
-    el('span', { class: 'traffic-green', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Good']),
-    el('span', { class: 'traffic-yellow', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Caution']),
-    el('span', { class: 'traffic-red', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Attention']),
+  // ---- Stable shell elements ----
+  const section = el('div', { class: 'report-card facility-comparison-section' });
+  const header = el('details', { open: true });
+  const badgeEl = el('span', { class: 'badge blue' });
+  const summaryEl = el('summary', { class: 'section-title', style: 'cursor: pointer;' }, [
+    el('h2', {}, ['Facility Comparisons']),
+    badgeEl,
   ]);
+  header.appendChild(summaryEl);
+  const contentEl = el('div', { class: 'comparison-content', style: 'margin-top: 16px;' });
+  header.appendChild(contentEl);
+  section.appendChild(header);
 
-  const table = el('table', { class: 'comparison-table' });
-  const thead = el('thead');
-  const headerRow = el('tr');
-  headerRow.appendChild(el('th', {}, ['Metric']));
-  for (const fac of facilities.slice(0, 10)) {
-    headerRow.appendChild(el('th', {}, [fac]));
-  }
-  thead.appendChild(headerRow);
-  table.appendChild(thead);
+  // ---- Inner render function ----
+  function buildContent(activeFacilities) {
+    // Destroy charts from previous inner render
+    _comparisonCharts.forEach(c => { try { c.destroy(); } catch (_) {} });
+    _comparisonCharts = [];
+    contentEl.innerHTML = '';
 
-  const tbody = el('tbody');
-  // Only iterate over metrics from uploaded report types (using metricKeys which is already filtered)
-  for (const key of metricKeys) {
-    const def = COMPARISON_METRICS[key];
-    const row = el('tr');
+    const count = activeFacilities.length;
+    badgeEl.textContent = `${count} ${count === 1 ? 'facility' : 'facilities'}`;
 
-    // Metric name with tooltip (using JS-based floating tooltip to escape scroll container)
-    const nameCell = el('td', { class: 'metric-name' });
-    const nameTrigger = el('span', {
-      class: 'tooltip-trigger',
-      'data-tooltip': def.tooltip,
-    }, [def.label]);
-
-    // Add floating tooltip handlers
-    nameTrigger.addEventListener('mouseenter', (e) => {
-      const text = e.target.getAttribute('data-tooltip');
-      if (!text) return;
-
-      // Remove any existing floating tooltip
-      const existing = document.getElementById('floating-metric-tooltip');
-      if (existing) existing.remove();
-
-      // Create floating tooltip
-      const tooltip = document.createElement('div');
-      tooltip.id = 'floating-metric-tooltip';
-      tooltip.className = 'floating-tooltip';
-      tooltip.textContent = text;
-      document.body.appendChild(tooltip);
-
-      // Position above the element
-      const rect = e.target.getBoundingClientRect();
-      tooltip.style.left = `${rect.left}px`;
-      tooltip.style.top = `${rect.top - tooltip.offsetHeight - 8}px`;
-
-      // Adjust if tooltip goes off-screen
-      const tooltipRect = tooltip.getBoundingClientRect();
-      if (tooltipRect.left < 8) {
-        tooltip.style.left = '8px';
-      }
-      if (tooltipRect.right > window.innerWidth - 8) {
-        tooltip.style.left = `${window.innerWidth - tooltipRect.width - 8}px`;
-      }
-      if (tooltipRect.top < 8) {
-        // Show below instead
-        tooltip.style.top = `${rect.bottom + 8}px`;
-      }
-    });
-
-    nameTrigger.addEventListener('mouseleave', () => {
-      const tooltip = document.getElementById('floating-metric-tooltip');
-      if (tooltip) tooltip.remove();
-    });
-
-    nameCell.appendChild(nameTrigger);
-    row.appendChild(nameCell);
-
-    // Value cells for each facility
-    for (const fac of facilities.slice(0, 10)) {
-      const value = metricsByFacility[fac]?.[key];
-      // Use dynamic thresholds based on ROI assumptions
-      const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
-      const defWithDynamicThresholds = { ...def, thresholds: dynamicThresholds };
-      const light = getTrafficLight(value, defWithDynamicThresholds);
-      const displayValue = value !== null && value !== undefined && Number.isFinite(value)
-        ? `${formatNumber(value)}${def.unit}`
-        : '—';
-
-      const cell = el('td', {
-        class: `metric-cell traffic-${light}`,
-      }, [displayValue]);
-      row.appendChild(cell);
+    if (count < 2) {
+      contentEl.appendChild(el('div', { class: 'muted', style: 'padding: 16px 0;' }, [
+        'Select 2 or more facilities to view comparisons.'
+      ]));
+      return;
     }
 
-    tbody.appendChild(row);
+    const metricsByFacility = extractFacilityMetrics(results, activeFacilities, getFacilityResult);
+    const grid = el('div', { class: 'comparison-grid' });
+
+    // -- Health Scores --
+    const healthScoresCard = renderFacilityHealthScores({
+      facilities: activeFacilities,
+      metricsByFacility,
+      metricKeys,
+      chartRegistry: null, // managed locally via _comparisonCharts
+      assumptions,
+      onChartCreated: (chart) => _comparisonCharts.push(chart),
+    });
+    grid.appendChild(healthScoresCard);
+
+    // -- Radar Chart --
+    const facilityColors = [
+      { bg: 'rgba(99, 102, 241, 0.2)', border: 'rgb(99, 102, 241)' },
+      { bg: 'rgba(34, 197, 94, 0.2)', border: 'rgb(34, 197, 94)' },
+      { bg: 'rgba(249, 115, 22, 0.2)', border: 'rgb(249, 115, 22)' },
+      { bg: 'rgba(236, 72, 153, 0.2)', border: 'rgb(236, 72, 153)' },
+      { bg: 'rgba(14, 165, 233, 0.2)', border: 'rgb(14, 165, 233)' },
+      { bg: 'rgba(168, 85, 247, 0.2)', border: 'rgb(168, 85, 247)' },
+    ];
+    const radarLabels = metricKeys.map(k => COMPARISON_METRICS[k].label);
+    const radarDatasets = activeFacilities.slice(0, 10).map((fac, idx) => {
+      const colorIdx = idx % facilityColors.length;
+      return {
+        label: fac,
+        data: metricKeys.map(key => {
+          const value = metricsByFacility[fac]?.[key];
+          const def = COMPARISON_METRICS[key];
+          return normalizeMetricValue(value, { ...def, thresholds: getDynamicThresholds(key, def, assumptions) });
+        }),
+        backgroundColor: facilityColors[colorIdx].bg,
+        borderColor: facilityColors[colorIdx].border,
+        borderWidth: 2,
+        pointBackgroundColor: facilityColors[colorIdx].border,
+      };
+    });
+
+    const radarCard = el('div', { class: 'chart-card comparison-card radar-card' });
+    const radarCanvas = el('canvas', { width: 400, height: 400 });
+    const radarWrap = el('div', { class: 'canvas-wrap', style: 'height: 400px;' }, [radarCanvas]);
+
+    const expandBtn = el('button', { class: 'btn btn-ghost', type: 'button', title: 'View fullscreen' }, ['⛶ Expand']);
+    const pngBtn   = el('button', { class: 'btn btn-ghost', type: 'button', title: 'Download as PNG' }, ['⬇ PNG']);
+    const csvBtn   = el('button', { class: 'btn btn-ghost', type: 'button', title: 'Download as CSV' }, ['⬇ CSV']);
+
+    radarCard.appendChild(el('div', { class: 'chart-title' }, [
+      el('b', {}, ['Performance Radar']),
+      el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['Normalized scores (0-100)']),
+      el('div', { class: 'chart-actions' }, [expandBtn, pngBtn, csvBtn]),
+    ]));
+    radarCard.appendChild(radarWrap);
+
+    const radarChart = new window.Chart(radarCanvas.getContext('2d'), {
+      type: 'radar',
+      data: { labels: radarLabels, datasets: radarDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: { r: { beginAtZero: true, max: 100, ticks: { stepSize: 25, display: false }, pointLabels: { font: { size: 11 } } } },
+        plugins: {
+          legend: { position: 'bottom', labels: { usePointStyle: true, padding: 12 } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}/100` } },
+        },
+      },
+    });
+    _comparisonCharts.push(radarChart);
+    if (chartRegistry) {
+      if (!chartRegistry.has('facility_comparison')) chartRegistry.set('facility_comparison', []);
+      chartRegistry.get('facility_comparison').push({ id: 'radar', chart: radarChart });
+    }
+
+    expandBtn.addEventListener('click', () => {
+      try { openRadarChartFullscreen(radarCanvas, activeFacilities, metricsByFacility, metricKeys, assumptions); } catch (e) { console.error(e); }
+    });
+    pngBtn.addEventListener('click', () => {
+      try { downloadPngFromCanvas(radarCanvas, 'facility_comparison_radar.png'); } catch (e) { console.error(e); }
+    });
+    csvBtn.addEventListener('click', () => {
+      try { downloadText('facility_comparison_scores.csv', buildRadarChartCsvText(activeFacilities, metricsByFacility, metricKeys, assumptions)); } catch (e) { console.error(e); }
+    });
+
+    grid.appendChild(radarCard);
+
+    // -- Metric Summary Table --
+    const tableCard = el('div', { class: 'chart-card' });
+    tableCard.appendChild(el('div', { class: 'chart-title' }, [el('b', {}, ['Metric Summary'])]));
+    tableCard.appendChild(el('div', { class: 'muted small', style: 'margin-bottom: 8px;' }, [
+      'Traffic light scoring: ',
+      el('span', { class: 'traffic-green', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Good']),
+      el('span', { class: 'traffic-yellow', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Caution']),
+      el('span', { class: 'traffic-red', style: 'padding: 2px 6px; border-radius: 3px; margin: 0 4px;' }, ['Attention']),
+    ]));
+
+    const table = el('table', { class: 'comparison-table' });
+    const thead = el('thead');
+    const headerRow = el('tr', {}, [el('th', {}, ['Metric'])]);
+    for (const fac of activeFacilities.slice(0, 10)) headerRow.appendChild(el('th', {}, [fac]));
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = el('tbody');
+    for (const key of metricKeys) {
+      const def = COMPARISON_METRICS[key];
+      const row = el('tr');
+      const nameCell = el('td', { class: 'metric-name' });
+      const nameTrigger = el('span', { class: 'tooltip-trigger', 'data-tooltip': def.tooltip }, [def.label]);
+
+      nameTrigger.addEventListener('mouseenter', (e) => {
+        const text = e.target.getAttribute('data-tooltip');
+        if (!text) return;
+        const existing = document.getElementById('floating-metric-tooltip');
+        if (existing) existing.remove();
+        const tooltip = document.createElement('div');
+        tooltip.id = 'floating-metric-tooltip';
+        tooltip.className = 'floating-tooltip';
+        tooltip.textContent = text;
+        document.body.appendChild(tooltip);
+        const rect = e.target.getBoundingClientRect();
+        tooltip.style.left = `${rect.left}px`;
+        tooltip.style.top = `${rect.top - tooltip.offsetHeight - 8}px`;
+        const tr = tooltip.getBoundingClientRect();
+        if (tr.left < 8) tooltip.style.left = '8px';
+        if (tr.right > window.innerWidth - 8) tooltip.style.left = `${window.innerWidth - tr.width - 8}px`;
+        if (tr.top < 8) tooltip.style.top = `${rect.bottom + 8}px`;
+      });
+      nameTrigger.addEventListener('mouseleave', () => {
+        document.getElementById('floating-metric-tooltip')?.remove();
+      });
+
+      nameCell.appendChild(nameTrigger);
+      row.appendChild(nameCell);
+
+      for (const fac of activeFacilities.slice(0, 10)) {
+        const value = metricsByFacility[fac]?.[key];
+        const dynamicThresholds = getDynamicThresholds(key, def, assumptions);
+        const light = getTrafficLight(value, { ...def, thresholds: dynamicThresholds });
+        const displayValue = value !== null && value !== undefined && Number.isFinite(value)
+          ? `${formatNumber(value)}${def.unit}` : '—';
+        row.appendChild(el('td', { class: `metric-cell traffic-${light}` }, [displayValue]));
+      }
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    tableCard.appendChild(el('div', { style: 'overflow-x: auto;' }, [table]));
+    grid.appendChild(tableCard);
+
+    contentEl.appendChild(grid);
   }
-  table.appendChild(tbody);
 
-  const tableWrap = el('div', { style: 'overflow-x: auto;' }, [table]);
-  tableCard.appendChild(tableTitle);
-  tableCard.appendChild(tableDesc);
-  tableCard.appendChild(tableWrap);
+  // Initial render with all facilities
+  buildContent(allFacilities);
 
-  // Health Scores card (first in order - quick summary)
-  const healthScoresCard = renderFacilityHealthScores({
-    facilities,
-    metricsByFacility,
-    metricKeys,
-    chartRegistry,
-    assumptions,
-  });
-  grid.appendChild(healthScoresCard);
-
-  grid.appendChild(radarCard);
-  grid.appendChild(tableCard);
-
-  content.appendChild(grid);
-  header.appendChild(content);
-  section.appendChild(header);
+  // React to global filter changes
+  const handler = (event) => {
+    const { selected } = event.detail || {};
+    if (!Array.isArray(selected)) return;
+    const active = selected.includes('all')
+      ? allFacilities
+      : allFacilities.filter(f => selected.includes(f));
+    buildContent(active);
+  };
+  document.addEventListener('yardiq:globalfacilityfilter', handler);
+  _comparisonFilterCleanup = () => document.removeEventListener('yardiq:globalfacilityfilter', handler);
 
   return section;
 }

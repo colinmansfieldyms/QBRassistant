@@ -2424,12 +2424,21 @@ canvas{ max-width:100%; }
 .global-facility-filter {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   padding: 12px 16px;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
   border-radius: 8px;
   margin-bottom: 20px;
+}
+
+.global-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
 }
 
 .global-facility-label {
@@ -2439,8 +2448,36 @@ canvas{ max-width:100%; }
   white-space: nowrap;
 }
 
-.global-facility-filter .facility-multiselect {
-  max-width: 500px;
+.global-filter-group .facility-multiselect {
+  max-width: 460px;
+}
+
+/* ---- Campus Operation toggle ---- */
+.global-campus-group {
+  display: flex;
+  align-items: center;
+  padding-left: 16px;
+  border-left: 1px solid #bfdbfe;
+  flex-shrink: 0;
+}
+
+.global-campus-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.global-campus-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 
 /* Facility comparison section */
