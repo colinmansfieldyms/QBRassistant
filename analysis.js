@@ -1883,7 +1883,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
     // Simplified data quality
     const dq = bucket.totalRows > 0 ? 75 : 0; // Simplified score for facility view
 
-    // Build simple charts from facility bucket
+    // Build charts from facility bucket
     const moveTypeTop = bucket.moveType.toObjectSorted();
     const charts = [];
     if (Object.keys(moveTypeTop).length > 0) {
@@ -1902,9 +1902,57 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       });
     }
 
+    // Yard-age distribution (only available in CSV mode — check if any bucket was populated)
+    const yardAgeTotal = Object.values(bucket.yardAgeBuckets).reduce((a, b) => a + b, 0);
+    const yardAgeSeries = Object.entries(bucket.yardAgeBuckets)
+      .filter(([k]) => k !== 'unknown')
+      .map(([b, count]) => ({ bucket: b, count }));
+    if (yardAgeTotal > 0) {
+      charts.push({
+        id: 'yard_age_distribution',
+        title: `Trailer yard-age distribution - ${facility}`,
+        kind: 'bar',
+        description: 'How long trailers have been in the yard.',
+        data: {
+          labels: yardAgeSeries.map(r => r.bucket),
+          datasets: [{ label: 'Trailers', data: yardAgeSeries.map(r => r.count) }],
+        },
+        csv: {
+          columns: ['yard_age_bucket', 'count'],
+          rows: yardAgeSeries.map(r => ({ yard_age_bucket: r.bucket, count: r.count })),
+        },
+      });
+    }
+
     // Generate findings and recommendations for this facility
     const findings = [];
     const recs = [];
+
+    // Yard-age findings (mirror All Facilities logic)
+    if (yardAgeTotal > 0) {
+      const stale30 = pct(bucket.yardAgeBuckets['30d+'] || 0, yardAgeTotal);
+      if (stale30 < 10) {
+        findings.push({
+          level: 'green',
+          text: `${facility} inventory recency looks healthy — low share of trailers older than 30 days.`,
+          confidence: 'high',
+        });
+      } else if (stale30 >= 25) {
+        findings.push({
+          level: 'red',
+          text: `${stale30}% of trailers at ${facility} have been in the yard over 30 days — may indicate stale or abandoned assets.`,
+          confidence: 'high',
+        });
+        recs.push(`Review aged trailer inventory at ${facility} and confirm whether 30d+ assets are inactive or represent missed updates.`);
+      } else {
+        findings.push({
+          level: 'yellow',
+          text: `${stale30}% of trailers at ${facility} have been in the yard over 30 days.`,
+          confidence: 'medium',
+        });
+        recs.push(`Spot-check aged trailers at ${facility} to confirm whether they represent inactive assets or stale records.`);
+      }
+    }
 
     // Outbound/inbound ratio findings
     if (outboundInboundRatio !== null) {
@@ -1962,6 +2010,7 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       },
       metrics: {
         total_trailers: trailers,
+        stale_30d_pct: yardAgeTotal > 0 ? pct(bucket.yardAgeBuckets['30d+'] || 0, yardAgeTotal) : null,
         placeholder_scac_pct: placeholderRate,
         outbound_vs_inbound_ratio: outboundInboundRatio !== null ? Math.round(outboundInboundRatio * 100) / 100 : null,
         live_load_missing_driver_contact_pct: missingDriverRate,
@@ -4871,6 +4920,11 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         facility_edited: 0,
       },
       errorsByPeriod: new CounterMap(),
+      lostByDay: new CounterMap(),
+      yardCheckInsertByDay: new CounterMap(),
+      spotEditedByDay: new CounterMap(),
+      facilityEditedByDay: new CounterMap(),
+      eventTypes: new CounterMap(),
       daysWithData: new Set(),
       lostByCarrier: new CounterMap(),
     };
@@ -4887,7 +4941,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     }
 
     const event = safeStr(firstPresent(row, ['event', 'event_type', 'event_name', 'event_string', 'action', 'status_change']));
-    if (event) this.eventTypes.inc(event);
+    if (event) {
+      this.eventTypes.inc(event);
+      if (facBucket) facBucket.eventTypes.inc(event);
+    }
 
     const dt = parseTimestamp(firstPresent(row, ['event_time', 'created_at', 'timestamp', 'event_timestamp']), {
       timezone: this.timezone, assumeUTC: true, onFail: () => { this.parseFails++; }
@@ -4919,7 +4976,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         this.byDay.inc(dk);
         this.errorsByPeriod.inc(dk);
         this.lostByDay.inc(dk);
-        if (facBucket) facBucket.errorsByPeriod.inc(dk);
+        if (facBucket) {
+          facBucket.errorsByPeriod.inc(dk);
+          facBucket.lostByDay.inc(dk);
+        }
       }
 
       // Collect drilldown data if enabled
@@ -4942,7 +5002,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.yardCheckInsertByDay.inc(dk);
-        if (facBucket) facBucket.errorsByPeriod.inc(dk);
+        if (facBucket) {
+          facBucket.errorsByPeriod.inc(dk);
+          facBucket.yardCheckInsertByDay.inc(dk);
+        }
       }
     }
 
@@ -4954,7 +5017,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.spotEditedByDay.inc(dk);
-        if (facBucket) facBucket.errorsByPeriod.inc(dk);
+        if (facBucket) {
+          facBucket.errorsByPeriod.inc(dk);
+          facBucket.spotEditedByDay.inc(dk);
+        }
       }
     }
 
@@ -4966,7 +5032,10 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         const dk = dayKey(dt, this.timezone);
         this.errorsByPeriod.inc(dk);
         this.facilityEditedByDay.inc(dk);
-        if (facBucket) facBucket.errorsByPeriod.inc(dk);
+        if (facBucket) {
+          facBucket.errorsByPeriod.inc(dk);
+          facBucket.facilityEditedByDay.inc(dk);
+        }
       }
     }
   }
@@ -5265,24 +5334,50 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
     // Simplified data quality
     const dq = bucket.totalRows > 0 ? 75 : 0;
 
-    // Build simple charts
+    // Build charts
     const charts = [];
 
-    // Error events over time if available
-    if (bucket.errorsByPeriod && bucket.errorsByPeriod.map.size > 0) {
-      const labels = Array.from(bucket.errorsByPeriod.map.keys()).sort();
-      const errorData = labels.map(l => bucket.errorsByPeriod.map.get(l) || 0);
+    // Multi-line error events chart (matching "All Facilities" format)
+    const allDays = new Set([
+      ...bucket.lostByDay.map.keys(),
+      ...bucket.yardCheckInsertByDay.map.keys(),
+      ...bucket.spotEditedByDay.map.keys(),
+      ...bucket.facilityEditedByDay.map.keys(),
+    ]);
+    if (allDays.size > 0) {
+      const sortedDays = Array.from(allDays).sort();
+      const lostData = sortedDays.map(d => bucket.lostByDay.map.get(d) || 0);
+      const yardCheckData = sortedDays.map(d => bucket.yardCheckInsertByDay.map.get(d) || 0);
+      const spotEditedData = sortedDays.map(d => bucket.spotEditedByDay.map.get(d) || 0);
+      const facilityEditedData = sortedDays.map(d => bucket.facilityEditedByDay.map.get(d) || 0);
+      const totalData = sortedDays.map((d, i) => lostData[i] + yardCheckData[i] + spotEditedData[i] + facilityEditedData[i]);
 
       charts.push({
-        id: 'errors_daily',
-        title: 'Error Events per Day',
-        kind: 'bar',
+        id: 'error_events_daily',
+        title: 'Error Events (daily)',
+        kind: 'line',
+        description: 'Error-indicating events by type. Total errors shown as thick line.',
+        multiLineConfig: { totalLineIndex: 4 },
         data: {
-          labels,
-          datasets: [{
-            label: 'Errors',
-            data: errorData
-          }]
+          labels: sortedDays,
+          datasets: [
+            { label: 'Trailer marked lost', data: lostData },
+            { label: 'Yard check insert', data: yardCheckData },
+            { label: 'Spot edited', data: spotEditedData },
+            { label: 'Facility edited', data: facilityEditedData },
+            { label: 'Total errors', data: totalData, borderWidth: 3 },
+          ]
+        },
+        csv: {
+          columns: ['day', 'trailer_marked_lost', 'yard_check_insert', 'spot_edited', 'facility_edited', 'total_errors'],
+          rows: sortedDays.map((d, i) => ({
+            day: d,
+            trailer_marked_lost: lostData[i],
+            yard_check_insert: yardCheckData[i],
+            spot_edited: spotEditedData[i],
+            facility_edited: facilityEditedData[i],
+            total_errors: totalData[i],
+          }))
         }
       });
     }
@@ -5383,6 +5478,9 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
           granularity: 'day',
         },
       }),
+      extras: {
+        event_type_top10: bucket.eventTypes.top(10),
+      },
     };
   }
 
@@ -5399,6 +5497,11 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
       merged.errorCounts.spot_edited += b.errorCounts?.spot_edited || 0;
       merged.errorCounts.facility_edited += b.errorCounts?.facility_edited || 0;
       mergeCounterMapInto(merged.errorsByPeriod, b.errorsByPeriod);
+      mergeCounterMapInto(merged.lostByDay, b.lostByDay);
+      mergeCounterMapInto(merged.yardCheckInsertByDay, b.yardCheckInsertByDay);
+      mergeCounterMapInto(merged.spotEditedByDay, b.spotEditedByDay);
+      mergeCounterMapInto(merged.facilityEditedByDay, b.facilityEditedByDay);
+      mergeCounterMapInto(merged.eventTypes, b.eventTypes);
       for (const day of b.daysWithData) merged.daysWithData.add(day);
       mergeCounterMapInto(merged.lostByCarrier, b.lostByCarrier);
     }
