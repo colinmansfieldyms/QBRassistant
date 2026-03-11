@@ -1,6 +1,15 @@
 import { downloadText } from './export.js?v=2025.01.07.0';
 import { applyPartialPeriodHandling } from './analysis.js?v=2025.01.07.0';
 
+// Global facility filter: when fired, update all active facility-tabs-containers
+document.addEventListener('yardiq:globalfacilityfilter', (event) => {
+  const { selected } = event.detail || {};
+  if (!Array.isArray(selected)) return;
+  document.querySelectorAll('.facility-tabs-container').forEach(container => {
+    container._applyFilter?.(selected);
+  });
+});
+
 /**
  * Chart.js rendering + export PNG + provide chart datasets for CSV export.
  * NOTE: Chart.js is loaded via CDN and available as window.Chart.
@@ -1170,30 +1179,135 @@ export function destroyAllCharts(chartRegistry) {
  * @param {Function} options.onTabChange - Callback when tab changes: (facility) => void
  * @returns {HTMLElement} Container element with tabs and content panels
  */
+/**
+ * Custom multi-select dropdown for facility filtering.
+ * Returns a DOM element with a ._setSelected(selected) method for external control.
+ */
+function createMultiselectDropdown(facilities, initialSelected, onChange) {
+  const wrap = el('div', { class: 'facility-multiselect' });
+
+  const trigger = el('button', { class: 'facility-multiselect-trigger', type: 'button' });
+  const display = el('span', { class: 'facility-multiselect-display' });
+  const arrow = el('span', { class: 'facility-multiselect-arrow' }, ['▾']);
+  trigger.appendChild(display);
+  trigger.appendChild(arrow);
+
+  const menu = el('div', { class: 'facility-multiselect-menu' });
+  menu.style.display = 'none';
+
+  // "All Facilities" option
+  const allLabel = el('label', { class: 'facility-multiselect-option' });
+  const allCheck = el('input', { type: 'checkbox', value: 'all' });
+  allLabel.appendChild(allCheck);
+  allLabel.appendChild(document.createTextNode(' All Facilities'));
+  menu.appendChild(allLabel);
+
+  // Individual facility options
+  const facilityChecks = facilities.map(fac => {
+    const optLabel = el('label', { class: 'facility-multiselect-option' });
+    const check = el('input', { type: 'checkbox', value: fac });
+    optLabel.appendChild(check);
+    optLabel.appendChild(document.createTextNode(' ' + fac));
+    menu.appendChild(optLabel);
+    return check;
+  });
+
+  wrap.appendChild(trigger);
+  wrap.appendChild(menu);
+
+  let isOpen = false;
+
+  function updateDisplay(selected) {
+    if (selected.includes('all') || selected.length === 0 || selected.length === facilities.length) {
+      display.textContent = 'All Facilities';
+    } else if (selected.length === 1) {
+      display.textContent = selected[0];
+    } else {
+      display.textContent = `${selected.length} of ${facilities.length} facilities`;
+    }
+  }
+
+  function setSelected(selected) {
+    const isAll = selected.includes('all') || selected.length === 0 || selected.length === facilities.length;
+    allCheck.checked = isAll;
+    facilityChecks.forEach(c => { c.checked = !isAll && selected.includes(c.value); });
+    updateDisplay(isAll ? ['all'] : selected);
+  }
+
+  setSelected(initialSelected);
+
+  function openMenu() {
+    isOpen = true;
+    menu.style.display = 'block';
+    arrow.textContent = '▴';
+    wrap.classList.add('open');
+  }
+
+  function closeMenu() {
+    isOpen = false;
+    menu.style.display = 'none';
+    arrow.textContent = '▾';
+    wrap.classList.remove('open');
+  }
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    isOpen ? closeMenu() : openMenu();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!wrap.contains(e.target) && isOpen) closeMenu();
+  });
+
+  function getSelected() {
+    if (allCheck.checked) return ['all'];
+    const checked = facilityChecks.filter(c => c.checked).map(c => c.value);
+    return checked.length === 0 ? ['all'] : checked;
+  }
+
+  function handleChange() {
+    const selected = getSelected();
+    updateDisplay(selected);
+    onChange(selected);
+  }
+
+  allCheck.addEventListener('change', () => {
+    if (allCheck.checked) facilityChecks.forEach(c => { c.checked = false; });
+    handleChange();
+  });
+
+  facilityChecks.forEach(check => {
+    check.addEventListener('change', () => {
+      if (check.checked) allCheck.checked = false;
+      // If all individual facilities become checked, revert to "All"
+      if (facilityChecks.every(c => c.checked)) {
+        facilityChecks.forEach(c => { c.checked = false; });
+        allCheck.checked = true;
+      }
+      handleChange();
+    });
+  });
+
+  wrap._setSelected = setSelected;
+  return wrap;
+}
+
 export function createFacilityTabs({ facilities, activeTab = 'all', contentByFacility, onTabChange }) {
   const container = el('div', { class: 'facility-tabs-container' });
 
-  // Dropdown selector instead of horizontal tabs
   const selectorWrap = el('div', { class: 'facility-selector-wrap' });
+  const label = el('label', { class: 'facility-selector-label' }, ['View Facilities:']);
 
-  const label = el('label', { class: 'facility-selector-label' }, ['View Facility:']);
+  let currentSelected = activeTab === 'all' ? ['all'] : [activeTab];
 
-  const select = el('select', { class: 'facility-selector' });
-
-  // "All Facilities" option
-  const allOption = el('option', { value: 'all' }, ['All Facilities']);
-  if (activeTab === 'all') allOption.selected = true;
-  select.appendChild(allOption);
-
-  // Individual facility options
-  for (const fac of facilities) {
-    const option = el('option', { value: fac, title: fac }, [fac]);
-    if (activeTab === fac) option.selected = true;
-    select.appendChild(option);
-  }
+  const multiselect = createMultiselectDropdown(facilities, currentSelected, (newSelected) => {
+    currentSelected = newSelected;
+    applyFilter(newSelected);
+    onTabChange?.(newSelected);
+  });
 
   selectorWrap.appendChild(label);
-  selectorWrap.appendChild(select);
+  selectorWrap.appendChild(multiselect);
 
   // "Jump to Facility Comparisons" button - only show for multi-facility
   if (facilities.length >= 2) {
@@ -1219,42 +1333,66 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
 
   // "All Facilities" panel
   const allPanel = el('div', {
-    class: `facility-tab-panel${activeTab === 'all' ? ' active' : ''}`,
+    class: `facility-tab-panel${currentSelected.includes('all') ? ' active' : ''}`,
     'data-tab-panel': 'all',
   });
-  if (contentByFacility.all) {
-    allPanel.appendChild(contentByFacility.all);
-  }
+  if (contentByFacility.all) allPanel.appendChild(contentByFacility.all);
   panelsContainer.appendChild(allPanel);
 
-  // Individual facility panels
+  // Individual facility panels (each gets a sticky name label for multi-select UX)
   for (const fac of facilities) {
+    const isActive = !currentSelected.includes('all') && currentSelected.includes(fac);
     const panel = el('div', {
-      class: `facility-tab-panel${activeTab === fac ? ' active' : ''}`,
+      class: `facility-tab-panel${isActive ? ' active' : ''}`,
       'data-tab-panel': fac,
     });
-    if (contentByFacility[fac]) {
-      panel.appendChild(contentByFacility[fac]);
-    }
+    if (contentByFacility[fac]) panel.appendChild(contentByFacility[fac]);
     panelsContainer.appendChild(panel);
   }
 
   container.appendChild(panelsContainer);
 
-  // Dropdown change handler
-  select.addEventListener('change', () => {
-    const selectedFacility = select.value;
+  function applyFilter(selected) {
+    const isAll = selected.includes('all');
+    let visibleCount = 0;
+    panelsContainer.querySelectorAll('.facility-tab-panel').forEach(p => {
+      const panelFac = p.dataset.tabPanel;
+      const show = isAll ? panelFac === 'all' : selected.includes(panelFac);
+      p.classList.toggle('active', show);
+      if (show && panelFac !== 'all') visibleCount++;
+    });
+    // Show facility name headers only when multiple individual panels are visible
+    panelsContainer.classList.toggle('multi-facility-active', visibleCount > 1);
+    multiselect._setSelected(selected);
+  }
 
-    // Update active panel
-    panelsContainer.querySelectorAll('.facility-tab-panel').forEach(p => p.classList.remove('active'));
-    const targetPanel = panelsContainer.querySelector(`[data-tab-panel="${selectedFacility}"]`);
-    if (targetPanel) targetPanel.classList.add('active');
-
-    // Callback
-    onTabChange?.(selectedFacility);
-  });
+  // External API for global filter
+  container._applyFilter = (selected) => {
+    const valid = selected.filter(f => f === 'all' || facilities.includes(f));
+    if (valid.length === 0) return;
+    currentSelected = valid;
+    applyFilter(valid);
+    onTabChange?.(valid);
+  };
 
   return container;
+}
+
+/**
+ * Creates the top-level "Filter All Sections" facility multi-select bar.
+ * Dispatches a 'yardiq:globalfacilityfilter' event that all createFacilityTabs instances listen to.
+ */
+export function createGlobalFacilityFilter(facilities) {
+  const wrap = el('div', { class: 'global-facility-filter' });
+  const label = el('span', { class: 'global-facility-label' }, ['Filter All Sections:']);
+
+  const multiselect = createMultiselectDropdown(facilities, ['all'], (selected) => {
+    document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected } }));
+  });
+
+  wrap.appendChild(label);
+  wrap.appendChild(multiselect);
+  return wrap;
 }
 
 function downloadPngFromCanvas(canvas, filename) {
@@ -1877,63 +2015,45 @@ export function renderReportResult({
       facilities,
       activeTab: 'all',
       contentByFacility,
-      onTabChange: (newFacility) => {
-        // Lazy loading: Build content on-demand when tab is clicked
-        if (shouldLazyLoad && newFacility !== 'all' && !contentByFacility[newFacility]) {
-          try {
-            const facResult = getFacilityResult(newFacility);
-            if (facResult) {
-              const content = buildContentBlock(facResult, false);
-              contentByFacility[newFacility] = content;
+      onTabChange: (newSelected) => {
+        // newSelected is now an array (e.g. ['all'] or ['FAC1', 'FAC2'])
+        const selectedFacilities = newSelected.includes('all') ? [] : newSelected;
 
-              // Find the panel for this facility and append content
-              const panel = card.querySelector(`[data-tab-panel="${newFacility}"]`);
-              if (panel) {
-                panel.innerHTML = '';
-                panel.appendChild(content);
-              }
-            } else {
-              const content = el('div', { class: 'muted', style: 'padding: 24px;' }, [
-                `No data available for ${newFacility}`
-              ]);
-              contentByFacility[newFacility] = content;
-              const panel = card.querySelector(`[data-tab-panel="${newFacility}"]`);
-              if (panel) {
-                panel.innerHTML = '';
-                panel.appendChild(content);
-              }
-            }
-          } catch (error) {
-            console.error(`Error lazy-loading content for facility ${newFacility}:`, error);
-          }
-        }
-
-        // Memory optimization: Destroy charts from previously active facility
-        // (except "all" which is in chartRegistry and managed separately)
-        const previousFacility = card._lastActiveFacility;
-        if (shouldLazyLoad && previousFacility && previousFacility !== 'all' && previousFacility !== newFacility) {
-          const chartsToDestroy = perFacilityCharts.get(previousFacility);
-          if (chartsToDestroy) {
-            chartsToDestroy.forEach(chart => {
+        // Lazy loading: Build content on-demand for each newly selected facility
+        if (shouldLazyLoad) {
+          for (const fac of selectedFacilities) {
+            if (!contentByFacility[fac]) {
               try {
-                chart.destroy();
-              } catch (e) {
-                console.warn(`Failed to destroy chart:`, e);
+                const facResult = getFacilityResult(fac);
+                const content = facResult
+                  ? buildContentBlock(facResult, false)
+                  : el('div', { class: 'muted', style: 'padding: 24px;' }, [`No data available for ${fac}`]);
+                contentByFacility[fac] = content;
+                const panel = card.querySelector(`[data-tab-panel="${fac}"]`);
+                if (panel) { panel.innerHTML = ''; panel.appendChild(content); }
+              } catch (error) {
+                console.error(`Error lazy-loading content for facility ${fac}:`, error);
               }
-            });
-            perFacilityCharts.delete(previousFacility);
-
-            // Clear the panel content to fully release memory
-            const panel = card.querySelector(`[data-tab-panel="${previousFacility}"]`);
-            if (panel) {
-              panel.innerHTML = '';
             }
-            delete contentByFacility[previousFacility];
+          }
+
+          // Memory optimization: destroy charts for facilities no longer selected
+          const previousSelection = card._lastActiveSelection || new Set();
+          for (const prevFac of previousSelection) {
+            if (prevFac !== 'all' && !selectedFacilities.includes(prevFac)) {
+              const chartsToDestroy = perFacilityCharts.get(prevFac);
+              if (chartsToDestroy) {
+                chartsToDestroy.forEach(chart => { try { chart.destroy(); } catch (e) {} });
+                perFacilityCharts.delete(prevFac);
+                const panel = card.querySelector(`[data-tab-panel="${prevFac}"]`);
+                if (panel) panel.innerHTML = '';
+                delete contentByFacility[prevFac];
+              }
+            }
           }
         }
 
-        // Track last active facility
-        card._lastActiveFacility = newFacility;
+        card._lastActiveSelection = new Set(selectedFacilities);
       }
     });
     card.appendChild(tabs);

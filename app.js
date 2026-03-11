@@ -1,6 +1,6 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
 import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI, facilityRegistry } from './analysis.js?v=2025.01.07.0';
-import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons, wrapGlossaryTerms } from './charts.js?v=2025.01.07.0';
+import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons, wrapGlossaryTerms, createGlobalFacilityFilter } from './charts.js?v=2025.01.07.0';
 import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
@@ -1084,6 +1084,11 @@ function renderAllResults() {
 
   `;
   root.appendChild(summary);
+
+  // Global facility filter bar — shown when 2+ facilities detected
+  if (state.isMultiFacility && state.detectedFacilities.length >= 2) {
+    root.appendChild(createGlobalFacilityFilter(state.detectedFacilities));
+  }
 
   // Create getFacilityResult function for per-facility tabbed results
   const getFacilityResult = (report, facility) => {
