@@ -1476,15 +1476,20 @@ class BaseAnalyzer {
     this.byFacility.delete(VIRTUAL);
     if (result) {
       result.facility = displayName;
+      const fix = s => (typeof s === 'string' ? s.replace(/__campus_virtual__/g, displayName) : s);
       if (result.findings) {
-        result.findings = result.findings.map(f => ({
-          ...f, text: f.text.replace(/__campus_virtual__/g, displayName),
-        }));
+        result.findings = result.findings.map(f => ({ ...f, text: fix(f.text) }));
+      }
+      if (result.recommendations) {
+        result.recommendations = result.recommendations.map(fix);
       }
       if (result.charts) {
-        result.charts = result.charts.map(c => ({
-          ...c, title: c.title ? c.title.replace(/__campus_virtual__/g, displayName) : c.title,
-        }));
+        result.charts = result.charts.map(c => ({ ...c, title: fix(c.title) }));
+      }
+      if (result.metrics) {
+        for (const [k, v] of Object.entries(result.metrics)) {
+          result.metrics[k] = fix(v);
+        }
       }
     }
     return result;

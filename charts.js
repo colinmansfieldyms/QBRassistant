@@ -763,16 +763,16 @@ function renderFacilityHealthScores({ facilities, metricsByFacility, metricKeys,
     card.appendChild(barsContainer);
   }
 
-  // Wire up action buttons
-  actionButtons[0].addEventListener('click', () => {
+  // Wire up action buttons (index 0 = drilldown badge tooltip, 1 = Expand, 2 = PNG, 3 = CSV)
+  actionButtons[1].addEventListener('click', () => {
     openHealthScoresFullscreen(healthScores);
   });
 
-  actionButtons[1].addEventListener('click', () => {
+  actionButtons[2].addEventListener('click', () => {
     downloadHealthScoresPng(card, 'facility_health_scores.png');
   });
 
-  actionButtons[2].addEventListener('click', () => {
+  actionButtons[3].addEventListener('click', () => {
     downloadHealthScoresCsv(healthScores);
   });
 
