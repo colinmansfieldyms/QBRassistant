@@ -381,6 +381,19 @@ function fnv1a32(str) {
   return h >>> 0;
 }
 
+function mergeCounterMapInto(target, source) {
+  if (!source?.map) return;
+  for (const [k, v] of source.map) {
+    target.map.set(k, (target.map.get(k) || 0) + v);
+  }
+}
+
+function mergeApproxDistinct(a, b) {
+  const result = new ApproxDistinct(a.bits);
+  for (let i = 0; i < result.arr.length; i++) result.arr[i] = a.arr[i] | b.arr[i];
+  return result;
+}
+
 function scoreToBadge(score) {
   if (score >= 80) return { label: 'High', color: 'green' };
   if (score >= 55) return { label: 'Medium', color: 'yellow' };
@@ -1439,6 +1452,43 @@ class BaseAnalyzer {
     // Default implementation returns null - subclasses override
     return null;
   }
+
+  /**
+   * Merge per-facility buckets for the given facilities into a virtual combined bucket.
+   * Returns null by default; subclasses override to provide accurate aggregation.
+   */
+  mergeToVirtualBucket(facilityNames) {
+    return null;
+  }
+
+  /**
+   * Compute an accurately aggregated result for a subset of facilities.
+   * Merges per-facility intermediate state and runs finalization on the combined bucket.
+   */
+  finalizeMultiFacility(facilityNames, meta) {
+    if (!facilityNames || facilityNames.length === 0) return null;
+    const merged = this.mergeToVirtualBucket(facilityNames);
+    if (!merged) return null;
+    const VIRTUAL = '__campus_virtual__';
+    const displayName = facilityNames.length === 1 ? facilityNames[0] : 'Campus';
+    this.byFacility.set(VIRTUAL, merged);
+    const result = this.finalizeFacility(VIRTUAL, meta);
+    this.byFacility.delete(VIRTUAL);
+    if (result) {
+      result.facility = displayName;
+      if (result.findings) {
+        result.findings = result.findings.map(f => ({
+          ...f, text: f.text.replace(/__campus_virtual__/g, displayName),
+        }));
+      }
+      if (result.charts) {
+        result.charts = result.charts.map(c => ({
+          ...c, title: c.title ? c.title.replace(/__campus_virtual__/g, displayName) : c.title,
+        }));
+      }
+    }
+    return result;
+  }
 }
 
 class CurrentInventoryAnalyzer extends BaseAnalyzer {
@@ -1909,6 +1959,28 @@ class CurrentInventoryAnalyzer extends BaseAnalyzer {
       recommendations: recs,
       roi: null, // current inventory doesn't drive ROI directly
     };
+  }
+
+  mergeToVirtualBucket(facilityNames) {
+    const merged = this.createFacilityBucket();
+    for (const name of facilityNames) {
+      const normalized = FacilityRegistry.normalizeFacilityName(name);
+      const b = this.byFacility.get(normalized);
+      if (!b) continue;
+      merged.totalRows += b.totalRows;
+      merged.totalTrailers += b.totalTrailers;
+      merged.outbound += b.outbound;
+      merged.inbound += b.inbound;
+      merged.placeholderScac += b.placeholderScac;
+      merged.scacTotal += b.scacTotal;
+      merged.liveLoads += b.liveLoads;
+      merged.liveLoadMissingDriverContact += b.liveLoadMissingDriverContact;
+      for (const key of Object.keys(merged.yardAgeBuckets)) {
+        merged.yardAgeBuckets[key] += b.yardAgeBuckets[key] || 0;
+      }
+      mergeCounterMapInto(merged.moveType, b.moveType);
+    }
+    return merged;
   }
 }
 
@@ -2907,6 +2979,32 @@ class DetentionHistoryAnalyzer extends BaseAnalyzer {
       }),
     };
   }
+
+  mergeToVirtualBucket(facilityNames) {
+    const merged = this.createFacilityBucket();
+    for (const name of facilityNames) {
+      const normalized = FacilityRegistry.normalizeFacilityName(name);
+      const b = this.byFacility.get(normalized);
+      if (!b) continue;
+      merged.totalRows += b.totalRows;
+      merged.detention += b.detention;
+      merged.prevented += b.prevented;
+      merged.preDetention += b.preDetention;
+      merged.stillInYard += b.stillInYard;
+      merged.unknownStatus += b.unknownStatus;
+      merged.skippedNoArrival += b.skippedNoArrival;
+      merged.live += b.live;
+      merged.drop += b.drop;
+      merged.detentionLive += b.detentionLive;
+      merged.detentionDrop += b.detentionDrop;
+      merged.detentionEventsWithDeparture += b.detentionEventsWithDeparture;
+      merged.totalDetentionHours += b.totalDetentionHours;
+      mergeCounterMapInto(merged.detentionByScac, b.detentionByScac);
+      mergeCounterMapInto(merged.dailyDetention, b.dailyDetention);
+      mergeCounterMapInto(merged.dailyPrevented, b.dailyPrevented);
+    }
+    return merged;
+  }
 }
 
 class DockDoorHistoryAnalyzer extends BaseAnalyzer {
@@ -3856,6 +3954,86 @@ class DockDoorHistoryAnalyzer extends BaseAnalyzer {
 
     return totalDoorDays > 0 ? Math.round((totalTurnsCount / totalDoorDays) * 100) / 100 : 0;
   }
+
+  mergeToVirtualBucket(facilityNames) {
+    const merged = this.createFacilityBucket();
+    let dwellSum = 0, dwellW = 0;
+    let processSum = 0, processW = 0;
+    const dwellDayAcc = new Map();
+    const processDayAcc = new Map();
+
+    for (const name of facilityNames) {
+      const normalized = FacilityRegistry.normalizeFacilityName(name);
+      const b = this.byFacility.get(normalized);
+      if (!b) continue;
+      merged.totalRows += b.totalRows;
+      merged.dwellCoverage.ok += b.dwellCoverage.ok;
+      merged.dwellCoverage.total += b.dwellCoverage.total;
+      merged.processCoverage.ok += b.processCoverage.ok;
+      merged.processCoverage.total += b.processCoverage.total;
+      merged.totalTurns += b.totalTurns;
+      for (const door of b.uniqueDoors) merged.uniqueDoors.add(door);
+      for (const day of b.daysWithData) merged.daysWithData.add(day);
+      mergeCounterMapInto(merged.turnsByDay, b.turnsByDay);
+      // Merge turnsByDoorByDay
+      for (const [door, dayMap] of b.turnsByDoorByDay) {
+        if (!merged.turnsByDoorByDay.has(door)) merged.turnsByDoorByDay.set(door, new Map());
+        const mDoorMap = merged.turnsByDoorByDay.get(door);
+        for (const [day, count] of dayMap) {
+          mDoorMap.set(day, (mDoorMap.get(day) || 0) + count);
+        }
+      }
+      // Weighted dwell/process quantile accumulation
+      const dw = b.dwellCoverage.ok;
+      const dv = b.dwellQuantile?.value();
+      if (dw > 0 && dv != null) { dwellSum += dv * dw; dwellW += dw; }
+      const pw = b.processCoverage.ok;
+      const pv = b.processQuantile?.value();
+      if (pw > 0 && pv != null) { processSum += pv * pw; processW += pw; }
+      // Per-day quantile accumulation
+      if (b.dwellByDay) {
+        for (const [day, est] of b.dwellByDay) {
+          const mv = est?.median?.value();
+          if (mv != null) {
+            if (!dwellDayAcc.has(day)) dwellDayAcc.set(day, { mSum: 0, mW: 0, p90Sum: 0, p90W: 0 });
+            const acc = dwellDayAcc.get(day);
+            acc.mSum += mv; acc.mW += 1;
+            const p90v = est?.p90?.value();
+            if (p90v != null) { acc.p90Sum += p90v; acc.p90W += 1; }
+          }
+        }
+      }
+      if (b.processByDay) {
+        for (const [day, est] of b.processByDay) {
+          const mv = est?.median?.value();
+          if (mv != null) {
+            if (!processDayAcc.has(day)) processDayAcc.set(day, { mSum: 0, mW: 0, p90Sum: 0, p90W: 0 });
+            const acc = processDayAcc.get(day);
+            acc.mSum += mv; acc.mW += 1;
+          }
+        }
+      }
+    }
+    // Build mock quantile objects for overall dwell/process
+    const dwellAvg = dwellW > 0 ? dwellSum / dwellW : null;
+    merged.dwellQuantile = { value: () => dwellAvg };
+    const processAvg = processW > 0 ? processSum / processW : null;
+    merged.processQuantile = { value: () => processAvg };
+    // Build merged dwellByDay/processByDay with mock estimators
+    for (const [day, acc] of dwellDayAcc) {
+      merged.dwellByDay.set(day, {
+        median: { value: () => acc.mW > 0 ? acc.mSum / acc.mW : null },
+        p90: { value: () => acc.p90W > 0 ? acc.p90Sum / acc.p90W : null },
+      });
+    }
+    for (const [day, acc] of processDayAcc) {
+      merged.processByDay.set(day, {
+        median: { value: () => acc.mW > 0 ? acc.mSum / acc.mW : null },
+        p90: { value: () => acc.p90W > 0 ? acc.p90Sum / acc.p90W : null },
+      });
+    }
+    return merged;
+  }
 }
 
 class DriverHistoryAnalyzer extends BaseAnalyzer {
@@ -4581,6 +4759,57 @@ class DriverHistoryAnalyzer extends BaseAnalyzer {
     if (total === 0) return null;
     return Math.round((medDeadhead / total) * 100);
   }
+
+  mergeToVirtualBucket(facilityNames) {
+    const merged = this.createFacilityBucket();
+    let qMedSum = 0, qMedW = 0;
+    let qP90Sum = 0, qP90W = 0;
+    let dhMedSum = 0, dhMedW = 0;
+    let exMedSum = 0, exMedW = 0;
+
+    for (const name of facilityNames) {
+      const normalized = FacilityRegistry.normalizeFacilityName(name);
+      const b = this.byFacility.get(normalized);
+      if (!b) continue;
+      merged.totalRows += b.totalRows;
+      merged.movesTotal += b.movesTotal;
+      merged.complianceOk += b.complianceOk;
+      merged.complianceTotal += b.complianceTotal;
+      merged.queueTotal += b.queueTotal;
+      merged.dispatchTotal += b.dispatchTotal;
+      mergeCounterMapInto(merged.movesByDriver, b.movesByDriver);
+      mergeCounterMapInto(merged.movesByDay, b.movesByDay);
+      // Merge activeDriversByDay using OR on ApproxDistinct bit arrays
+      for (const [day, ad] of b.activeDriversByDay) {
+        if (!merged.activeDriversByDay.has(day)) {
+          const copy = new ApproxDistinct(ad.bits);
+          copy.arr.set(ad.arr);
+          merged.activeDriversByDay.set(day, copy);
+        } else {
+          const m = merged.activeDriversByDay.get(day);
+          merged.activeDriversByDay.set(day, mergeApproxDistinct(m, ad));
+        }
+      }
+      // Weighted quantile accumulation
+      if (b.queueTotal > 0) {
+        const qv = b.queueMedian?.value();
+        if (qv != null) { qMedSum += qv * b.queueTotal; qMedW += b.queueTotal; }
+        const q90v = b.queueP90?.value();
+        if (q90v != null) { qP90Sum += q90v * b.queueTotal; qP90W += b.queueTotal; }
+      }
+      if (b.dispatchTotal > 0) {
+        const dhv = b.deadheadMedian?.value();
+        if (dhv != null) { dhMedSum += dhv * b.dispatchTotal; dhMedW += b.dispatchTotal; }
+        const exv = b.executionMedian?.value();
+        if (exv != null) { exMedSum += exv * b.dispatchTotal; exMedW += b.dispatchTotal; }
+      }
+    }
+    merged.queueMedian = { value: () => qMedW > 0 ? qMedSum / qMedW : null };
+    merged.queueP90 = { value: () => qP90W > 0 ? qP90Sum / qP90W : null };
+    merged.deadheadMedian = { value: () => dhMedW > 0 ? dhMedSum / dhMedW : null };
+    merged.executionMedian = { value: () => exMedW > 0 ? exMedSum / exMedW : null };
+    return merged;
+  }
 }
 
 class TrailerHistoryAnalyzer extends BaseAnalyzer {
@@ -5143,6 +5372,25 @@ class TrailerHistoryAnalyzer extends BaseAnalyzer {
         },
       }),
     };
+  }
+
+  mergeToVirtualBucket(facilityNames) {
+    const merged = this.createFacilityBucket();
+    for (const name of facilityNames) {
+      const normalized = FacilityRegistry.normalizeFacilityName(name);
+      const b = this.byFacility.get(normalized);
+      if (!b) continue;
+      merged.totalRows += b.totalRows;
+      merged.lostCount += b.lostCount;
+      merged.errorCounts.trailer_marked_lost += b.errorCounts?.trailer_marked_lost || 0;
+      merged.errorCounts.yard_check_insert += b.errorCounts?.yard_check_insert || 0;
+      merged.errorCounts.spot_edited += b.errorCounts?.spot_edited || 0;
+      merged.errorCounts.facility_edited += b.errorCounts?.facility_edited || 0;
+      mergeCounterMapInto(merged.errorsByPeriod, b.errorsByPeriod);
+      for (const day of b.daysWithData) merged.daysWithData.add(day);
+      mergeCounterMapInto(merged.lostByCarrier, b.lostByCarrier);
+    }
+    return merged;
   }
 }
 

@@ -1155,6 +1155,24 @@ function renderAllResults() {
       isMultiFacility: facilityRegistry.getFacilitiesForReport(report).length >= 2,
       facilities: facilityRegistry.getFacilitiesForReport(report),
       getFacilityResult: (facility) => getFacilityResult(report, facility),
+      getMultiFacilityResult: (facilityNames) => {
+        try {
+          const analyzer = state.analyzers?.[report];
+          if (!analyzer || typeof analyzer.finalizeMultiFacility !== 'function') return null;
+          const meta = {
+            tenant: inputs.tenant,
+            facilities: facilityNames,
+            startDate: inputs.startDate,
+            endDate: inputs.endDate,
+            timezone: inputs.timezone,
+            assumptions: inputs.assumptions,
+          };
+          return analyzer.finalizeMultiFacility(facilityNames, meta);
+        } catch (e) {
+          console.error(`Error in finalizeMultiFacility for ${report}:`, e);
+          return null;
+        }
+      },
     });
     root.appendChild(card);
   });
@@ -2414,6 +2432,24 @@ UI.recalcRoiBtn?.addEventListener('click', () => {
       isMultiFacility: facilityRegistry.getFacilitiesForReport(report).length >= 2,
       facilities: facilityRegistry.getFacilitiesForReport(report),
       getFacilityResult: (facility) => getFacilityResultForRecalc(report, facility),
+      getMultiFacilityResult: (facilityNames) => {
+        try {
+          const analyzer = state.analyzers?.[report];
+          if (!analyzer || typeof analyzer.finalizeMultiFacility !== 'function') return null;
+          const meta = {
+            tenant: state.inputs?.tenant,
+            facilities: facilityNames,
+            startDate: state.inputs?.startDate,
+            endDate: state.inputs?.endDate,
+            timezone: state.timezone,
+            assumptions: newAssumptions,
+          };
+          return analyzer.finalizeMultiFacility(facilityNames, meta);
+        } catch (e) {
+          console.error(`Error in finalizeMultiFacility for ${report}:`, e);
+          return null;
+        }
+      },
     });
     UI.resultsRoot.appendChild(card);
   }

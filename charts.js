@@ -15,6 +15,14 @@ document.addEventListener('yardiq:globalfacilityfilter', (event) => {
 let _comparisonCharts = [];
 let _comparisonFilterCleanup = null;
 
+// Campus mode: switch all facility-tabs-containers to their campus aggregate panel.
+document.addEventListener('yardiq:campusmode', (event) => {
+  const { enabled, facilities } = event.detail || {};
+  document.querySelectorAll('.facility-tabs-container').forEach(container => {
+    container._applyCampusMode?.(enabled, facilities || []);
+  });
+});
+
 /**
  * Chart.js rendering + export PNG + provide chart datasets for CSV export.
  * NOTE: Chart.js is loaded via CDN and available as window.Chart.
@@ -1296,15 +1304,74 @@ function createMultiselectDropdown(facilities, initialSelected, onChange) {
   return wrap;
 }
 
-export function createFacilityTabs({ facilities, activeTab = 'all', contentByFacility, onTabChange }) {
+/**
+ * Average numeric metrics across an array of { fac, result } objects.
+ * Used by the campus panel to show combined facility metrics.
+ */
+function buildCampusMetrics(facilityResults) {
+  const sums = {};
+  const counts = {};
+  for (const { result } of facilityResults) {
+    if (!result?.metrics) continue;
+    for (const [k, v] of Object.entries(result.metrics)) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        sums[k] = (sums[k] || 0) + v;
+        counts[k] = (counts[k] || 0) + 1;
+      }
+    }
+  }
+  const averaged = {};
+  for (const k of Object.keys(sums)) averaged[k] = sums[k] / counts[k];
+  return averaged;
+}
+
+/**
+ * Build a campus-mode content panel from per-facility results.
+ * Shows averaged metrics and combined (labelled) findings for the selected facilities.
+ * NOTE: renderMetricsGrid and renderFindings are defined later in this file but hoisted.
+ */
+function buildCampusPanel(facilityResults, facilityNames) {
+  const wrap = el('div', { class: 'campus-panel' });
+
+  wrap.appendChild(el('div', { class: 'campus-panel-note muted small' }, [
+    `Campus view — aggregated data for: ${facilityNames.join(', ')}`
+  ]));
+
+  const avgMetrics = buildCampusMetrics(facilityResults);
+  if (Object.keys(avgMetrics).length > 0) {
+    wrap.appendChild(el('div', { class: 'section-title', style: 'margin-top: 12px;' }, [
+      el('h2', {}, ['Campus Metrics']),
+      el('span', { class: 'muted small', style: 'margin-left: 8px;' }, ['(averaged across selected facilities)']),
+    ]));
+    wrap.appendChild(renderMetricsGrid(avgMetrics));
+  }
+
+  const allFindings = [];
+  const allRecs = [];
+  for (const { result, fac } of facilityResults) {
+    (result?.findings || []).forEach(f => allFindings.push(`[${fac}] ${f}`));
+    (result?.recommendations || []).forEach(r => allRecs.push(`[${fac}] ${r}`));
+  }
+  if (allFindings.length || allRecs.length) {
+    wrap.appendChild(el('div', { style: 'margin-top: 16px;' }, [
+      renderFindings(allFindings, allRecs, null, {}, null)
+    ]));
+  }
+
+  return wrap;
+}
+
+export function createFacilityTabs({ facilities, activeTab = 'all', contentByFacility, onTabChange, getCampusContent }) {
   const container = el('div', { class: 'facility-tabs-container' });
 
   const selectorWrap = el('div', { class: 'facility-selector-wrap' });
   const label = el('label', { class: 'facility-selector-label' }, ['View Facilities:']);
 
   let currentSelected = activeTab === 'all' ? ['all'] : [activeTab];
+  let inCampusMode = false;
 
   const multiselect = createMultiselectDropdown(facilities, currentSelected, (newSelected) => {
+    if (inCampusMode) return;
     currentSelected = newSelected;
     applyFilter(newSelected);
     onTabChange?.(newSelected);
@@ -1335,6 +1402,10 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
   // Content panels
   const panelsContainer = el('div', { class: 'facility-tab-panels' });
 
+  // Campus panel (hidden until campus mode is activated)
+  const campusPanel = el('div', { class: 'facility-tab-panel', 'data-tab-panel': 'campus' });
+  panelsContainer.appendChild(campusPanel);
+
   // "All Facilities" panel
   const allPanel = el('div', {
     class: `facility-tab-panel${currentSelected.includes('all') ? ' active' : ''}`,
@@ -1343,7 +1414,7 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
   if (contentByFacility.all) allPanel.appendChild(contentByFacility.all);
   panelsContainer.appendChild(allPanel);
 
-  // Individual facility panels (each gets a sticky name label for multi-select UX)
+  // Individual facility panels
   for (const fac of facilities) {
     const isActive = !currentSelected.includes('all') && currentSelected.includes(fac);
     const panel = el('div', {
@@ -1357,26 +1428,55 @@ export function createFacilityTabs({ facilities, activeTab = 'all', contentByFac
   container.appendChild(panelsContainer);
 
   function applyFilter(selected) {
+    campusPanel.classList.remove('active'); // campus panel is never shown by the filter
     const isAll = selected.includes('all');
     let visibleCount = 0;
     panelsContainer.querySelectorAll('.facility-tab-panel').forEach(p => {
+      if (p === campusPanel) return;
       const panelFac = p.dataset.tabPanel;
       const show = isAll ? panelFac === 'all' : selected.includes(panelFac);
       p.classList.toggle('active', show);
       if (show && panelFac !== 'all') visibleCount++;
     });
-    // Show facility name headers only when multiple individual panels are visible
     panelsContainer.classList.toggle('multi-facility-active', visibleCount > 1);
     multiselect._setSelected(selected);
   }
 
-  // External API for global filter
+  // External API: global filter changes
   container._applyFilter = (selected) => {
+    if (inCampusMode) return; // campus mode takes precedence
     const valid = selected.filter(f => f === 'all' || facilities.includes(f));
     if (valid.length === 0) return;
     currentSelected = valid;
     applyFilter(valid);
     onTabChange?.(valid);
+  };
+
+  // External API: campus mode on/off
+  container._applyCampusMode = (enabled, campusFacilities) => {
+    inCampusMode = enabled;
+    if (enabled) {
+      // Build campus content from selected facilities' data
+      campusPanel.innerHTML = '';
+      if (getCampusContent) {
+        const content = getCampusContent(campusFacilities);
+        if (content) campusPanel.appendChild(content);
+      }
+      // Show only the campus panel
+      panelsContainer.querySelectorAll('.facility-tab-panel').forEach(p => p.classList.remove('active'));
+      campusPanel.classList.add('active');
+      panelsContainer.classList.remove('multi-facility-active');
+      // Dim the selector while campus mode is on
+      selectorWrap.style.opacity = '0.45';
+      selectorWrap.style.pointerEvents = 'none';
+    } else {
+      // Hide campus panel, restore the current filter
+      campusPanel.classList.remove('active');
+      campusPanel.innerHTML = '';
+      selectorWrap.style.opacity = '';
+      selectorWrap.style.pointerEvents = '';
+      applyFilter(currentSelected);
+    }
   };
 
   return container;
@@ -1415,15 +1515,22 @@ export function createGlobalFacilityFilter(facilities) {
 
   campusCheckbox.addEventListener('change', () => {
     campusMode = campusCheckbox.checked;
+    multiselect.style.opacity = campusMode ? '0.45' : '';
+    multiselect.style.pointerEvents = campusMode ? 'none' : '';
+
     if (campusMode) {
-      // Lock multi-select and apply aggregate view to all sections
-      multiselect.style.opacity = '0.45';
-      multiselect.style.pointerEvents = 'none';
-      document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: ['all'] } }));
+      if (currentSelection.includes('all')) {
+        // All facilities selected: the pre-computed "all" panel IS the correct campus view
+        document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: ['all'] } }));
+      } else {
+        // Specific facilities selected: build a campus panel from only those facilities
+        // Also update the global filter so Facility Comparisons shows the right set
+        document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: currentSelection } }));
+        document.dispatchEvent(new CustomEvent('yardiq:campusmode', { detail: { enabled: true, facilities: currentSelection } }));
+      }
     } else {
-      // Restore multi-select and re-apply individual selection
-      multiselect.style.opacity = '';
-      multiselect.style.pointerEvents = '';
+      // Exit campus mode: restore individual view
+      document.dispatchEvent(new CustomEvent('yardiq:campusmode', { detail: { enabled: false, facilities: currentSelection } }));
       document.dispatchEvent(new CustomEvent('yardiq:globalfacilityfilter', { detail: { selected: currentSelection } }));
     }
   });
@@ -1735,6 +1842,7 @@ export function renderReportResult({
   isMultiFacility = false,
   facilities = [],
   getFacilityResult = null, // Function: (facility) => result for that facility
+  getMultiFacilityResult = null, // Function: (facilityNames[]) => accurately aggregated result
 }) {
   const card = el('div', { class: 'report-card' });
 
@@ -2055,6 +2163,19 @@ export function renderReportResult({
       facilities,
       activeTab: 'all',
       contentByFacility,
+      getCampusContent: (campusFacilities) => {
+        // Use accurate multi-facility aggregation if available
+        if (getMultiFacilityResult) {
+          const campusResult = getMultiFacilityResult(campusFacilities);
+          if (campusResult) return buildContentBlock(campusResult, false);
+        }
+        // Fallback: averaged metrics + combined findings
+        const facResults = campusFacilities
+          .map(fac => ({ fac, result: getFacilityResult(fac) }))
+          .filter(x => x.result);
+        if (facResults.length === 0) return null;
+        return buildCampusPanel(facResults, campusFacilities);
+      },
       onTabChange: (newSelected) => {
         // newSelected is now an array (e.g. ['all'] or ['FAC1', 'FAC2'])
         const selectedFacilities = newSelected.includes('all') ? [] : newSelected;

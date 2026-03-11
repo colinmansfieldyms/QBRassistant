@@ -2480,6 +2480,16 @@ canvas{ max-width:100%; }
   accent-color: var(--accent);
 }
 
+/* ---- Campus panel ---- */
+.campus-panel-note {
+  display: inline-block;
+  padding: 4px 10px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
 /* Facility comparison section */
 .facility-comparison-section {
   margin-top: 24px;
