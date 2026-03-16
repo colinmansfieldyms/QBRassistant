@@ -33,7 +33,7 @@ export function printReport() {
   window.print();
 }
 
-export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMultiFacility, detectedFacilities }) {
+export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMultiFacility, detectedFacilities, viewMode = 'all_facilities', activeFacilities = [] }) {
   const now = DateTime.now().setZone(inputs.timezone).toFormat('yyyy-LL-dd HH:mm:ss ZZZZ');
   const LINE_WIDTH = 64;
   const DIVIDER = '═'.repeat(LINE_WIDTH);
@@ -53,7 +53,13 @@ export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMulti
   lines.push(`Facilities:  ${(inputs.facilities || []).join(', ') || 'N/A'}`);
   lines.push(`Date Range:  ${inputs.startDate} → ${inputs.endDate}`);
   lines.push(`Timezone:    ${inputs.timezone}`);
-  if (isMultiFacility && detectedFacilities?.length > 1) {
+  if (viewMode === 'campus') {
+    lines.push(`View:        Campus Operation`);
+    lines.push(`Campus:      ${activeFacilities.join(', ')}`);
+  } else if (viewMode === 'per_facility') {
+    lines.push(`View:        Per-Facility`);
+    lines.push(`Facilities:  ${activeFacilities.join(', ')}`);
+  } else if (isMultiFacility && detectedFacilities?.length > 1) {
     lines.push(`Analysis:    Multi-facility (${detectedFacilities.length} facilities detected)`);
   }
   lines.push('');
@@ -92,21 +98,32 @@ export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMulti
   const allRecommendations = [];
   const allROIInsights = [];
 
-  for (const [report, res] of Object.entries(results)) {
+  function collectFromResult(report, res, facilityLabel) {
+    const prefix = facilityLabel ? `${facilityLabel} — ` : '';
     if (res.findings?.length) {
       for (const f of res.findings) {
-        allFindings.push({ report, ...f });
+        allFindings.push({ report, ...f, text: prefix + f.text });
       }
     }
     if (res.recommendations?.length) {
       for (const r of res.recommendations) {
-        allRecommendations.push({ report, text: r });
+        allRecommendations.push({ report, text: prefix + r });
       }
     }
     if (res.roi?.insights?.length) {
       for (const insight of res.roi.insights) {
-        allROIInsights.push({ report, text: insight });
+        allROIInsights.push({ report, text: prefix + insight });
       }
+    }
+  }
+
+  for (const [report, res] of Object.entries(results)) {
+    if (viewMode === 'per_facility' && res.byFacility) {
+      for (const [fac, facResult] of Object.entries(res.byFacility)) {
+        collectFromResult(report, facResult, fac);
+      }
+    } else {
+      collectFromResult(report, res, null);
     }
   }
 
@@ -186,43 +203,51 @@ export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMulti
   lines.push(DIVIDER);
   lines.push('');
 
+  function renderResultDetail(res, indent = '  ') {
+    lines.push(`${indent}Data Quality: ${res.dataQuality?.score ?? '—'}/100 (${res.dataQuality?.label ?? '—'})`);
+    lines.push(`${indent}Rows Processed: ${(res.dataQuality?.totalRows ?? 0).toLocaleString()}`);
+    lines.push('');
+
+    if (res.metrics && Object.keys(res.metrics).length) {
+      lines.push(`${indent}KEY METRICS:`);
+      for (const [k, v] of Object.entries(res.metrics)) {
+        if (typeof v === 'object' && v !== null && !Array.isArray(v)) continue;
+        const formattedKey = formatMetricKey(k);
+        lines.push(`${indent}  • ${formattedKey}: ${formatValue(v)}`);
+      }
+      lines.push('');
+    }
+
+    if (res.roi?.estimate) {
+      lines.push(`${indent}ROI ESTIMATES:`);
+      lines.push(`${indent}  Label: ${res.roi.label || 'N/A'}`);
+      for (const [k, v] of Object.entries(res.roi.estimate)) {
+        if (v !== null && v !== undefined) {
+          const formattedKey = formatMetricKey(k);
+          lines.push(`${indent}  • ${formattedKey}: ${formatValue(v)}`);
+        }
+      }
+      if (res.roi.disclaimer) {
+        lines.push('');
+        lines.push(`${indent}  Note: ${wrapText(res.roi.disclaimer, LINE_WIDTH - 10, indent + '        ')}`);
+      }
+      lines.push('');
+    }
+  }
+
   for (const [report, res] of Object.entries(results)) {
     lines.push(`▶ ${formatReportName(report)}`);
     lines.push(SECTION_DIVIDER);
     lines.push('');
 
-    // Data quality
-    lines.push(`  Data Quality: ${res.dataQuality?.score ?? '—'}/100 (${res.dataQuality?.label ?? '—'})`);
-    lines.push(`  Rows Processed: ${(res.dataQuality?.totalRows ?? 0).toLocaleString()}`);
-    lines.push('');
-
-    // Key metrics (formatted nicely)
-    if (res.metrics && Object.keys(res.metrics).length) {
-      lines.push('  KEY METRICS:');
-      for (const [k, v] of Object.entries(res.metrics)) {
-        // Skip complex objects in the summary
-        if (typeof v === 'object' && v !== null && !Array.isArray(v)) continue;
-        const formattedKey = formatMetricKey(k);
-        lines.push(`    • ${formattedKey}: ${formatValue(v)}`);
-      }
-      lines.push('');
-    }
-
-    // ROI estimates
-    if (res.roi?.estimate) {
-      lines.push('  ROI ESTIMATES:');
-      lines.push(`    Label: ${res.roi.label || 'N/A'}`);
-      for (const [k, v] of Object.entries(res.roi.estimate)) {
-        if (v !== null && v !== undefined) {
-          const formattedKey = formatMetricKey(k);
-          lines.push(`    • ${formattedKey}: ${formatValue(v)}`);
-        }
-      }
-      if (res.roi.disclaimer) {
+    if (viewMode === 'per_facility' && res.byFacility) {
+      for (const [fac, facResult] of Object.entries(res.byFacility)) {
+        lines.push(`  ┌─ ${fac}`);
+        renderResultDetail(facResult, '  │ ');
         lines.push('');
-        lines.push(`    Note: ${wrapText(res.roi.disclaimer, LINE_WIDTH - 10, '          ')}`);
       }
-      lines.push('');
+    } else {
+      renderResultDetail(res);
     }
 
     lines.push('');
@@ -350,7 +375,7 @@ function csvEscape(v) {
  * Includes all chart data, findings, recommendations, ROI, and sufficient context
  * for an AI with minimal prior knowledge to extract meaningful insights.
  */
-export function buildExportJson({ inputs, results, warnings, isMultiFacility, detectedFacilities }) {
+export function buildExportJson({ inputs, results, warnings, isMultiFacility, detectedFacilities, viewMode = 'all_facilities', activeFacilities = [] }) {
   const REPORT_DESCRIPTIONS = {
     current_inventory: 'Snapshot of all trailers currently in the yard, their statuses, move types, age, and carrier assignments. Used to assess yard congestion, inventory health, and data quality.',
     detention_history: 'Historical record of trailer detention events — when trailers exceeded free time and incurred carrier charges. Tracks prevention rates, detention costs, and carrier performance.',
@@ -396,9 +421,7 @@ export function buildExportJson({ inputs, results, warnings, isMultiFacility, de
 
   const now = DateTime.now().setZone(inputs.timezone).toFormat('yyyy-LL-dd HH:mm:ss ZZZZ');
 
-  const reportSections = {};
-  for (const [report, res] of Object.entries(results)) {
-    // Sanitize chart data — strip canvas refs, keep only serializable data
+  function serializeResult(res) {
     const charts = (res.charts || []).map(c => ({
       id: c.id,
       title: c.title,
@@ -413,7 +436,6 @@ export function buildExportJson({ inputs, results, warnings, isMultiFacility, de
       } : null,
     }));
 
-    // Annotate metrics with glossary descriptions
     const annotatedMetrics = {};
     for (const [k, v] of Object.entries(res.metrics || {})) {
       if (k.startsWith('_debug')) continue;
@@ -423,8 +445,7 @@ export function buildExportJson({ inputs, results, warnings, isMultiFacility, de
       };
     }
 
-    reportSections[report] = {
-      description: REPORT_DESCRIPTIONS[report] || null,
+    return {
       dataQuality: {
         score: res.dataQuality?.score ?? null,
         label: res.dataQuality?.label ?? null,
@@ -448,6 +469,42 @@ export function buildExportJson({ inputs, results, warnings, isMultiFacility, de
     };
   }
 
+  const reportSections = {};
+
+  if (viewMode === 'per_facility') {
+    // Per-facility mode: each report has byFacility with individual results
+    for (const [report, wrapper] of Object.entries(results)) {
+      const facilityData = {};
+      if (wrapper.byFacility) {
+        for (const [fac, res] of Object.entries(wrapper.byFacility)) {
+          facilityData[fac] = serializeResult(res);
+        }
+      }
+      reportSections[report] = {
+        description: REPORT_DESCRIPTIONS[report] || null,
+        byFacility: facilityData,
+      };
+    }
+  } else {
+    // all_facilities or campus mode: flat results per report
+    for (const [report, res] of Object.entries(results)) {
+      reportSections[report] = {
+        description: REPORT_DESCRIPTIONS[report] || null,
+        ...serializeResult(res),
+      };
+    }
+  }
+
+  // Build view description for AI consumers
+  let viewDescription;
+  if (viewMode === 'campus') {
+    viewDescription = `Campus view — aggregated results combining facilities: ${activeFacilities.join(', ')}. Metrics, findings, and recommendations reflect the combined operation of these facilities as a single campus.`;
+  } else if (viewMode === 'per_facility') {
+    viewDescription = `Per-facility view — individual results for each selected facility: ${activeFacilities.join(', ')}. Each report contains a "byFacility" object with separate analysis per facility.`;
+  } else {
+    viewDescription = 'All-facilities view — aggregated results across all detected facilities.';
+  }
+
   return JSON.stringify({
     _meta: {
       description: 'YardIQ yard management analysis export. Each report section contains metrics, chart data, findings, recommendations, and ROI estimates for a specific aspect of yard operations.',
@@ -463,6 +520,9 @@ export function buildExportJson({ inputs, results, warnings, isMultiFacility, de
       timezone: inputs.timezone,
       isMultiFacility,
       detectedFacilities: detectedFacilities || [],
+      viewMode,
+      viewDescription,
+      activeFacilities: activeFacilities || [],
       assumptions: inputs.assumptions || {},
     },
     reports: reportSections,

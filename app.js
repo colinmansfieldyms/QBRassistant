@@ -186,6 +186,8 @@ const state = {
   isMultiFacility: false, // True when 2+ facilities detected
   detectedFacilities: [], // Array of facility names from data
   analyzers: null, // Store analyzers reference for facility result retrieval
+  // Global facility filter state (synced from createGlobalFacilityFilter events)
+  facilityFilter: { selected: ['all'], campusMode: false },
   // AI Insights (populated when user generates them)
   aiInsights: null, // { insights: string[], summary: string }
   perf: {
@@ -396,6 +398,7 @@ function resetAll() {
   state.partialPeriodInfo = null;
   state.isMultiFacility = false;
   state.detectedFacilities = [];
+  state.facilityFilter = { selected: ['all'], campusMode: false };
   state.analyzers = null;
   facilityRegistry.clear();
   resetPerfStats();
@@ -1345,6 +1348,7 @@ async function runAssessment() {
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
   state.resultsRenderThrottleMs = computeRenderThrottle(PARTIAL_EMIT_INTERVAL_MS_DEFAULT);
+  state.facilityFilter = { selected: ['all'], campusMode: false };
 
   // Clear facility registry for fresh detection
   facilityRegistry.clear();
@@ -1669,6 +1673,7 @@ async function runCSVAssessment() {
   state.partialPeriodInfo = null;
   state.runStartedAt = Date.now();
   state.timezone = inputs.timezone;
+  state.facilityFilter = { selected: ['all'], campusMode: false };
 
   // Clear facility registry for fresh detection
   facilityRegistry.clear();
@@ -1991,26 +1996,87 @@ async function handleCSVFileUpload(files) {
 // ---------- Export wiring ----------
 function downloadSummary() {
   if (!state.inputs || !Object.keys(state.results).length) return;
+  const { results, viewMode, activeFacilities } = buildFilteredExportResults();
   const txt = buildSummaryTxt({
     inputs: state.inputs,
-    results: state.results,
+    results,
     warnings: state.warnings,
     aiInsights: state.aiInsights,
     isMultiFacility: state.isMultiFacility,
     detectedFacilities: state.detectedFacilities,
+    viewMode,
+    activeFacilities,
   });
   const stamp = DateTime.now().setZone(state.inputs.timezone).toFormat('yyyyLLdd_HHmm');
   downloadText(`YardIQ_Report_${state.inputs.tenant}_${stamp}.txt`, txt);
 }
 
+function buildFilteredExportResults() {
+  const { selected, campusMode } = state.facilityFilter;
+  const isAll = selected.includes('all') || selected.length === 0;
+  const reports = Object.keys(state.results);
+
+  // No filter or "All" selected without campus → export all-facilities aggregated results
+  if (isAll && !campusMode) {
+    return { results: state.results, viewMode: 'all_facilities', activeFacilities: state.detectedFacilities };
+  }
+
+  const activeFacilities = isAll ? state.detectedFacilities : selected;
+  const meta = {
+    tenant: state.inputs?.tenant,
+    facilities: activeFacilities,
+    startDate: state.inputs?.startDate,
+    endDate: state.inputs?.endDate,
+    timezone: state.inputs?.timezone,
+    assumptions: state.inputs?.assumptions,
+  };
+
+  if (campusMode) {
+    // Campus mode: aggregate selected facilities into one combined result per report
+    const campusResults = {};
+    for (const report of reports) {
+      const analyzer = state.analyzers?.[report];
+      if (analyzer && typeof analyzer.finalizeMultiFacility === 'function') {
+        const combined = analyzer.finalizeMultiFacility(activeFacilities, meta);
+        campusResults[report] = combined || state.results[report];
+      } else {
+        campusResults[report] = state.results[report];
+      }
+    }
+    return { results: campusResults, viewMode: 'campus', activeFacilities };
+  }
+
+  // Specific facilities selected (no campus): export per-facility results
+  const perFacilityResults = {};
+  for (const report of reports) {
+    const analyzer = state.analyzers?.[report];
+    const facilityResults = {};
+    for (const fac of activeFacilities) {
+      if (analyzer && typeof analyzer.finalizeFacility === 'function') {
+        const result = analyzer.finalizeFacility(fac, { ...meta, facilities: [fac] });
+        if (result) facilityResults[fac] = result;
+      }
+    }
+    // Include the all-facilities result as a reference
+    perFacilityResults[report] = {
+      _allFacilities: state.results[report],
+      byFacility: facilityResults,
+    };
+  }
+  return { results: perFacilityResults, viewMode: 'per_facility', activeFacilities };
+}
+
 function downloadJson() {
   if (!state.inputs || !Object.keys(state.results).length) return;
+  const { results, viewMode, activeFacilities } = buildFilteredExportResults();
   const json = buildExportJson({
     inputs: state.inputs,
-    results: state.results,
+    results,
     warnings: state.warnings,
     isMultiFacility: state.isMultiFacility,
     detectedFacilities: state.detectedFacilities,
+    viewMode,
+    activeFacilities,
   });
   const stamp = DateTime.now().setZone(state.inputs.timezone).toFormat('yyyyLLdd_HHmm');
   downloadText(`YardIQ_Export_${state.inputs.tenant}_${stamp}.json`, json);
@@ -2354,6 +2420,15 @@ UI.timezoneSelect.addEventListener('change', () => {
 // Update ROI category recommendations when report checkboxes change (API mode)
 UI.reportChecks.forEach(check => {
   check.addEventListener('change', updateROICategoryRecommendations);
+});
+
+// Sync global facility filter / campus mode state for exports
+document.addEventListener('yardiq:globalfacilityfilter', (e) => {
+  const selected = e.detail?.selected;
+  if (Array.isArray(selected)) state.facilityFilter.selected = selected;
+});
+document.addEventListener('yardiq:campusmode', (e) => {
+  state.facilityFilter.campusMode = !!e.detail?.enabled;
 });
 
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
