@@ -344,3 +344,128 @@ function csvEscape(v) {
   if (/[,"\n]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
   return s;
 }
+
+/**
+ * Build a comprehensive JSON export designed for AI consumption.
+ * Includes all chart data, findings, recommendations, ROI, and sufficient context
+ * for an AI with minimal prior knowledge to extract meaningful insights.
+ */
+export function buildExportJson({ inputs, results, warnings, isMultiFacility, detectedFacilities }) {
+  const REPORT_DESCRIPTIONS = {
+    current_inventory: 'Snapshot of all trailers currently in the yard, their statuses, move types, age, and carrier assignments. Used to assess yard congestion, inventory health, and data quality.',
+    detention_history: 'Historical record of trailer detention events — when trailers exceeded free time and incurred carrier charges. Tracks prevention rates, detention costs, and carrier performance.',
+    dockdoor_history: 'Dock door utilization data including dwell times (total time at door), process times (active loading/unloading), and door turn counts. Measures dock efficiency and throughput.',
+    driver_history: 'Yard driver (jockey) activity logs including move completions, queue wait times, compliance rates, and deadhead (empty driving) ratios. Measures labor efficiency.',
+    trailer_history: 'Trailer event log tracking error-indicating events such as trailers marked lost, yard check inserts, spot edits, and facility edits. Used to assess operational accuracy and chaos.',
+  };
+
+  const METRIC_GLOSSARY = {
+    total_trailers: 'Count of trailers currently in the yard',
+    stale_30d_pct: 'Percentage of trailers that have been in the yard for over 30 days',
+    placeholder_scac_pct: 'Percentage of trailers with placeholder/unknown carrier SCAC codes',
+    outbound_vs_inbound_ratio: 'Ratio of outbound to inbound trailers (1.0 = balanced)',
+    live_load_missing_driver_contact_pct: 'Percentage of live loads missing driver contact info',
+    pre_detention_count: 'Number of trailers approaching detention threshold',
+    detention_count: 'Number of trailers that exceeded detention threshold and incurred charges',
+    prevented_detention_count: 'Number of trailers moved before detention threshold',
+    prevention_rate: 'Percentage of at-risk trailers that were moved before detention (higher is better)',
+    live_load_count: 'Detention events involving live (driver-attended) loads',
+    drop_load_count: 'Detention events involving drop (unattended) loads',
+    median_dwell_time_min: 'Median total time (minutes) a trailer spends at a dock door',
+    median_process_time_min: 'Median active processing time (minutes) at a dock door',
+    avg_turns_per_door_per_day: 'Average number of trailers served per door per day (throughput)',
+    process_adoption_pct: 'Percentage of dock events with process time data captured',
+    unique_doors: 'Number of distinct dock doors used',
+    total_turns: 'Total door turn count across all doors',
+    moves_total: 'Total completed yard moves (driver assignments)',
+    compliance_pct: 'Percentage of moves completed in compliance with procedures',
+    queue_median_minutes: 'Median time (minutes) a move request waits before driver accepts',
+    queue_p90_minutes: '90th percentile queue wait time — 10% of moves waited longer than this',
+    deadhead_median_minutes: 'Median time (minutes) driver spends driving empty to pickup',
+    execution_median_minutes: 'Median time (minutes) to complete a move once started',
+    deadhead_ratio_pct: 'Percentage of driver time spent on empty (deadhead) travel',
+    avg_moves_per_driver_per_day: 'Average moves completed per driver per day (productivity)',
+    total_error_events: 'Total error-indicating events (lost trailers, yard check inserts, spot/facility edits)',
+    trailer_marked_lost: 'Count of "trailer marked lost" events — highest-severity error',
+    yard_check_insert: 'Count of yard check insert events — trailer found in unexpected location',
+    spot_edited: 'Count of spot edit events — trailer location corrected manually',
+    facility_edited: 'Count of facility edit events — trailer facility assignment corrected',
+    errors_per_day: 'Average error events per day across the reporting period',
+    error_rate_pct: 'Error events as a percentage of total events processed',
+  };
+
+  const now = DateTime.now().setZone(inputs.timezone).toFormat('yyyy-LL-dd HH:mm:ss ZZZZ');
+
+  const reportSections = {};
+  for (const [report, res] of Object.entries(results)) {
+    // Sanitize chart data — strip canvas refs, keep only serializable data
+    const charts = (res.charts || []).map(c => ({
+      id: c.id,
+      title: c.title,
+      kind: c.kind,
+      description: c.description || null,
+      data: c.data ? {
+        labels: c.data.labels || [],
+        datasets: (c.data.datasets || []).map(ds => ({
+          label: ds.label,
+          data: ds.data,
+        })),
+      } : null,
+    }));
+
+    // Annotate metrics with glossary descriptions
+    const annotatedMetrics = {};
+    for (const [k, v] of Object.entries(res.metrics || {})) {
+      if (k.startsWith('_debug')) continue;
+      annotatedMetrics[k] = {
+        value: v,
+        description: METRIC_GLOSSARY[k] || null,
+      };
+    }
+
+    reportSections[report] = {
+      description: REPORT_DESCRIPTIONS[report] || null,
+      dataQuality: {
+        score: res.dataQuality?.score ?? null,
+        label: res.dataQuality?.label ?? null,
+        totalRows: res.dataQuality?.totalRows ?? 0,
+      },
+      metrics: annotatedMetrics,
+      charts,
+      findings: (res.findings || []).map(f => ({
+        severity: f.level || 'info',
+        text: f.text,
+        confidence: f.confidence || null,
+      })),
+      recommendations: res.recommendations || [],
+      roi: res.roi ? {
+        label: res.roi.label || null,
+        estimate: res.roi.estimate || null,
+        insights: res.roi.insights || [],
+        disclaimer: res.roi.disclaimer || null,
+      } : null,
+      topEventStrings: res.extras?.event_type_top10?.map(x => ({ event: x.key, count: x.value })) || null,
+    };
+  }
+
+  return JSON.stringify({
+    _meta: {
+      description: 'YardIQ yard management analysis export. Each report section contains metrics, chart data, findings, recommendations, and ROI estimates for a specific aspect of yard operations.',
+      generated: now,
+      version: '1.0',
+      findingSeverityScale: 'green (healthy) → yellow (warning) → red (critical)',
+      roiDisclaimer: 'ROI estimates are directional projections based on configurable assumptions, not guarantees.',
+    },
+    context: {
+      tenant: inputs.tenant || null,
+      facilities: inputs.facilities || [],
+      dateRange: { start: inputs.startDate, end: inputs.endDate },
+      timezone: inputs.timezone,
+      isMultiFacility,
+      detectedFacilities: detectedFacilities || [],
+      assumptions: inputs.assumptions || {},
+    },
+    reports: reportSections,
+    warnings: warnings || [],
+  }, null, 2);
+}

@@ -1,7 +1,7 @@
 import { createApiRunner, ApiError } from './api.js?v=2025.01.07.0';
 import { createAnalyzers, normalizeRowStrict, detectGlobalPartialPeriods, recalculateROI, facilityRegistry } from './analysis.js?v=2025.01.07.0';
 import { renderReportResult, destroyAllCharts, createFacilityTabs, renderFacilityComparisons, wrapGlossaryTerms, createGlobalFacilityFilter } from './charts.js?v=2025.01.07.0';
-import { downloadText, downloadCsv, buildSummaryTxt, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
+import { downloadText, downloadCsv, buildSummaryTxt, buildExportJson, buildReportSummaryCsv, buildChartCsv, printReport } from './export.js?v=2025.01.07.0';
 import { MOCK_TIMEZONES } from './mock-data.js?v=2025.01.07.0';
 import { instrumentation } from './instrumentation.js?v=2025.01.07.0';
 import { createETATracker } from './eta.js?v=2025.01.07.0';
@@ -82,6 +82,7 @@ const UI = {
   resultsRoot: document.querySelector('#resultsRoot'),
   statusBanner: document.querySelector('#statusBanner'),
   downloadSummaryBtn: document.querySelector('#downloadSummaryBtn'),
+  downloadJsonBtn: document.querySelector('#downloadJsonBtn'),
   printBtn: document.querySelector('#printBtn'),
   exportDropdownTrigger: document.querySelector('#exportDropdownTrigger'),
   assumptionDetention: document.querySelector('#assumptionDetention'),
@@ -2002,6 +2003,19 @@ function downloadSummary() {
   downloadText(`YardIQ_Report_${state.inputs.tenant}_${stamp}.txt`, txt);
 }
 
+function downloadJson() {
+  if (!state.inputs || !Object.keys(state.results).length) return;
+  const json = buildExportJson({
+    inputs: state.inputs,
+    results: state.results,
+    warnings: state.warnings,
+    isMultiFacility: state.isMultiFacility,
+    detectedFacilities: state.detectedFacilities,
+  });
+  const stamp = DateTime.now().setZone(state.inputs.timezone).toFormat('yyyyLLdd_HHmm');
+  downloadText(`YardIQ_Export_${state.inputs.tenant}_${stamp}.json`, json);
+}
+
 function doPrint() {
   if (!state.inputs || !Object.keys(state.results).length) return;
   printReport();
@@ -2343,6 +2357,7 @@ UI.reportChecks.forEach(check => {
 });
 
 UI.downloadSummaryBtn.addEventListener('click', downloadSummary);
+UI.downloadJsonBtn.addEventListener('click', downloadJson);
 UI.printBtn.addEventListener('click', doPrint);
 
 // AI Insights button - show confirmation modal

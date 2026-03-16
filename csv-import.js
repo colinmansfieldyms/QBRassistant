@@ -23,6 +23,27 @@ export const REPORT_TYPE_LABELS = {
   trailer_history: 'Trailer History',
 };
 
+// ---------- Filename-based Report Type Detection ----------
+
+/**
+ * Detect report type from the filename when column-based detection fails.
+ * Checks for keywords in the filename (case-insensitive).
+ */
+function detectReportTypeFromFilename(filename) {
+  if (!filename) return null;
+  const name = filename.toLowerCase();
+  // Order matters: more specific patterns first to avoid false positives
+  // "TrailerEvent" before "Trailer" so trailer event logs don't match current_inventory
+  if (/trailerevent/i.test(name)) return 'trailer_history';
+  if (/dockdoor/i.test(name) || /\bdock\b/i.test(name) || /\bdoor\b/i.test(name)) return 'dockdoor_history';
+  if (/detention/i.test(name)) return 'detention_history';
+  if (/\bdriver\b/i.test(name) || /jockey/i.test(name)) return 'driver_history';
+  if (/\bcurrent\b/i.test(name)) return 'current_inventory';
+  // "Trailer" alone (without "Event") → trailer_history
+  if (/\btrailer\b/i.test(name)) return 'trailer_history';
+  return null;
+}
+
 // ---------- CSV Import State Manager ----------
 
 /**
@@ -159,7 +180,12 @@ export async function handleFileUpload(fileList, csvState, onUpdate) {
       // Parse first few rows to detect report type
       const preview = await parseCSVFile(file);
       const columns = preview.columns;
-      const detectedType = detectReportType(columns);
+      let detectedType = detectReportType(columns);
+
+      // Fallback: detect from filename if column-based detection fails
+      if (!detectedType) {
+        detectedType = detectReportTypeFromFilename(file.name);
+      }
 
       // Validate columns if type detected
       let validation = { isValid: true, warnings: [] };
