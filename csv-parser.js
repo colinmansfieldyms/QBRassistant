@@ -465,14 +465,19 @@ export function detectReportType(columns, { filenameHint } = {}) {
 
   const columnSet = new Set(columns.map(c => c.trim()));
 
-  // Try primary signatures first (exact match — high confidence)
+  // Try primary signatures first (exact match — highest confidence, overrides filename)
   for (const [report, signature] of Object.entries(REPORT_SIGNATURES)) {
     if (signature.every(col => columnSet.has(col))) {
       return report;
     }
   }
 
-  // Try alternative signatures (exact match — high confidence)
+  // If we have a filename hint, prefer it over alt signatures and partial matching.
+  // Alt signatures are broader and can produce false positives (e.g. columns like
+  // trailer_number + move_type_name appear in multiple report types).
+  if (filenameHint) return filenameHint;
+
+  // Try alternative signatures (exact match — no filename hint to override)
   for (const [report, altSigs] of Object.entries(REPORT_SIGNATURES_ALT)) {
     for (const sig of altSigs) {
       if (sig.every(col => columnSet.has(col))) {
@@ -480,9 +485,6 @@ export function detectReportType(columns, { filenameHint } = {}) {
       }
     }
   }
-
-  // No exact match — if we have a filename hint, prefer it over partial column matching
-  if (filenameHint) return filenameHint;
 
   // Partial matching with scoring (last resort)
   let bestMatch = null;
