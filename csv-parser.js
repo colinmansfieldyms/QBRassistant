@@ -460,19 +460,19 @@ function normalizeBoolish(value) {
  * @param {string[]} columns - Array of column headers from the CSV
  * @returns {string|null} Report type or null if unknown
  */
-export function detectReportType(columns) {
-  if (!columns || !Array.isArray(columns)) return null;
+export function detectReportType(columns, { filenameHint } = {}) {
+  if (!columns || !Array.isArray(columns)) return filenameHint || null;
 
   const columnSet = new Set(columns.map(c => c.trim()));
 
-  // Try primary signatures first
+  // Try primary signatures first (exact match — high confidence)
   for (const [report, signature] of Object.entries(REPORT_SIGNATURES)) {
     if (signature.every(col => columnSet.has(col))) {
       return report;
     }
   }
 
-  // Try alternative signatures
+  // Try alternative signatures (exact match — high confidence)
   for (const [report, altSigs] of Object.entries(REPORT_SIGNATURES_ALT)) {
     for (const sig of altSigs) {
       if (sig.every(col => columnSet.has(col))) {
@@ -481,7 +481,10 @@ export function detectReportType(columns) {
     }
   }
 
-  // Partial matching with scoring
+  // No exact match — if we have a filename hint, prefer it over partial column matching
+  if (filenameHint) return filenameHint;
+
+  // Partial matching with scoring (last resort)
   let bestMatch = null;
   let bestScore = 0;
 

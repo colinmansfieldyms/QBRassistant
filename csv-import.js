@@ -26,8 +26,8 @@ export const REPORT_TYPE_LABELS = {
 // ---------- Filename-based Report Type Detection ----------
 
 /**
- * Detect report type from the filename when column-based detection fails.
- * Checks for keywords in the filename (case-insensitive).
+ * Detect report type from the filename keywords (case-insensitive).
+ * Used as a hint to override weak partial column matches.
  */
 function detectReportTypeFromFilename(filename) {
   if (!filename) return null;
@@ -180,12 +180,8 @@ export async function handleFileUpload(fileList, csvState, onUpdate) {
       // Parse first few rows to detect report type
       const preview = await parseCSVFile(file);
       const columns = preview.columns;
-      let detectedType = detectReportType(columns);
-
-      // Fallback: detect from filename if column-based detection fails
-      if (!detectedType) {
-        detectedType = detectReportTypeFromFilename(file.name);
-      }
+      const filenameHint = detectReportTypeFromFilename(file.name);
+      const detectedType = detectReportType(columns, { filenameHint });
 
       // Validate columns if type detected
       let validation = { isValid: true, warnings: [] };
