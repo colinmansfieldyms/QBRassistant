@@ -263,7 +263,7 @@ export function buildSummaryTxt({ inputs, results, warnings, aiInsights, isMulti
   const a = inputs.assumptions || {};
   lines.push(`  Detention Cost ($/hr):           ${a.detention_cost_per_hour ?? '(not set)'}`);
   lines.push(`  Labor Rate ($/hr, fully loaded): ${a.labor_fully_loaded_rate_per_hour ?? '(not set)'}`);
-  lines.push(`  Target Moves/Driver/Day:         ${a.target_moves_per_driver_per_day ?? 50}`);
+  lines.push(`  Target Moves/Driver/Day:         ${a.target_moves_per_driver_per_day ?? '(not set)'}`);
   lines.push(`  Target Turns/Door/Day:           ${a.target_turns_per_door_per_day ?? '(not set)'}`);
   lines.push(`  Cost per Dock Door Hour:         ${a.cost_per_dock_door_hour ?? '(not set)'}`);
   lines.push('');

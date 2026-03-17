@@ -1284,7 +1284,7 @@ function readAssumptions() {
   return {
     detention_cost_per_hour: detention ? Number(detention) : null,
     labor_fully_loaded_rate_per_hour: labor ? Number(labor) : null,
-    target_moves_per_driver_per_day: targetMoves ? Number(targetMoves) : 50,
+    target_moves_per_driver_per_day: targetMoves ? Number(targetMoves) : null,
     target_turns_per_door_per_day: targetTurnsPerDoor ? Number(targetTurnsPerDoor) : null,
     cost_per_dock_door_hour: costPerDockHour ? Number(costPerDockHour) : null,
   };

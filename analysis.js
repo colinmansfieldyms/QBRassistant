@@ -5791,13 +5791,9 @@ function computeDetentionROIIfEnabled({ meta, metrics, assumptions }) {
 function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   const a = assumptions || {};
 
-  // Only require target moves for driver ROI
-  const enabled = Number.isFinite(a.target_moves_per_driver_per_day);
-
-  if (!enabled) return null;
-
-  const target = a.target_moves_per_driver_per_day;
-  const laborRate = a.labor_fully_loaded_rate_per_hour || 42; // Default $42/hr
+  // Assumptions are optional — tiered analysis shows more detail as assumptions are provided
+  const target = Number.isFinite(a.target_moves_per_driver_per_day) ? a.target_moves_per_driver_per_day : null;
+  const laborRate = Number.isFinite(a.labor_fully_loaded_rate_per_hour) ? a.labor_fully_loaded_rate_per_hour : null;
   const driverDayHours = 8;
 
   // Get actual metrics
@@ -5812,44 +5808,36 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
 
   // If we don't have enough data
   if (!Number.isFinite(avg) && totalMoves === 0) {
-    return {
-      label: 'Driver Performance & Staffing Analysis',
-      assumptionsUsed: {
-        labor_fully_loaded_rate_per_hour: laborRate,
-        target_moves_per_driver_per_day: target,
-        driver_day_hours: driverDayHours,
-      },
-      estimate: null,
-      insights: [],
-      staffingAnalysis: null,
-      disclaimer: 'Insufficient data to estimate driver performance (missing driver/day aggregation).',
-    };
+    return null;
   }
 
-  // Calculate performance vs target
-  const performancePct = Number.isFinite(avg) ? Math.round((avg / target) * 100) : null;
-  const gap = Number.isFinite(avg) ? Math.max(0, target - avg) : null;
-  const surplus = Number.isFinite(avg) ? Math.max(0, avg - target) : null;
-
-  // Time/money calculations
+  // ── Target-dependent calculations (only when target is provided) ──
+  let performancePct = null;
+  let gap = null;
+  let surplus = null;
   let timeSavedPerDriverDay = null;
   let moneySavedPerDriverDay = null;
   let fteEquivalent = null;
 
-  if (Number.isFinite(avg)) {
-    if (avg >= target) {
-      // Drivers exceeding target - calculate efficiency gain
-      timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60);
-      moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
-    } else {
-      // Below target - show the gap
-      const gapHours = (gap / target) * driverDayHours;
-      timeSavedPerDriverDay = -round1(gapHours * 60);
-      moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
-    }
+  if (target !== null && Number.isFinite(avg)) {
+    performancePct = Math.round((avg / target) * 100);
+    gap = Math.max(0, target - avg);
+    surplus = Math.max(0, avg - target);
 
     if (totalMoves > 0) {
       fteEquivalent = round1(totalMoves / target);
+    }
+
+    // Dollar calculations require BOTH target and labor rate
+    if (laborRate !== null) {
+      if (avg >= target) {
+        timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60);
+        moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
+      } else {
+        const gapHours = (gap / target) * driverDayHours;
+        timeSavedPerDriverDay = -round1(gapHours * 60);
+        moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
+      }
     }
   }
 
@@ -5869,12 +5857,14 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
   }
 
   // 1. Overall performance insight
-  if (Number.isFinite(performancePct)) {
+  if (target !== null && Number.isFinite(performancePct)) {
     if (performancePct >= 100) {
       insights.push(`Drivers averaging ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
     } else {
       insights.push(`Drivers at ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
     }
+  } else if (Number.isFinite(avg)) {
+    insights.push(`Drivers averaging ${round1(avg)} moves/day`);
   }
 
   // 2. Total workload context
@@ -5884,12 +5874,14 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     staffingAnalysis.totalDays = totalDays;
     staffingAnalysis.totalMoves = totalMoves;
 
-    // How many drivers would be needed at target rate?
-    const driversNeededAtTarget = round1(avgMovesPerDay / target);
-    staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
-
     insights.push(`Total facility workload: ${avgMovesPerDay} moves/day over ${totalDays} days`);
-    insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
+
+    // How many drivers would be needed at target rate? (requires target)
+    if (target !== null) {
+      const driversNeededAtTarget = round1(avgMovesPerDay / target);
+      staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
+      insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
+    }
   }
 
   // 3. Analyze top performers vs average
@@ -5911,7 +5903,7 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
       const topVsAvgRatio = round1(topDriverMovesPerDay / avg);
       staffingAnalysis.topVsAvgRatio = topVsAvgRatio;
 
-      if (topDriverMovesPerDay >= target) {
+      if (target !== null && topDriverMovesPerDay >= target) {
         insights.push(`Top performer "${topDriver.key}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked (${Math.round((topDriverMovesPerDay/target)*100)}% of target)`);
       } else {
         insights.push(`Top performer "${topDriver.key}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked`);
@@ -5984,8 +5976,8 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     }
   }
 
-  // 5. Staffing recommendation (use avg drivers per day, not unique drivers)
-  if (staffingAnalysis.driversNeededAtTarget && avgDriversPerDay) {
+  // 5. Staffing recommendation (requires target — use avg drivers per day, not unique drivers)
+  if (target !== null && staffingAnalysis.driversNeededAtTarget && avgDriversPerDay) {
     const needed = staffingAnalysis.driversNeededAtTarget;
     const current = avgDriversPerDay;
 
@@ -6038,9 +6030,8 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
       if (reductionPct >= 10) {
         insights.push(`Driver headcount decreased from ~${firstHalfAvg} to ~${secondHalfAvg} drivers/day (${reductionPct}% reduction) between first and second half of the period`);
 
-        // Calculate labor savings if labor rate is provided (not using default)
-        const hasLaborRate = Number.isFinite(a.labor_fully_loaded_rate_per_hour);
-        if (hasLaborRate) {
+        // Calculate labor savings only when labor rate is explicitly provided
+        if (laborRate !== null) {
           // Annual savings = reduction in drivers × hours/day × rate × working days/year
           const workingDaysPerYear = 260; // ~5 days/week × 52 weeks
           const annualSavings = Math.round(reduction * driverDayHours * laborRate * workingDaysPerYear);
@@ -6092,18 +6083,26 @@ function computeLaborROIIfEnabled({ meta, metrics, assumptions }) {
     },
     estimate: {
       avg_moves_per_driver_per_day: Number.isFinite(avg) ? round1(avg) : null,
-      target_moves_per_driver_per_day: target,
-      performance_vs_target_pct: performancePct,
-      gap_moves_per_day: gap !== null ? round1(gap) : null,
-      surplus_moves_per_day: surplus !== null && surplus > 0 ? round1(surplus) : null,
       total_moves: totalMoves || null,
-      driver_days_equivalent: fteEquivalent,
-      time_impact_minutes_per_driver_day: timeSavedPerDriverDay,
-      money_impact_per_driver_day: moneySavedPerDriverDay,
+      // Target-dependent fields (only when target is provided)
+      ...(target !== null && {
+        target_moves_per_driver_per_day: target,
+        performance_vs_target_pct: performancePct,
+        gap_moves_per_day: gap !== null ? round1(gap) : null,
+        surplus_moves_per_day: surplus !== null && surplus > 0 ? round1(surplus) : null,
+        driver_days_equivalent: fteEquivalent,
+      }),
+      // Dollar fields (only when both target and labor rate are provided)
+      ...(target !== null && laborRate !== null && {
+        time_impact_minutes_per_driver_day: timeSavedPerDriverDay,
+        money_impact_per_driver_day: moneySavedPerDriverDay,
+      }),
     },
     staffingAnalysis,
     insights,
-    disclaimer: 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.',
+    disclaimer: target !== null
+      ? 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.'
+      : 'Analysis based on recorded driver move events. Add target moves/driver/day to enable performance comparison and staffing recommendations.',
   };
 }
 
@@ -7004,41 +7003,47 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
   if (!existingRoi) return null;
 
   const a = assumptions || {};
-  const target = a.target_moves_per_driver_per_day;
-  const laborRate = a.labor_fully_loaded_rate_per_hour || 42;
+  const target = Number.isFinite(a.target_moves_per_driver_per_day) ? a.target_moves_per_driver_per_day : null;
+  const laborRate = Number.isFinite(a.labor_fully_loaded_rate_per_hour) ? a.labor_fully_loaded_rate_per_hour : null;
   const driverDayHours = 8;
-
-  if (!Number.isFinite(target)) return null;
 
   const avg = metrics?.avg_moves_per_driver_per_day || existingRoi.estimate?.avg_moves_per_driver_per_day || 0;
   const totalMoves = metrics?.moves_total || existingRoi.staffingAnalysis?.totalMoves || 0;
   const totalDays = existingRoi.staffingAnalysis?.totalDays || 1;
   const avgDriversPerDay = existingRoi.staffingAnalysis?.avgDriversPerDay;
 
-  // Calculate performance vs target
-  const performancePct = Number.isFinite(avg) && avg > 0 ? Math.round((avg / target) * 100) : null;
-  const gap = Number.isFinite(avg) ? Math.max(0, target - avg) : null;
-  const surplus = Number.isFinite(avg) ? Math.max(0, avg - target) : null;
-
-  // Time/money calculations
+  // ── Target-dependent calculations ──
+  let performancePct = null;
+  let gap = null;
+  let surplus = null;
   let moneySavedPerDriverDay = null;
+  let timeSavedPerDriverDay = null;
+  let fteEquivalent = null;
 
-  if (Number.isFinite(avg) && avg > 0) {
-    if (avg >= target) {
-      moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
-    } else {
-      const gapHours = (gap / target) * driverDayHours;
-      moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
+  if (target !== null && Number.isFinite(avg) && avg > 0) {
+    performancePct = Math.round((avg / target) * 100);
+    gap = Math.max(0, target - avg);
+    surplus = Math.max(0, avg - target);
+    fteEquivalent = totalMoves > 0 ? round1(totalMoves / target) : null;
+
+    // Dollar calculations require BOTH target and labor rate
+    if (laborRate !== null) {
+      if (avg >= target) {
+        timeSavedPerDriverDay = round1((surplus / avg) * driverDayHours * 60);
+        moneySavedPerDriverDay = Math.round(((surplus / avg) * driverDayHours) * laborRate * 100) / 100;
+      } else {
+        const gapHours = (gap / target) * driverDayHours;
+        timeSavedPerDriverDay = -round1(gapHours * 60);
+        moneySavedPerDriverDay = -Math.round(gapHours * laborRate * 100) / 100;
+      }
     }
   }
-
-  const fteEquivalent = totalMoves > 0 ? round1(totalMoves / target) : null;
 
   // Preserve existing staffing analysis but update target-dependent values
   const staffingAnalysis = existingRoi.staffingAnalysis ? { ...existingRoi.staffingAnalysis } : null;
   let driversNeededAtTarget = null;
 
-  if (staffingAnalysis && totalMoves > 0 && totalDays > 0) {
+  if (target !== null && staffingAnalysis && totalMoves > 0 && totalDays > 0) {
     const avgMovesPerDay = round1(totalMoves / totalDays);
     driversNeededAtTarget = round1(avgMovesPerDay / target);
     staffingAnalysis.driversNeededAtTarget = driversNeededAtTarget;
@@ -7047,18 +7052,24 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     if (staffingAnalysis.avgDriversPerDay) {
       staffingAnalysis.staffingDelta = round1(staffingAnalysis.avgDriversPerDay - driversNeededAtTarget);
     }
+  } else if (staffingAnalysis) {
+    // No target — clear target-dependent staffing fields
+    delete staffingAnalysis.driversNeededAtTarget;
+    delete staffingAnalysis.staffingDelta;
   }
 
   // Build insights - preserve non-target-dependent insights from original, regenerate target-dependent ones
   const insights = [];
 
-  // 1. Performance vs target (target-dependent - regenerate)
-  if (Number.isFinite(performancePct)) {
+  // 1. Performance vs target (target-dependent) or data-only insight
+  if (target !== null && Number.isFinite(performancePct)) {
     if (performancePct >= 100) {
       insights.push(`Drivers averaging ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
     } else {
       insights.push(`Drivers at ${performancePct}% of target (${round1(avg)} moves/day vs ${target} target)`);
     }
+  } else if (Number.isFinite(avg) && avg > 0) {
+    insights.push(`Drivers averaging ${round1(avg)} moves/day`);
   }
 
   // 2. Total workload context (data-dependent - use stored values)
@@ -7068,7 +7079,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
   }
 
   // 3. Drivers needed at target (target-dependent - regenerate)
-  if (driversNeededAtTarget && totalMoves > 0 && totalDays > 0) {
+  if (target !== null && driversNeededAtTarget && totalMoves > 0 && totalDays > 0) {
     insights.push(`At target rate (${target}/day), you'd need ~${driversNeededAtTarget} drivers/day`);
   }
 
@@ -7076,7 +7087,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
   if (staffingAnalysis?.topDriverName && staffingAnalysis?.topDriverAvgPerDay) {
     const topDriverMovesPerDay = staffingAnalysis.topDriverAvgPerDay;
     const topDriverDaysWorked = staffingAnalysis.topDriverDaysWorked || 0;
-    if (topDriverMovesPerDay >= target) {
+    if (target !== null && topDriverMovesPerDay >= target) {
       insights.push(`Top performer "${staffingAnalysis.topDriverName}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked (${Math.round((topDriverMovesPerDay/target)*100)}% of target)`);
     } else {
       insights.push(`Top performer "${staffingAnalysis.topDriverName}" averages ${topDriverMovesPerDay} moves/day over ${topDriverDaysWorked} days worked`);
@@ -7115,7 +7126,7 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
   }
 
   // 7. Staffing recommendation (target-dependent - regenerate)
-  if (driversNeededAtTarget && avgDriversPerDay) {
+  if (target !== null && driversNeededAtTarget && avgDriversPerDay) {
     const needed = driversNeededAtTarget;
     const current = avgDriversPerDay;
 
@@ -7135,16 +7146,26 @@ function recalcDriverROI(existingRoi, metrics, assumptions) {
     },
     estimate: {
       avg_moves_per_driver_per_day: round1(avg),
-      target_moves_per_driver_per_day: target,
-      performance_vs_target_pct: performancePct,
-      gap_moves_per_day: gap ? round1(gap) : null,
-      surplus_moves_per_day: surplus ? round1(surplus) : null,
-      money_impact_per_driver_day: moneySavedPerDriverDay,
-      driver_days_equivalent: fteEquivalent,
+      total_moves: totalMoves || null,
+      // Target-dependent fields
+      ...(target !== null && {
+        target_moves_per_driver_per_day: target,
+        performance_vs_target_pct: performancePct,
+        gap_moves_per_day: gap ? round1(gap) : null,
+        surplus_moves_per_day: surplus ? round1(surplus) : null,
+        driver_days_equivalent: fteEquivalent,
+      }),
+      // Dollar fields (require both target and labor rate)
+      ...(target !== null && laborRate !== null && {
+        time_impact_minutes_per_driver_day: timeSavedPerDriverDay,
+        money_impact_per_driver_day: moneySavedPerDriverDay,
+      }),
     },
     insights,
     staffingAnalysis,
-    disclaimer: 'Performance metrics based on average moves per driver per day. Individual driver performance may vary. Target rates should be calibrated to your operation.',
+    disclaimer: target !== null
+      ? 'Estimates based on target moves assumption. Staffing analysis uses approximate driver counts. Actual results vary by site conditions.'
+      : 'Analysis based on recorded driver move events. Add target moves/driver/day to enable performance comparison and staffing recommendations.',
   };
 }
 

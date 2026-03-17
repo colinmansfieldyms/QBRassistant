@@ -2343,7 +2343,7 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
   // ROI section
   const roiTitle = el('div', { class: 'section-title', style: 'margin-top:12px;' }, [
     el('h2', {}, ['ROI (estimates)']),
-    el('span', { class: 'muted small' }, ['Shown only when assumptions are filled.'])
+    el('span', { class: 'muted small' }, ['Data insights always shown. Dollar estimates require assumptions.'])
   ]);
   wrap.appendChild(roiTitle);
 
@@ -2513,7 +2513,7 @@ function renderFindings(findings, recs, roi, meta, detentionSpend = null) {
         }
 
         if (staffing.topDriverAvgPerDay && staffing.topDriverName) {
-          const topVsTarget = staffing.topDriverAvgPerDay >= est.target_moves_per_driver_per_day ? 'var(--green)' : 'inherit';
+          const topVsTarget = est.target_moves_per_driver_per_day && staffing.topDriverAvgPerDay >= est.target_moves_per_driver_per_day ? 'var(--green)' : 'inherit';
           metricsGrid.appendChild(el('div', { style: 'padding: 8px; background: var(--bg-secondary); border-radius: 4px;' }, [
             el('div', { class: 'muted small' }, ['Top Performer Avg/Day']),
             el('div', { style: `font-weight: 700; font-size: 1.2em; color: ${topVsTarget};` }, [`${staffing.topDriverAvgPerDay} moves`])
